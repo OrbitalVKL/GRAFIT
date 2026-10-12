@@ -1,0 +1,2278 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Grafit Mobile</title>
+<meta name="description" content="ГРАФИТ · GRAFIT OS Mobile — console de bord Soyuz du téléphone (Orbital VKL).">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Grafit">
+</head>
+<body>
+<meta name="theme-color" content="#0a0c0e">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<style>
+/* Console plein écran : grille de caractères dessinée sur un canvas. Look unique, sombre, par choix (terminal Soyuz). */
+:root { --bg: #0a0c0e; --fg: #cfd2d4; --dim: #82868a; --red: #9e4a4a; color-scheme: dark; }
+html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; }
+body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+#wrap { position: fixed; top: env(safe-area-inset-top, 0px); bottom: env(safe-area-inset-bottom, 0px); left: 16px; right: 16px; }
+#scr { display: block; touch-action: none; }
+#cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
+noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
+</style>
+<div id="wrap"><canvas id="scr" aria-label="Grafit OS Mobile console"></canvas></div>
+<input id="cmd" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Grafit command line">
+<noscript>Grafit Mobile needs JavaScript.</noscript>
+<script>
+'use strict';
+/* =====================================================================================================
+   ГРАФИТ · GRAFIT OS MOBILE — noyau sans DOM : thème, tampon d'écran, composants Soyuz, éphémérides,
+   tendance barométrique (ДЕП). Ports de grafit/theme.py, screen.py, widgets.py, astro.py et de
+   Scripts/lib/pressure_trend.lua (PK8-S16A fw 0.4.1). Même logique, mêmes unités.
+   ===================================================================================================== */
+
+// ---------------------------------------------------------------------------------------- thème
+const BG = [10, 12, 14];
+const mix = (c, a, bg = BG) => c.map((v, i) => Math.round(v * a + bg[i] * (1 - a)));
+const WHITE = [207, 210, 212], DIM = mix(WHITE, 0.62), FAINT = mix(WHITE, 0.30), LINE = mix(WHITE, 0.55),
+  TRACKC = mix(WHITE, 0.14), INK = [12, 15, 18], RED = [158, 74, 74], REDT = [194, 106, 106],
+  REDINK = [246, 236, 236], REDDIM = mix(RED, 0.45), BGT = [5, 6, 7];
+const STYLES = [];
+function S(fg = WHITE, bg = BG, bold = false) {
+  STYLES.push({ fg: 'rgb(' + fg.join(',') + ')', bg: 'rgb(' + bg.join(',') + ')', base: bg === BG, bold });
+  return STYLES.length - 1;
+}
+const t = {};
+t.N = S(); t.B = S(WHITE, BG, true); t.D = S(DIM); t.F = S(FAINT); t.L = S(LINE); t.K = S(TRACKC);
+t.R = S(REDT); t.RB = S(REDT, BG, true); t.RR = S(RED); t.RZ = S(REDDIM);
+t.INV = S(INK, WHITE, true); t.INVN = S(INK, WHITE); t.ALERT = S(REDINK, RED, true);
+t.T = S(WHITE, BGT, true); t.TD = S(DIM, BGT); t.TF = S(FAINT, BGT); t.TR = S(REDT, BGT, true);
+t.TB = S(FAINT, BGT); // bande titre : filets
+
+// ---------------------------------------------------------------------------------------- texte
+// Une cellule = un caractère (les diacritiques combinants restent dans la cellule précédente).
+function chars(s) {
+  const out = [];
+  for (const c of String(s)) {
+    const cp = c.codePointAt(0);
+    if (cp >= 0x300 && cp <= 0x36f && out.length) out[out.length - 1] += c; else out.push(c);
+  }
+  return out;
+}
+const slen = s => chars(s).length;
+function clip(s, n) {
+  const c = chars(s);
+  if (n <= 0) return '';
+  return c.length <= n ? c.join('') : (n > 1 ? c.slice(0, n - 1).join('') + '…' : c.slice(0, n).join(''));
+}
+const ljust = (s, n) => { s = String(s); return s + ' '.repeat(Math.max(0, n - slen(s))); };
+const rjustS = (s, n) => { s = String(s); return ' '.repeat(Math.max(0, n - slen(s))) + s; };
+const center = (s, n) => { s = String(s); const p = Math.max(0, n - slen(s)); const l = Math.floor(p / 2); return ' '.repeat(l) + s + ' '.repeat(p - l); };
+const pad2 = n => String(Math.floor(n)).padStart(2, '0');
+const fmtf = (v, d) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);
+
+// ---------------------------------------------------------------------------------------- écran
+class Screen {
+  constructor(w, h) { this.resize(w, h); }
+  resize(w, h) { this.w = w; this.h = h; this.ch = new Array(w * h).fill(' '); this.st = new Uint8Array(w * h); }
+  clear(style = t.N) { this.ch.fill(' '); this.st.fill(style); this.vec = []; }
+  vector(x, y, w, h, fn, clip = true) { (this.vec || (this.vec = [])).push({ x, y, w, h, fn, clip }); }
+  put(x, y, text, style = t.N, w) {
+    if (y < 0 || y >= this.h || text == null) return 0;
+    let c = chars(text);
+    if (w != null) c = c.slice(0, Math.max(0, w));
+    let n = 0;
+    for (let i = 0; i < c.length; i++) {
+      const xi = x + i;
+      if (xi >= this.w) break;
+      if (xi >= 0) { this.ch[y * this.w + xi] = c[i]; this.st[y * this.w + xi] = style; n++; }
+    }
+    return c.length;
+  }
+  fill(x, y, w, h, c = ' ', style = t.N) { for (let yy = Math.max(0, y); yy < Math.min(this.h, y + h); yy++) this.put(x, yy, c.repeat(Math.max(0, w)), style); }
+  get(x, y) { return (x >= 0 && x < this.w && y >= 0 && y < this.h) ? this.ch[y * this.w + x] : ' '; }
+  text() { const out = []; for (let y = 0; y < this.h; y++) out.push(this.ch.slice(y * this.w, (y + 1) * this.w).join('').replace(/\s+$/, '')); return out.join('\n'); }
+}
+
+// ---------------------------------------------------------------------------------------- composants
+class Rect {
+  constructor(x, y, w, h) { this.x = x; this.y = y; this.w = w; this.h = h; }
+  get r() { return this.x + this.w; }
+  get b() { return this.y + this.h; }
+  inset(dx = 1, dy = 1) { return new Rect(this.x + dx, this.y + dy, Math.max(0, this.w - 2 * dx), Math.max(0, this.h - 2 * dy)); }
+  splitH(weights, gap = 1) {
+    const fixed = weights.filter(w => w < 0).reduce((a, w) => a - w, 0);
+    const flex = weights.filter(w => w > 0).reduce((a, w) => a + w, 0) || 1;
+    const free = this.w - fixed - gap * (weights.length - 1);
+    const out = []; let x = this.x;
+    weights.forEach((w, i) => {
+      let ww = w < 0 ? -w : Math.floor(free * w / flex);
+      if (i === weights.length - 1) ww = this.r - x;
+      out.push(new Rect(x, this.y, ww, this.h)); x += ww + gap;
+    });
+    return out;
+  }
+  splitV(weights, gap = 0) {
+    const fixed = weights.filter(w => w < 0).reduce((a, w) => a - w, 0);
+    const flex = weights.filter(w => w > 0).reduce((a, w) => a + w, 0) || 1;
+    const free = this.h - fixed - gap * (weights.length - 1);
+    const out = []; let y = this.y;
+    weights.forEach((w, i) => {
+      let hh = w < 0 ? -w : Math.floor(free * w / flex);
+      if (i === weights.length - 1) hh = this.b - y;
+      out.push(new Rect(this.x, y, this.w, hh)); y += hh + gap;
+    });
+    return out;
+  }
+}
+
+const W = {};
+W.rjust = (scr, xr, y, text, style = t.N) => { text = String(text); scr.put(xr - slen(text), y, text, style); };
+
+W.panel = (scr, r, code, name, rt = '', rtStyle = t.TD, alert = false) => {
+  if (r.w < 8 || r.h < 3) return new Rect(r.x, r.y, 0, 0);
+  scr.fill(r.x, r.y, r.w, 1, ' ', t.T);
+  let x = r.x;
+  if (code) { scr.put(x, r.y, ' ' + code + ' ', alert ? t.ALERT : t.INV); x += slen(code) + 3; } else x += 1;
+  rt = String(rt);
+  const room = r.r - x - 1 - (rt ? slen(rt) + 2 : 0);
+  scr.put(x, r.y, clip(name, room), t.T);
+  if (rt) W.rjust(scr, r.r - 1, r.y, clip(rt, r.w - 8), rtStyle);
+  for (let y = r.y + 1; y < r.b - 1; y++) { scr.put(r.x, y, '│', t.L); scr.put(r.r - 1, y, '│', t.L); }
+  const y = r.b - 1;
+  scr.put(r.x, y, '┗━' + '─'.repeat(Math.max(0, r.w - 4)) + '━┛', t.L);
+  scr.put(r.x, y, '┗━', t.N);
+  scr.put(r.r - 2, y, '━┛', t.N);
+  return new Rect(r.x + 2, r.y + 1, r.w - 4, r.h - 2);
+};
+
+W.segBar = (scr, x, y, w, frac, redFrom = 0.8, alert = false) => {
+  if (w <= 0) return;
+  frac = (frac == null || frac !== frac) ? 0 : Math.max(0, Math.min(1, frac));
+  const n = Math.round(frac * w);
+  const red0 = redFrom != null ? Math.round(redFrom * w) : w;
+  for (let i = 0; i < w; i++) {
+    const on = i < n;
+    const st = i >= red0 ? (on ? t.RR : t.RZ) : (on ? (alert ? t.RR : t.N) : t.K);
+    scr.put(x + i, y, '■', st);
+  }
+};
+
+W.thinBar = (scr, x, y, w, frac, alert = false) => {
+  if (w <= 0) return;
+  frac = (frac == null || frac !== frac) ? 0 : Math.max(0, Math.min(1, frac));
+  const n = Math.round(frac * w);
+  scr.put(x, y, '━'.repeat(n), alert ? t.RR : t.N);
+  scr.put(x + n, y, '─'.repeat(w - n), t.K);
+};
+
+const BR = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
+W.canvas = (w, h) => Array.from({ length: Math.max(0, h) }, () => new Array(Math.max(0, w)).fill(0));
+W.dot = (cells, px, py) => {
+  px = Math.floor(px); py = Math.floor(py);
+  const cx = Math.floor(px / 2), sx = px - cx * 2, cy = Math.floor(py / 4), sy = py - cy * 4;
+  if (cy >= 0 && cy < cells.length && cx >= 0 && cx < cells[0].length) cells[cy][cx] |= BR[sy][sx];
+};
+W.line = (cells, x0, y0, x1, y1) => {
+  const n = Math.floor(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))) + 1;
+  for (let i = 0; i <= n; i++) { const f = i / n; W.dot(cells, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f); }
+};
+W.dashed = (cells, x0, y0, x1, y1, on = 2, off = 2) => {
+  const n = Math.floor(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))) + 1;
+  for (let i = 0; i <= n; i++) { if (i % (on + off) < on) { const f = i / n; W.dot(cells, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f); } }
+};
+W.circle = (cells, cx, cy, r, step = 4) => { for (let a = 0; a < 360; a += step) W.dot(cells, cx + r * Math.cos(a * Math.PI / 180), cy + r * Math.sin(a * Math.PI / 180)); };
+W.blit = (scr, x, y, cells, style = t.N) => {
+  cells.forEach((row, cy) => row.forEach((c, cx) => { if (c) scr.put(x + cx, y + cy, String.fromCharCode(0x2800 + c), style); }));
+};
+W.brailleArea = (scr, x, y, w, h, values, vmax, style = t.N, fill = true) => {
+  if (w <= 0 || h <= 0) return;
+  let pts = values.slice(-(w * 2));
+  pts = new Array(w * 2 - pts.length).fill(0).concat(pts);
+  const top = vmax || Math.max(Math.max(...pts), 1e-9);
+  const dh = h * 4, cells = W.canvas(w, h);
+  pts.forEach((v, i) => {
+    const lv = v == null ? 0 : Math.round(Math.max(0, Math.min(1, v / top)) * dh);
+    const cx = Math.floor(i / 2), sub = i % 2;
+    const from = fill ? dh - lv : (lv ? dh - lv : dh);
+    const to = fill ? dh : (lv ? dh - lv + 1 : dh);
+    for (let d = from; d < to; d++) cells[Math.floor(d / 4)][cx] |= BR[d % 4][sub];
+  });
+  W.blit(scr, x, y, cells, style);
+};
+
+W.kv = (scr, x, y, w, key, value, ks = t.D, vs = t.N, dots = true) => {
+  value = String(value);
+  scr.put(x, y, clip(key, w), ks);
+  if (dots) { const gap = w - slen(key) - slen(value) - 2; if (gap > 0) scr.put(x + slen(key) + 1, y, '·'.repeat(gap), t.F); }
+  W.rjust(scr, x + w, y, clip(value, w - slen(key) - 1), vs);
+};
+
+W.box = (scr, x, y, w, h, style = t.L, fill = null) => {
+  if (w < 2 || h < 2) return;
+  scr.put(x, y, '┌' + '─'.repeat(w - 2) + '┐', style);
+  for (let yy = y + 1; yy < y + h - 1; yy++) {
+    scr.put(x, yy, '│', style); scr.put(x + w - 1, yy, '│', style);
+    if (fill != null) scr.put(x + 1, yy, ' '.repeat(w - 2), fill);
+  }
+  scr.put(x, y + h - 1, '└' + '─'.repeat(w - 2) + '┘', style);
+};
+
+const TILE = {
+  nom: [t.F, t.D, t.F, null], caut: [t.RR, t.RB, t.R, null], crit: [t.ALERT, t.ALERT, t.ALERT, t.ALERT],
+  critoff: [t.RR, t.R, t.R, null], on: [t.INV, t.INV, t.INVN, t.INV], lit: [t.N, t.B, t.N, null], na: [t.K, t.F, t.F, null],
+};
+W.tile = (scr, x, y, w, h, label, value = '', state = 'nom') => {
+  const [bst, lst, vst, fill] = TILE[state] || TILE.nom;
+  W.box(scr, x, y, w, h, bst, fill);
+  const room = h - 2;
+  const lines = String(label).split('\n').filter(Boolean).slice(0, Math.max(1, room)).map(s => [s, lst]);
+  if (value !== '' && room > lines.length) lines.push([String(value), vst]);
+  const top = y + 1 + Math.max(0, Math.floor((room - lines.length) / 2));
+  lines.forEach(([s, st], i) => scr.put(x + 1, top + i, center(clip(s, w - 2), w - 2), st));
+};
+// Panneau d'annonciateurs à filets communs. items = [[libellé, état]]. Renvoie la hauteur.
+W.tileGrid = (scr, x, y, cols, cw, items, hits) => {
+  const rows = Math.ceil(items.length / cols);
+  for (let r = 0; r <= rows; r++) {
+    const [l, m, rr] = r === 0 ? ['┌', '┬', '┐'] : (r === rows ? ['└', '┴', '┘'] : ['├', '┼', '┤']);
+    scr.put(x, y + 2 * r, l + Array.from({ length: cols }, () => '─'.repeat(cw)).join(m) + rr, t.F);
+  }
+  for (let i = 0; i < rows * cols; i++) {
+    const r = Math.floor(i / cols), c = i % cols;
+    scr.put(x + c * (cw + 1), y + 2 * r + 1, '│', t.F);
+    scr.put(x + (c + 1) * (cw + 1), y + 2 * r + 1, '│', t.F);
+  }
+  items.forEach(([label, state, fn], i) => {
+    const r = Math.floor(i / cols), c = i % cols, cx = x + c * (cw + 1), cy = y + 2 * r;
+    const [, lst, , fill] = TILE[state] || TILE.nom;
+    if (state === 'caut' || state === 'critoff' || state === 'crit') {
+      scr.put(cx + 1, cy, '─'.repeat(cw), t.RR); scr.put(cx + 1, cy + 2, '─'.repeat(cw), t.RR);
+      scr.put(cx, cy + 1, '│', t.RR); scr.put(cx + cw + 1, cy + 1, '│', t.RR);
+      for (const [xx, yy] of [[cx, cy], [cx + cw + 1, cy], [cx, cy + 2], [cx + cw + 1, cy + 2]]) scr.put(xx, yy, scr.get(xx, yy), t.RR);
+    }
+    scr.put(cx + 1, cy + 1, center(clip(label, cw), cw), fill != null ? fill : lst);
+    if (state === 'crit') scr.put(cx + 1, cy + 1, center(clip(label, cw), cw), t.ALERT);
+    if (hits && fn) hits.push({ x: cx + 1, y: cy + 1, w: cw, h: 1, fn });
+  });
+  return rows * 2 + 1;
+};
+
+W.limStyle = active => active ? t.RR : t.RZ;
+
+// 7 segments en traits gras des caractères de cadre
+const SEG = { '0': 'abcdef', '1': 'bc', '2': 'abdeg', '3': 'abcdg', '4': 'bcfg', '5': 'acdfg', '6': 'acdefg', '7': 'abc',
+  '8': 'abcdefg', '9': 'abcdfg', '-': 'g', ' ': '', 'A': 'abcefg', 'b': 'cdefg', 'C': 'adef', 'd': 'bcdeg', 'E': 'adefg',
+  'F': 'aefg', 'H': 'bcefg', 'L': 'def', 'P': 'abefg', 'r': 'eg', 'o': 'cdeg', 'n': 'ceg', 'U': 'bcdef', 't': 'defg',
+  'S': 'acdfg', 'I': 'bc', 'O': 'abcdef', 'G': 'acdef', 'i': 'c', 'u': 'cde', 'y': 'bcdfg', 'J': 'bcde', 'h': 'cefg' };
+const HV = { '0000': ' ', '1000': '╹', '0100': '╻', '0010': '╸', '0001': '╺', '1100': '┃', '0011': '━', '0101': '┏',
+  '0110': '┓', '1001': '┗', '1010': '┛', '1101': '┣', '1110': '┫', '0111': '┳', '1011': '┻', '1111': '╋' };
+function segDirs(segs) {
+  const [a, b, c, d, e, f, g] = 'abcdefg'.split('').map(k => segs.includes(k) ? 1 : 0);
+  return [[[0, f, 0, a], [0, 0, a, a], [0, b, a, 0]], [[f, e, 0, g], [0, 0, g, g], [b, c, g, 0]], [[e, 0, 0, d], [0, 0, d, d], [c, 0, d, 0]]];
+}
+const GHOST = segDirs('abcdefg');
+W.seg7Width = text => Math.max(0, chars(text).reduce((a, ch) => a + (ch === '.' ? 0 : (ch === ':' ? 2 : 4)), 0) - 1);
+W.readout = (scr, x, y, w, label, text, unit = '', style = t.N, alert = false, ghost = true, ndig = null, uw = null) => {
+  text = ndig ? String(text).trim() : String(text);
+  if (ndig) text = ' '.repeat(Math.max(0, ndig - chars(text).filter(c => c !== '.' && c !== ':').length)) + text;
+  W.box(scr, x, y, w, 5, alert ? t.RR : t.L);
+  scr.put(x + 2, y, ' ' + label + ' ', alert ? t.RB : t.D);
+  uw = Math.max(uw || 0, slen(unit));
+  const sx = x + w - 2 - (uw ? uw + 1 : 0) - W.seg7Width(text);
+  W.seg7(scr, Math.max(x + 2, sx), y + 1, text, alert ? t.RB : style, ghost ? t.K : null);
+  if (unit) scr.put(x + w - 2 - uw, y + 3, unit, alert ? t.R : t.D);
+};
+
+const V8 = ' ▁▂▃▄▅▆▇█', H8 = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
+const frac01 = f => (f == null || f !== f) ? 0 : Math.max(0, Math.min(1, f));
+
+// Ruban vertical gradué (largeur 8)
+W.vtape = (scr, x, y, h, frac, value = '', label = '', alert = false, marks = [], top = '', bot = '', stale = false, low = false) => {
+  const th = h - 6;
+  if (th < 2) return;
+  frac = frac01(frac);
+  marks = marks.slice().sort((a, b) => a[0] - b[0]);
+  const act = marks.map(m => !stale && (low ? frac <= m[0] : frac >= m[0]));
+  scr.put(x + 1, y, '┌──┐', t.L); scr.put(x + 5, y, top, t.F);
+  const n8 = Math.round(frac * th * 8);
+  for (let i = 0; i < th; i++) {
+    const lb = th - 1 - i, fLo = lb / th, fHi = (lb + 1) / th;
+    let fill = '  ';
+    if (lb < Math.floor(n8 / 8)) fill = '██'; else if (lb === Math.floor(n8 / 8) && n8 % 8) fill = V8[n8 % 8].repeat(2);
+    const tick = [0.25, 0.5, 0.75].some(q => Math.abs(fHi - q) < 0.5 / th);
+    let rst = t.L, z = null;
+    if (low) { z = marks.findIndex(m => fLo < m[0] - 1e-9); if (z < 0) z = null; }
+    else { for (let k = marks.length - 1; k >= 0; k--) if (fHi > marks[k][0] + 1e-9) { z = k; break; } }
+    if (z != null) rst = W.limStyle(act[z]);
+    let mk = marks.findIndex(m => Math.abs(fHi - m[0]) < 0.5 / th); if (mk < 0) mk = null;
+    scr.put(x + 1, y + 1 + i, '│', t.L);
+    scr.put(x + 2, y + 1 + i, fill, alert ? t.RR : t.N);
+    scr.put(x + 4, y + 1 + i, (tick || mk != null) ? '├' : '│', mk != null ? W.limStyle(act[mk]) : rst);
+    if (mk != null && marks[mk][1]) scr.put(x + 5, y + 1 + i, marks[mk][1], act[mk] ? t.R : t.RZ);
+  }
+  scr.put(x + 1, y + th + 1, '└──┘', t.L); scr.put(x + 5, y + th + 1, bot, t.F);
+  const lvl = n8 > 0 ? Math.floor((n8 - 1) / 8) : 0;
+  scr.put(x, y + th - lvl, stale ? '▷' : '▶', alert ? t.RB : (stale ? t.D : t.B));
+  W.box(scr, x, y + th + 2, 6, 3, alert ? t.RR : t.L);
+  scr.put(x + 1, y + th + 3, rjustS(clip(value, 4), 4), alert ? t.RB : t.B);
+  scr.put(x - 1, y + th + 5, center(clip(label, 8), 8), alert ? t.RB : t.D);
+};
+
+// Barre horizontale encadrée (3 lignes)
+W.hbar = (scr, x, y, w, frac, alert = false, marks = [], ticks = 4, center0 = false) => {
+  const iw = w - 2;
+  if (iw < 2) return;
+  frac = frac01(frac);
+  scr.put(x, y, '┌' + '─'.repeat(iw) + '┐', t.L);
+  scr.put(x, y + 1, '│', t.L);
+  if (center0) {                                   // barre centrée (valeurs signées : 0,5 = zéro)
+    const mid = iw / 2, pos = frac * iw;
+    const a = Math.min(mid, pos), b = Math.max(mid, pos);
+    let body = '';
+    for (let i = 0; i < iw; i++) body += (i + 0.5 >= a && i + 0.5 <= b) ? '█' : ' ';
+    scr.put(x + 1, y + 1, body, alert ? t.RR : t.N);
+  } else {
+    const n = Math.round(frac * iw * 8), full = Math.floor(n / 8), part = n % 8;
+    const body = '█'.repeat(full) + (part ? H8[part] : '');
+    scr.put(x + 1, y + 1, ljust(body, iw).slice(0, iw), alert ? t.RR : t.N);
+  }
+  scr.put(x + iw + 1, y + 1, '│', t.L);
+  marks = marks.slice().sort((a, b) => a - b);
+  const act = marks.map(m => frac >= m);
+  const tickCols = new Set(); for (let k = 1; k < ticks; k++) tickCols.add(Math.round(k / ticks * iw) - 1);
+  const markCols = {}; marks.forEach((m, k) => { markCols[Math.round(m * iw) - 1] = k; });
+  scr.put(x, y + 2, '└', t.L);
+  for (let i = 0; i < iw; i++) {
+    const f = (i + 0.5) / iw;
+    let z = null; for (let k = marks.length - 1; k >= 0; k--) if (f > marks[k]) { z = k; break; }
+    const st = z == null ? t.L : W.limStyle(act[z]);
+    if (i in markCols) scr.put(x + 1 + i, y + 2, '┴', W.limStyle(act[markCols[i]]));
+    else scr.put(x + 1 + i, y + 2, tickCols.has(i) ? '┴' : '─', st);
+  }
+  scr.put(x + iw + 1, y + 2, '┘', t.L);
+};
+
+W.niceMax = (v, base = 1000) => {
+  if (!v || v <= 0) return 1;
+  const x = v, e = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const m of [1, 2, 4, 6, 8, 10]) if (x <= m * e * 1.0000001) return m * e;
+  return 10 * e;
+};
+W.relTime = s => {
+  s = Math.round(s);
+  if (s === 0) return '0';
+  if (s < 60) return '−' + s + 's';
+  if (s < 1800) return '−' + Math.floor(s / 60) + ':' + pad2(s % 60);
+  return '−' + Math.floor(s / 3600) + 'h' + pad2(Math.floor(s % 3600 / 60));
+};
+const TICKS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+
+// ---------------------------------------------------------------------------------------- couche vectorielle
+// Les courbes, cartes et instruments sont des dessins vectoriels posés sur la grille : une commande vectorielle
+// reçoit son rectangle en pixels (b.x, b.y, b.w, b.h), la taille d'une cellule (b.cw, b.ch), l'échelle (b.d)
+// et la police (b.fpx, b.family). Le texte des cellules est dessiné par-dessus.
+const PAL = { WHITE, DIM, FAINT, LINE, TRACK: TRACKC, RED, REDT, REDDIM, BG };
+const rgba = (c, a) => 'rgba(' + c.join(',') + ',' + a + ')';
+const COL = { N: rgba(WHITE, 1), D: rgba(DIM, 1), F: rgba(FAINT, 1), L: rgba(LINE, 1), K: rgba(TRACKC, 1), RR: rgba(RED, 1), R: rgba(REDT, 1), RZ: rgba(REDDIM, 1) };
+const CELL = { aspect: 2.3 };                                  // hauteur / largeur d'une cellule (mise à jour par le rendu)
+
+// Courbe monotone (Fritsch–Carlson, comme curveMonotoneX de d3) : pas de dépassement entre deux points.
+W.mono = (c, pts) => {
+  const n = pts.length;
+  if (!n) return;
+  c.moveTo(pts[0][0], pts[0][1]);
+  if (n === 1) return;
+  if (n === 2) { c.lineTo(pts[1][0], pts[1][1]); return; }
+  const h = [], dl = [], m = new Array(n);
+  for (let k = 0; k < n - 1; k++) { h[k] = pts[k + 1][0] - pts[k][0]; dl[k] = h[k] ? (pts[k + 1][1] - pts[k][1]) / h[k] : 0; }
+  m[0] = dl[0]; m[n - 1] = dl[n - 2];
+  for (let k = 1; k < n - 1; k++) {
+    if (dl[k - 1] * dl[k] <= 0) m[k] = 0;
+    else { const w1 = 2 * h[k] + h[k - 1], w2 = h[k] + 2 * h[k - 1]; m[k] = (w1 + w2) / (w1 / dl[k - 1] + w2 / dl[k]); }
+  }
+  for (let k = 0; k < n - 1; k++) {
+    const dx = h[k] / 3;
+    c.bezierCurveTo(pts[k][0] + dx, pts[k][1] + m[k] * dx, pts[k + 1][0] - dx, pts[k + 1][1] - m[k + 1] * dx, pts[k + 1][0], pts[k + 1][1]);
+  }
+};
+// Spline de Catmull-Rom (traces au sol, passages) : passe par chaque point, x non monotone admis.
+W.spline = (c, pts, close = false) => {
+  const n = pts.length;
+  if (n < 2) { if (n) c.moveTo(pts[0][0], pts[0][1]); return; }
+  const P = i => close ? pts[(i + n) % n] : pts[Math.max(0, Math.min(n - 1, i))];
+  c.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 0; i < (close ? n : n - 1); i++) {
+    const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
+    c.bezierCurveTo(p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6, p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6, p2[0], p2[1]);
+  }
+  if (close) c.closePath();
+};
+const dash = (c, d, a, b) => c.setLineDash(a ? [a * d, b * d] : []);
+
+// 7 segments vectoriels : segments hexagonaux, segments éteints visibles (fantôme)
+function seg7Digit(c, x, y, w, h, segs, color) {
+  const mx = w * 0.16, my = h * 0.1, th = Math.max(2, Math.min(w * 0.17, h * 0.1)), g = th * 0.22;
+  const L = x + mx, R = x + w - mx, T = y + my, B = y + h - my, M = (T + B) / 2;
+  const hz = (x0, x1, yy) => { c.moveTo(x0, yy); c.lineTo(x0 + th / 2, yy - th / 2); c.lineTo(x1 - th / 2, yy - th / 2); c.lineTo(x1, yy); c.lineTo(x1 - th / 2, yy + th / 2); c.lineTo(x0 + th / 2, yy + th / 2); c.closePath(); };
+  const vt = (xx, y0, y1) => { c.moveTo(xx, y0); c.lineTo(xx + th / 2, y0 + th / 2); c.lineTo(xx + th / 2, y1 - th / 2); c.lineTo(xx, y1); c.lineTo(xx - th / 2, y1 - th / 2); c.lineTo(xx - th / 2, y0 + th / 2); c.closePath(); };
+  const S = { a: () => hz(L + g, R - g, T + th / 2), g: () => hz(L + g, R - g, M), d: () => hz(L + g, R - g, B - th / 2),
+    f: () => vt(L + th / 2, T + th / 2 + g, M - g), b: () => vt(R - th / 2, T + th / 2 + g, M - g),
+    e: () => vt(L + th / 2, M + g, B - th / 2 - g), c: () => vt(R - th / 2, M + g, B - th / 2 - g) };
+  c.beginPath();
+  for (const s of segs) if (S[s]) S[s]();
+  c.fillStyle = color; c.fill();
+}
+W.seg7 = (scr, x, y, text, style = t.N, ghost = null) => {
+  const items = []; let cx = 0;
+  for (const ch of chars(text)) {
+    if (ch === '.') { items.push(['dp', cx - 1]); continue; }
+    if (ch === ':') { items.push(['col', cx]); cx += 2; continue; }
+    items.push(['d', cx, SEG[ch] || '']); cx += 4;
+  }
+  const fg = STYLES[style].fg, gh = ghost != null ? STYLES[ghost].fg : null;
+  scr.vector(x, y, Math.max(1, cx), 3, (c, b) => {
+    const dw = b.cw * 3, h = b.ch * 3;
+    for (const it of items) {
+      if (it[0] === 'd') { const ox = b.x + it[1] * b.cw; if (gh) seg7Digit(c, ox, b.y, dw, h, 'abcdefg', gh); seg7Digit(c, ox, b.y, dw, h, it[2], fg); continue; }
+      const s = Math.max(2, Math.min(b.cw * 0.42, h * 0.09)), px = b.x + (it[1] + 0.5) * b.cw - s / 2;
+      c.fillStyle = fg;
+      if (it[0] === 'dp') c.fillRect(px, b.y + h * 0.9 - s, s, s);
+      else { c.fillRect(px, b.y + h * 0.33 - s / 2, s, s); c.fillRect(px, b.y + h * 0.67 - s / 2, s, s); }
+    }
+  }, false);
+  return cx - 1;
+};
+
+// Courbe(s) avec axes. Axes, graduations et libellés en cellules ; tracé, aire, grille et seuils en vecteurs,
+// à leur valeur exacte. series = [[valeurs, style]], la plus récente en dernier, une valeur toutes les step s.
+W.plot = (scr, r, series, o = {}) => {
+  const fmt = o.fmt || (v => String(+v.toFixed(3)));
+  const unit = o.unit || '', limits = o.limits || [], marker = o.marker !== false, grid = o.grid !== false;
+  const step = o.step || 1, xfmt = o.xfmt || W.relTime, xminCells = o.xminCells || 12;
+  const vals = []; series.forEach(([s]) => s.forEach(v => { if (v != null) vals.push(v); }));
+  let vmin = o.vmin != null ? o.vmin : 0, vmax = o.vmax;
+  if (o.auto && vals.length) {
+    const lo = Math.min(...vals, ...limits.map(l => l[0])), hi = Math.max(...vals, ...limits.map(l => l[0]));
+    const span = Math.max(hi - lo, o.minSpan || 1), stepv = W.niceMax(span / 2);
+    vmin = Math.floor((lo - span * 0.1) / stepv) * stepv; vmax = Math.ceil((hi + span * 0.1) / stepv) * stepv;
+    if (vmax - vmin < stepv * 2) vmax = vmin + stepv * 2;
+  }
+  if (vmax == null) vmax = W.niceMax(Math.max(vals.length ? Math.max(...vals) : 0, o.minSpan || 0) * 1.05);
+  if (vmax <= vmin) vmax = vmin + 1;
+  const ph = r.h - 2;
+  if (ph < 2 || r.w < 16) return r;
+  let yticks = o.yticks;
+  if (!yticks) { const n = ph >= 8 ? 5 : 3; yticks = Array.from({ length: n }, (_, i) => vmin + (vmax - vmin) * i / (n - 1)); }
+  const labels = yticks.map(fmt), gw = Math.max(...labels.map(slen));
+  const mkW = marker ? Math.max(0, ...series.map(([vs]) => vs.length && vs[vs.length - 1] != null ? slen(fmt(vs[vs.length - 1]) + unit) : 0)) : 0;
+  const limW = Math.max(0, ...limits.map(l => l[2] ? slen(l[2]) : 0));
+  const rg = (marker || limits.length) ? Math.max(mkW, limW) + 3 : 1;
+  const ax = r.x + gw, px0 = ax + 1, pw = r.r - px0 - rg;
+  if (pw < 4) return r;
+  const yRow = v => 0.5 + (vmax - v) / (vmax - vmin) * ph;        // en lignes depuis r.y (haut = centre de la 1re ligne)
+  const rowOf = v => Math.max(0, Math.min(ph, Math.round(yRow(v) - 0.5)));
+  for (let i = 0; i < ph; i++) scr.put(ax, r.y + i, '│', t.L);
+  yticks.forEach((v, k) => { const row = rowOf(v); scr.put(r.x, r.y + row, rjustS(labels[k], gw), t.D); if (row < ph) scr.put(ax, r.y + row, '┤', t.L); });
+  const last0 = series.length ? [...series[0][0]].reverse().find(v => v != null) : null;
+  const yax = r.y + ph;
+  scr.put(ax, yax, '└' + '─'.repeat(pw), t.L);
+  const nmax = Math.max(2, ...series.map(([vs]) => vs.length));
+  const spd = o.fit ? (nmax - 1) * step / (pw * 2 - 1) : step, span = pw * 2 * spd;
+  const iv = TICKS.find(s => s / (2 * spd) >= xminCells) || TICKS[TICKS.length - 1];
+  let s0 = 0;
+  if (o.tEnd != null) { const off = -new Date(o.tEnd * 1000).getTimezoneOffset() * 60; s0 = ((o.tEnd + off) % iv + iv) % iv; }
+  for (let k = 0; s0 + k * iv <= span; k++) {
+    const sec = s0 + k * iv, col = px0 + pw - 1 - Math.round(sec / (2 * spd));
+    if (col < px0) break;
+    scr.put(col, yax, '┴', t.L);
+    const lab = xfmt(sec), lx = sec === 0 ? col - slen(lab) + 1 : col - Math.floor(slen(lab) / 2);
+    if (lx >= px0 - 1) scr.put(lx, yax + 1, lab, t.F);
+  }
+  const limAct = limits.map(([v, , , lo]) => last0 != null && (lo === 'lo' ? last0 <= v : last0 >= v));
+  limits.forEach(([v, , lab], k) => { if (lab) scr.put(px0 + pw + 1, r.y + rowOf(v), ' ' + lab, limAct[k] ? t.RR : t.RZ); });
+  const used = new Set(limits.filter(l => l[2]).map(l => rowOf(l[0])));
+  if (marker) series.forEach(([vs], n) => {
+    if (!vs.length || vs[vs.length - 1] == null) return;
+    const row0 = rowOf(vs[vs.length - 1]); let row = row0;
+    outer: for (let d = 0; d < ph; d++) for (const c of [row0 + d, row0 - d]) if (c >= 0 && c < ph && !used.has(c)) { row = c; break outer; }
+    used.add(row);
+    scr.put(px0 + pw, r.y + row, '◂ ' + fmt(vs[vs.length - 1]) + unit, n === 0 ? t.B : t.D);
+  });
+  const N = pw * 2, colors = series.map(([, st]) => STYLES[st].fg);
+  scr.vector(px0, r.y, pw, ph + 1, (c, b) => {
+    const d = b.d, Y = v => b.y + yRow(v) * b.ch, x0 = b.x, x1 = b.x + b.w;
+    c.lineWidth = d;
+    if (grid) { c.strokeStyle = COL.K; dash(c, d, 1, 3); c.beginPath(); yticks.forEach(v => { if (v !== vmin) { const yy = Math.round(Y(v)) + 0.5; c.moveTo(x0, yy); c.lineTo(x1, yy); } }); c.stroke(); }
+    limits.forEach(([v], k) => { c.strokeStyle = limAct[k] ? COL.RR : COL.RZ; dash(c, d, 4, 3); c.beginPath(); const yy = Math.round(Y(v)) + 0.5; c.moveTo(x0 - b.cw * 0.5, yy); c.lineTo(x1, yy); c.stroke(); });
+    dash(c, d, 0);
+    series.forEach(([vs], n) => {
+      const pts = vs.slice(-N), off = N - pts.length, segs = [[]];
+      pts.forEach((v, i) => {
+        if (v == null) { if (segs[segs.length - 1].length) segs.push([]); return; }
+        const xx = o.fit ? x0 + (i / Math.max(1, pts.length - 1)) * b.w : x0 + (off + i + 0.5) / N * b.w;
+        segs[segs.length - 1].push([xx, Y(Math.max(vmin, Math.min(vmax, v)))]);
+      });
+      for (const sg of segs) {
+        if (!sg.length) continue;
+        if (n === 0 && o.area !== false && sg.length > 1) {
+          const yb = Y(vmin), gr = c.createLinearGradient(0, b.y, 0, yb);
+          gr.addColorStop(0, rgba(WHITE, 0.20)); gr.addColorStop(1, rgba(WHITE, 0.0));
+          c.beginPath(); W.mono(c, sg); c.lineTo(sg[sg.length - 1][0], yb); c.lineTo(sg[0][0], yb); c.closePath(); c.fillStyle = gr; c.fill();
+        }
+        c.beginPath(); W.mono(c, sg); c.strokeStyle = colors[n]; c.lineWidth = (n === 0 ? 1.6 : 1.2) * d; c.lineJoin = 'round'; c.stroke();
+      }
+      const lastSeg = segs.filter(s => s.length).pop();
+      if (lastSeg && pts[pts.length - 1] != null) {
+        const [ex, ey] = lastSeg[lastSeg.length - 1];
+        c.beginPath(); c.arc(ex, ey, 2.6 * d, 0, 2 * Math.PI); c.fillStyle = colors[n]; c.fill();
+        c.beginPath(); c.arc(ex, ey, 5 * d, 0, 2 * Math.PI); c.fillStyle = rgba(WHITE, 0.12); c.fill();
+      }
+    });
+  });
+  return new Rect(px0, r.y, pw, ph);
+};
+
+// Histogramme avec axes : barres vectorielles à leur hauteur exacte, seuils en tirets
+W.bars = (scr, r, values, o = {}) => {
+  const fmt = o.fmt || (v => String(+v.toFixed(1))), vmin = o.vmin || 0, vmax = o.vmax != null ? o.vmax : 100;
+  const bw = o.bw || 2, gap = o.gap != null ? o.gap : 1, labels = o.labels || [], xlab = o.xlab, now = o.now, limits = o.limits || [];
+  const under = labels.length > 0 || !!xlab;
+  const ph = r.h - (under ? 2 : 1) - (now != null ? 1 : 0), y0 = r.y + (now != null ? 1 : 0);
+  if (ph < 2 || !values.length) return 0;
+  const ticks = o.yticks || (ph < 9 ? [vmin, (vmin + vmax) / 2, vmax] : [0, 1, 2, 3, 4].map(i => vmin + (vmax - vmin) * i / 4));
+  const labs = ticks.map(fmt), gw = Math.max(...labs.map(slen)), ax = r.x + gw;
+  const n = values.length, pw = Math.min(r.r - ax - 1, n * (bw + gap) + gap);
+  const cur = (now != null && now < n) ? values[now] : values[n - 1];
+  const yRow = v => 0.5 + (vmax - v) / (vmax - vmin) * ph, rowOf = v => Math.max(0, Math.min(ph, Math.round(yRow(v) - 0.5)));
+  for (let i = 0; i < ph; i++) scr.put(ax, y0 + i, '│', t.L);
+  ticks.forEach((v, k) => { const rw = rowOf(v); scr.put(r.x, y0 + rw, rjustS(labs[k], gw), t.D); if (rw < ph) scr.put(ax, y0 + rw, '┤', t.L); });
+  scr.put(ax, y0 + ph, '└' + '─'.repeat(pw), t.L);
+  const bars = [];
+  values.forEach((v, i) => {
+    const bx = ax + 1 + gap + i * (bw + gap);
+    if (bx + bw > ax + 1 + pw) return;
+    const st = o.styles ? o.styles[i] : ((o.alert && o.alert(v)) ? t.RR : t.N);
+    if (v != null) bars.push([bx - ax - 1, bw, v, STYLES[st].fg]);
+    if (labels.length && i < labels.length) { scr.put(bx, y0 + ph, '┴', t.L); scr.put(bx, y0 + ph + 1, clip(labels[i], bw + gap), t.F); }
+    if (xlab && xlab[i] != null) { scr.put(bx, y0 + ph, '┴', t.L); const lab = xlab[i]; scr.put(Math.max(ax + 1, bx - Math.floor(slen(lab) / 2)), y0 + ph + 1, lab, i === now ? t.B : t.F); }
+    if (i === now) { const txt = '▼ ' + (v != null ? fmt(v) : '—') + (o.unit || ''); scr.put(Math.min(bx, ax + pw - slen(txt) + 1), r.y, txt, t.B); }
+  });
+  const limAct = limits.map(([v, , , lo]) => cur != null && (lo === 'lo' ? cur <= v : cur >= v));
+  limits.forEach(([v, , lab], k) => { if (lab) scr.put(ax + 2 + pw, y0 + rowOf(v), lab, limAct[k] ? t.RR : t.RZ); });
+  scr.vector(ax + 1, y0, pw, ph + 1, (c, b) => {
+    const d = b.d, Y = v => b.y + yRow(v) * b.ch, yb = Y(vmin);
+    c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3); c.beginPath();
+    ticks.forEach(v => { if (v !== vmin) { const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x, yy); c.lineTo(b.x + b.w, yy); } }); c.stroke(); dash(c, d, 0);
+    const gapPx = gap ? 0 : Math.max(1, Math.round(b.cw * 0.12));
+    for (const [cx, w, v, col] of bars) {
+      const yt = Y(Math.max(vmin, Math.min(vmax, v))), xx = b.x + cx * b.cw, ww = w * b.cw - gapPx;
+      const gr = c.createLinearGradient(0, yt, 0, yb); gr.addColorStop(0, col); gr.addColorStop(1, col.replace('rgb(', 'rgba(').replace(')', ',0.45)'));
+      c.fillStyle = gr; c.fillRect(Math.round(xx), Math.round(yt), Math.max(1, Math.round(ww)), Math.max(0, Math.round(yb - yt)));
+    }
+    limits.forEach(([v], k) => { c.strokeStyle = limAct[k] ? COL.RR : COL.RZ; c.lineWidth = 1.2 * d; dash(c, d, 4, 3); c.beginPath(); const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x - b.cw * 0.5, yy); c.lineTo(b.x + b.w, yy); c.stroke(); });
+    dash(c, d, 0);
+  });
+  return pw + gw + 1;
+};
+
+W.section = (scr, x, y, w, title, rt = '', rts = t.D) => {
+  scr.put(x, y, title, t.B);
+  const n = slen(title) + 1; rt = String(rt);
+  scr.put(x + n, y, '─'.repeat(Math.max(0, w - n - (rt ? slen(rt) + 1 : 0))), t.F);
+  if (rt) W.rjust(scr, x + w, y, rt, rts);
+};
+
+// ---------------------------------------------------------------------------------------- éphémérides (port d'astro.py)
+const RAD = Math.PI / 180, DEG = 180 / Math.PI;
+const A = {};
+A.norm360 = x => x - 360 * Math.floor(x / 360);
+A.norm180 = x => { x = A.norm360(x); return x > 180 ? x - 360 : x; };
+A.jd = t => t / 86400 + 2440587.5;
+A.gmst = t => A.norm360(280.46061837 + 360.98564736629 * (A.jd(t) - 2451545.0));
+A.eclToEq = (lam, bet, eps) => {
+  lam *= RAD; bet *= RAD; eps *= RAD;
+  const ra = Math.atan2(Math.sin(lam) * Math.cos(eps) - Math.tan(bet) * Math.sin(eps), Math.cos(lam));
+  const dec = Math.asin(Math.sin(bet) * Math.cos(eps) + Math.cos(bet) * Math.sin(eps) * Math.sin(lam));
+  return [A.norm360(ra * DEG), dec * DEG];
+};
+A.sun = t => {
+  const n = A.jd(t) - 2451545.0, L = A.norm360(280.460 + 0.9856474 * n), g = A.norm360(357.528 + 0.9856003 * n) * RAD;
+  const lam = L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g), eps = 23.439 - 0.0000004 * n;
+  const [ra, dec] = A.eclToEq(lam, 0, eps);
+  return [ra, dec, A.norm360(lam)];
+};
+A.moon = t => {
+  const T = (A.jd(t) - 2451545.0) / 36525;
+  const s = (a, b) => Math.sin(A.norm360(a + b * T) * RAD), c = (a, b) => Math.cos(A.norm360(a + b * T) * RAD);
+  const lam = 218.32 + 481267.881 * T + 6.29 * s(135.0, 477198.87) - 1.27 * s(259.3, -413335.36) + 0.66 * s(235.7, 890534.22)
+    + 0.21 * s(269.9, 954397.74) - 0.19 * s(357.5, 35999.05) - 0.11 * s(186.5, 966404.03);
+  const bet = 5.13 * s(93.3, 483202.02) + 0.28 * s(228.2, 960400.89) - 0.28 * s(318.3, 6003.15) - 0.17 * s(217.6, -407332.21);
+  const par = 0.9508 + 0.0518 * c(135.0, 477198.87) + 0.0095 * c(259.3, -413335.36) + 0.0078 * c(235.7, 890534.22) + 0.0028 * c(269.9, 954397.74);
+  const [ra, dec] = A.eclToEq(A.norm360(lam), bet, 23.439 - 0.0130 * T);
+  return [ra, dec, A.norm360(lam), par];
+};
+A.moonPhase = t => { const el = A.norm360(A.moon(t)[2] - A.sun(t)[2]); return [(1 - Math.cos(el * RAD)) / 2, el < 180, el]; };
+A.EL = {
+  Mercury: [0.38709927, 0.00000037, 0.20563593, 0.00001906, 7.00497902, -0.00594749, 252.25032350, 149472.67411175, 77.45779628, 0.16047689, 48.33076593, -0.12534081],
+  Venus: [0.72333566, 0.00000390, 0.00677672, -0.00004107, 3.39467605, -0.00078890, 181.97909950, 58517.81538729, 131.60246718, 0.00268329, 76.67984255, -0.27769418],
+  Earth: [1.00000261, 0.00000562, 0.01671123, -0.00004392, -0.00001531, -0.01294668, 100.46457166, 35999.37244981, 102.93768193, 0.32327364, 0.0, 0.0],
+  Mars: [1.52371034, 0.00001847, 0.09339410, 0.00007882, 1.84969142, -0.00813131, -4.55343205, 19140.30268499, -23.94362959, 0.44441088, 49.55953891, -0.29257343],
+  Jupiter: [5.20288700, -0.00011607, 0.04838624, -0.00013253, 1.30439695, -0.00183714, 34.39644051, 3034.74612775, 14.72847983, 0.21252668, 100.47390909, 0.20469106],
+  Saturn: [9.53667594, -0.00125060, 0.05386179, -0.00050991, 2.48599187, 0.00193609, 49.95424423, 1222.49362201, 92.59887831, -0.41897216, 113.66242448, -0.28867794],
+};
+A.helio = (p, T) => {
+  const e = A.EL[p];
+  const a = e[0] + e[1] * T, ec = e[2] + e[3] * T, I = (e[4] + e[5] * T) * RAD;
+  const L = e[6] + e[7] * T, w = e[8] + e[9] * T; let O = e[10] + e[11] * T;
+  const M = A.norm180(L - w) * RAD, om = (w - O) * RAD; O *= RAD;
+  let E = M + ec * Math.sin(M);
+  for (let i = 0; i < 8; i++) E = E - (E - ec * Math.sin(E) - M) / (1 - ec * Math.cos(E));
+  const x = a * (Math.cos(E) - ec), y = a * Math.sqrt(1 - ec * ec) * Math.sin(E);
+  const co = Math.cos(om), so = Math.sin(om), cO = Math.cos(O), sO = Math.sin(O), cI = Math.cos(I), sI = Math.sin(I);
+  return [(co * cO - so * sO * cI) * x + (-so * cO - co * sO * cI) * y, (co * sO + so * cO * cI) * x + (-so * sO + co * cO * cI) * y, (so * sI) * x + (co * sI) * y];
+};
+A.precession = T => 1.3969713 * T;
+A.planet = (p, t) => {
+  const T = (A.jd(t) - 2451545.0) / 36525;
+  let [x, y, z] = A.helio(p, T); const [ex, ey, ez] = A.helio('Earth', T);
+  x -= ex; y -= ey; z -= ez;
+  const lam = A.norm360(Math.atan2(y, x) * DEG + A.precession(T)), bet = Math.atan2(z, Math.sqrt(x * x + y * y)) * DEG;
+  return A.eclToEq(lam, bet, 23.43928 - 0.0130042 * T);
+};
+A.precess = (ra, dec, t) => {
+  const T = (A.jd(t) - 2451545.0) / 36525, e = 23.43928 * RAD, a = ra * RAD, d = dec * RAD;
+  const lam = Math.atan2(Math.sin(a) * Math.cos(e) + Math.tan(d) * Math.sin(e), Math.cos(a)) * DEG;
+  const bet = Math.asin(Math.sin(d) * Math.cos(e) - Math.cos(d) * Math.sin(e) * Math.sin(a)) * DEG;
+  return A.eclToEq(A.norm360(lam + A.precession(T)), bet, 23.43928 - 0.0130042 * T);
+};
+A.PLANETS = [['MERCURY', 'Mercury'], ['VENUS', 'Venus'], ['MARS', 'Mars'], ['JUPITER', 'Jupiter'], ['SATURN', 'Saturn']];
+A.STARS = [['SIRIUS', 101.287, -16.716], ['VEGA', 279.235, 38.784], ['ARCTURUS', 213.915, 19.182], ['CAPELLA', 79.172, 45.998],
+  ['RIGEL', 78.634, -8.202], ['BETELGEUSE', 88.793, 7.407], ['ALTAIR', 297.696, 8.868], ['DENEB', 310.358, 45.280],
+  ['ALDEBARAN', 68.980, 16.509], ['SPICA', 201.298, -11.161], ['ANTARES', 247.352, -26.432], ['POLARIS', 37.955, 89.264],
+  ['REGULUS', 152.093, 11.967], ['PROCYON', 114.825, 5.225], ['FOMALHAUT', 344.413, -29.622]];
+A.altaz = (ra, dec, lat, lon, t) => {
+  const H = A.norm360(A.gmst(t) + lon - ra) * RAD, d = dec * RAD, f = lat * RAD;
+  const alt = Math.asin(Math.sin(f) * Math.sin(d) + Math.cos(f) * Math.cos(d) * Math.cos(H));
+  const az = Math.atan2(-Math.sin(H) * Math.cos(d), Math.sin(d) * Math.cos(f) - Math.cos(d) * Math.sin(f) * Math.cos(H));
+  return [A.norm360(az * DEG), alt * DEG];
+};
+A.subpoint = (ra, dec, t) => [dec, A.norm180(ra - A.gmst(t))];
+A.dist = (la1, lo1, la2, lo2) => {
+  const p1 = la1 * RAD, p2 = la2 * RAD, dl = (lo2 - lo1) * RAD;
+  return 6371 * Math.acos(Math.max(-1, Math.min(1, Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos(dl))));
+};
+A.riseSet = (fn, lat, lon, t0, h0) => {
+  let rise = null, set = null;
+  const alt = tt => { const [ra, dec] = fn(tt); return A.altaz(ra, dec, lat, lon, tt)[1]; };
+  let prev = alt(t0);
+  for (let tt = t0 + 300; tt <= t0 + 36 * 3600; tt += 300) {
+    const a = alt(tt);
+    if (prev < h0 && a >= h0 && rise == null) rise = tt - 300 + 300 * (h0 - prev) / (a - prev);
+    if (prev >= h0 && a < h0 && set == null) set = tt - 300 + 300 * (prev - h0) / (prev - a);
+    if (rise != null && set != null) break;
+    prev = a;
+  }
+  return [rise, set];
+};
+// ISS (TLE) : propagation képlérienne + J2 séculaire, comme astro.py
+const MU = 398600.4418, RE = 6378.137, J2 = 1.08263e-3;
+A.daysFromCivil = (y, m, d) => {
+  y -= m <= 2 ? 1 : 0;
+  const era = Math.floor(y / 400), yoe = y - era * 400;
+  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+  return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468;
+};
+A.parseTle = text => {
+  let l1 = null, l2 = null;
+  for (const line of String(text || '').split(/\r?\n/)) { if (line.slice(0, 2) === '1 ') l1 = line; else if (line.slice(0, 2) === '2 ') l2 = line; }
+  if (!l1 || !l2) return null;
+  const yy = parseInt(l1.slice(18, 20), 10), doy = parseFloat(l1.slice(20, 32));
+  let ndot = parseFloat(l1.slice(33, 43)); if (!isFinite(ndot)) ndot = 0;
+  const year = yy < 57 ? 2000 + yy : 1900 + yy;
+  const r = { epoch: A.daysFromCivil(year, 1, 1) * 86400 + (doy - 1) * 86400, ndot,
+    inc: parseFloat(l2.slice(8, 16)), raan: parseFloat(l2.slice(17, 25)), ecc: parseFloat('0.' + l2.slice(26, 33)),
+    argp: parseFloat(l2.slice(34, 42)), M: parseFloat(l2.slice(43, 51)), n: parseFloat(l2.slice(52, 63)) };
+  return [r.inc, r.raan, r.ecc, r.n].every(isFinite) ? r : null;
+};
+A.eci = (tle, t) => {
+  const dt = (t - tle.epoch) / 86400, nrev = tle.n + 2 * tle.ndot * dt, n = nrev * 2 * Math.PI / 86400;
+  const a = Math.cbrt(MU / (n * n)), e = tle.ecc, i = tle.inc * RAD, p = a * (1 - e * e);
+  const k = 1.5 * J2 * Math.pow(RE / p, 2) * n;
+  const raan = tle.raan * RAD - k * Math.cos(i) * dt * 86400, argp = tle.argp * RAD + k * (2 - 2.5 * Math.sin(i) ** 2) * dt * 86400;
+  const m = tle.M / 360 + tle.n * dt + tle.ndot * dt * dt, M = (m - Math.floor(m)) * 2 * Math.PI;
+  let E = M; for (let j = 0; j < 8; j++) E = E - (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+  const x = a * (Math.cos(E) - e), y = a * Math.sqrt(1 - e * e) * Math.sin(E);
+  const co = Math.cos(argp), so = Math.sin(argp), cO = Math.cos(raan), sO = Math.sin(raan), cI = Math.cos(i), sI = Math.sin(i);
+  return [(co * cO - so * sO * cI) * x + (-so * cO - co * sO * cI) * y, (co * sO + so * cO * cI) * x + (-so * sO + co * cO * cI) * y, (so * sI) * x + (co * sI) * y];
+};
+A.issAt = (tle, t) => {
+  const [x, y, z] = A.eci(tle, t), g = A.gmst(t) * RAD;
+  const xe = x * Math.cos(g) + y * Math.sin(g), ye = -x * Math.sin(g) + y * Math.cos(g), r = Math.sqrt(x * x + y * y + z * z);
+  const [sra, sdec] = A.sun(t);
+  const sx = Math.cos(sdec * RAD) * Math.cos(sra * RAD), sy = Math.cos(sdec * RAD) * Math.sin(sra * RAD), sz = Math.sin(sdec * RAD);
+  const dot = x * sx + y * sy + z * sz;
+  let lit = true;
+  if (dot < 0) { const px = x - dot * sx, py = y - dot * sy, pz = z - dot * sz; lit = Math.sqrt(px * px + py * py + pz * pz) > RE; }
+  return [Math.asin(z / r) * DEG, A.norm180(Math.atan2(ye, xe) * DEG), r - RE, lit, x, y, z];
+};
+A.issLook = (tle, t, lat, lon) => {
+  const [, , , lit, x, y, z] = A.issAt(tle, t), th = A.gmst(t) * RAD + lon * RAD, f = lat * RAD;
+  const ox = RE * Math.cos(f) * Math.cos(th), oy = RE * Math.cos(f) * Math.sin(th), oz = RE * Math.sin(f);
+  const rx = x - ox, ry = y - oy, rz = z - oz;
+  const s = Math.sin(f) * Math.cos(th) * rx + Math.sin(f) * Math.sin(th) * ry - Math.cos(f) * rz;
+  const e = -Math.sin(th) * rx + Math.cos(th) * ry;
+  const u = Math.cos(f) * Math.cos(th) * rx + Math.cos(f) * Math.sin(th) * ry + Math.sin(f) * rz;
+  const rng = Math.sqrt(rx * rx + ry * ry + rz * rz);
+  return [A.norm360(Math.atan2(e, -s) * DEG), Math.asin(u / rng) * DEG, rng, lit];
+};
+A.nextPass = (tle, lat, lon, t0, horizonH, minEl, needVisible) => {
+  const step = 30, tEnd = t0 + horizonH * 3600;
+  let tt = t0, el = A.issLook(tle, tt, lat, lon)[1];
+  if (el >= minEl) while (el >= minEl && tt > t0 - 1200) { tt -= step; el = A.issLook(tle, tt, lat, lon)[1]; }
+  while (tt < tEnd) {
+    let e = A.issLook(tle, tt, lat, lon)[1];
+    if (e >= minEl) {
+      const p = { aos: tt, track: [], maxEl: -90, tMax: null, visible: false };
+      while (e >= minEl) {
+        const [az, ee, , lit] = A.issLook(tle, tt, lat, lon); e = ee;
+        if (e < minEl) break;
+        p.track.push([az, e]);
+        if (e > p.maxEl) { p.maxEl = e; p.tMax = tt; }
+        const [sra, sdec] = A.sun(tt);
+        if (lit && A.altaz(sra, sdec, lat, lon, tt)[1] < -6) p.visible = true;
+        tt += step;
+      }
+      p.los = tt;
+      if (p.visible || !needVisible) return p;
+    }
+    tt += step;
+  }
+  return null;
+};
+A.clampedDec = sunLat => { let d = sunLat * RAD; if (Math.abs(d) < 0.01) d = d >= 0 ? 0.01 : -0.01; return d; };
+A.terminator = (t, n = 91) => {
+  const [ra, dec] = A.sun(t), [sunLat, sunLon] = A.subpoint(ra, dec, t), d = A.clampedDec(sunLat), pts = [];
+  for (let k = 0; k < n; k++) { const lon = -180 + 360 * k / (n - 1); pts.push([Math.atan(-Math.cos((lon - sunLon) * RAD) / Math.tan(d)) * DEG, lon]); }
+  return { sunLat, sunLon, points: pts, nightPole: d < 0 ? 90 : -90 };
+};
+A.isNight = (lat, lon, sunLat, sunLon) => {
+  const d = A.clampedDec(sunLat), edge = Math.atan(-Math.cos((lon - sunLon) * RAD) / Math.tan(d)) * DEG;
+  return d < 0 ? lat > edge : lat < edge;
+};
+A.issTrack = (tle, t, back = 46, ahead = 139, step = 60) => {
+  const nb = Math.floor(back * 60 / step), na = Math.floor(ahead * 60 / step), past = [], fut = [];
+  for (let k = -nb; k <= 0; k++) past.push(A.issAt(tle, t + step * k).slice(0, 2));
+  for (let k = 0; k <= na; k++) fut.push(A.issAt(tle, t + step * k).slice(0, 2));
+  return { past, future: fut };
+};
+A.footprint = (lat, lon, alt = 420, step = 10) => {
+  const rho = Math.acos(6371 / (6371 + alt)), p = lat * RAD, l = lon * RAD, out = [];
+  for (let a = 0; a <= 360; a += step) {
+    const th = a * RAD, la = Math.asin(Math.sin(p) * Math.cos(rho) + Math.cos(p) * Math.sin(rho) * Math.cos(th));
+    const lo = l + Math.atan2(Math.sin(th) * Math.sin(rho) * Math.cos(p), Math.cos(rho) - Math.sin(p) * Math.sin(la));
+    out.push([la * DEG, A.norm180(lo * DEG)]);
+  }
+  return out;
+};
+A.localMidnight = t => { const d = new Date(t * 1000); d.setHours(0, 0, 0, 0); return d.getTime() / 1000; };
+A.moonPhaseName = (f, wax) => f < 0.03 ? 'NEW MOON' : f > 0.97 ? 'FULL MOON' : f < 0.47 ? (wax ? 'WAXING CRESC.' : 'WANING CRESC.')
+  : f <= 0.53 ? (wax ? 'FIRST QUARTER' : 'LAST QUARTER') : (wax ? 'WAXING GIBB.' : 'WANING GIBB.');
+A.sunInfo = (t, lat, lon) => {
+  const [ra, dec] = A.sun(t), el = A.altaz(ra, dec, lat, lon, t)[1];
+  const [r, s] = A.riseSet(A.sun, lat, lon, A.localMidnight(t), -0.833);
+  return { el, az: A.altaz(ra, dec, lat, lon, t)[0], day: el > 0, rise: r, set: s, length: (r != null && s != null && s > r) ? s - r : null };
+};
+A.moonInfo = (t, lat, lon) => {
+  const [ra, dec] = A.moon(t), [az, el] = A.altaz(ra, dec, lat, lon, t);
+  const [r, s] = A.riseSet(A.moon, lat, lon, A.localMidnight(t), 0.125), [frac, wax] = A.moonPhase(t);
+  return { az, el, up: el > 0, rise: r, set: s, frac, waxing: wax, phase: A.moonPhaseName(frac, wax) };
+};
+A.skyObjects = (t, lat, lon) => {
+  const objs = [];
+  const [mra, mdec, , par] = A.moon(t);
+  let [maz, mel] = A.altaz(mra, mdec, lat, lon, t); mel -= par * Math.cos(mel * RAD);
+  if (mel > 0) objs.push({ name: 'MOON', az: maz, el: mel, kind: 'moon', list: true });
+  const [sra, sdec] = A.sun(t), [saz, sel] = A.altaz(sra, sdec, lat, lon, t);
+  if (sel > 0) objs.push({ name: 'SUN', az: saz, el: sel, kind: 'sun', list: true });
+  for (const [name, key] of A.PLANETS) {
+    const [pra, pdec] = A.planet(key, t), [az, el] = A.altaz(pra, pdec, lat, lon, t);
+    if (el > 0) objs.push({ name, az, el, kind: 'planet', list: true });
+  }
+  objs.sort((a, b) => b.el - a.el);
+  for (const [name, ra0, dec0] of A.STARS) {
+    const [ra, dec] = A.precess(ra0, dec0, t), [az, el] = A.altaz(ra, dec, lat, lon, t);
+    if (el > 5) objs.push({ name, az, el, kind: 'star', list: false });
+  }
+  return objs;
+};
+
+// ---------------------------------------------------------------------------------------- ДЕП : tendance barométrique
+// Port de Scripts/lib/pressure_trend.lua (lui-même port de PK8-S16A src/core/pressure_trend, fw 0.4.1).
+// Entrée en pascals entiers, temps en ms, stockage en 0,1 hPa ; seuils en 0,1 hPa et 0,1 hPa/h.
+const PT = { WARMING: 0, STEADY: 1, WATCH: 2, ALERT: 3, RING_MAX: 37, NAMES: ['WARMING', 'STEADY', 'WATCH', 'ALERT'] };
+PT.defaults = () => ({ block_ms: 300000, min_span_ms: 1800000, hold_ms: 3600000, watch_rate: 7, watch_drop: 10, alert_rate: 13, alert_drop: 20, ring_len: PT.RING_MAX });
+PT.reset = (s = {}) => {
+  s.ring = new Array(PT.RING_MAX).fill(0);
+  s.block_start = 0; s.hold_until = 0; s.acc_sum = 0; s.acc_n = 0; s.head = 0; s.count = 0; s.level = PT.WARMING; s.primed = false;
+  return s;
+};
+PT.level = s => s.level;
+PT.span_ms = (s, c) => s.count < 2 ? 0 : (s.count - 1) * c.block_ms;
+const ptIdx = (s, c, i) => { const len = c.ring_len, oldest = (s.head + len - s.count) % len; return (oldest + i) % len; };
+PT.drop = (s, c) => s.count < 2 ? 0 : s.ring[ptIdx(s, c, 0)] - s.ring[ptIdx(s, c, s.count - 1)];
+PT.raw = (s, c) => {
+  const span = PT.span_ms(s, c);
+  if (span < c.min_span_ms) return PT.WARMING;
+  const drop = PT.drop(s, c), span_s = Math.floor(span / 1000);
+  if (drop <= 0 || span_s <= 0) return PT.STEADY;
+  const x = drop * 3600;
+  if (drop >= c.alert_drop && x >= c.alert_rate * span_s) return PT.ALERT;
+  if (drop >= c.watch_drop && x >= c.watch_rate * span_s) return PT.WATCH;
+  return PT.STEADY;
+};
+PT.applyHold = (s, c, raw, now) => {
+  if (raw === PT.WARMING) { s.level = PT.WARMING; s.hold_until = now; return; }
+  if (s.level === PT.WARMING) { s.level = raw; s.hold_until = now + c.hold_ms; return; }
+  if (raw > s.level) { s.level = raw; s.hold_until = now + c.hold_ms; }
+  else if (raw === s.level) s.hold_until = now + c.hold_ms;
+  else if (now - s.hold_until >= 0) { s.level -= 1; if (s.level > PT.STEADY) s.hold_until = now + c.hold_ms; }
+};
+PT.update = (s, c, p_pa, now) => {
+  if (!s.primed) { s.primed = true; s.block_start = now; s.acc_sum = 0; s.acc_n = 0; }
+  s.acc_sum += p_pa; s.acc_n += 1;
+  if (now - s.block_start < c.block_ms) return s.level;
+  if (s.acc_n > 0) {
+    const avg_pa = Math.floor(s.acc_sum / s.acc_n), avg_dhpa = Math.floor((avg_pa + 5) / 10);
+    s.ring[s.head] = avg_dhpa; s.head = (s.head + 1) % c.ring_len;
+    if (s.count < c.ring_len) s.count += 1;
+  }
+  s.block_start += c.block_ms;
+  if (now - s.block_start >= c.block_ms) { PT.reset(s); s.primed = true; s.block_start = now; return s.level; }
+  s.acc_sum = 0; s.acc_n = 0;
+  PT.applyHold(s, c, PT.raw(s, c), now);
+  return s.level;
+};
+PT.serialize = s => [s.block_start, s.hold_until, s.acc_sum, s.acc_n, s.head, s.count, s.level, s.primed ? 1 : 0, s.ring.join(',')].join(';');
+PT.deserialize = line => {
+  const p = String(line || '').split(';');
+  if (p.length < 9) return null;
+  const s = PT.reset({});
+  [s.block_start, s.hold_until, s.acc_sum, s.acc_n, s.head, s.count, s.level] = p.slice(0, 7).map(v => Number(v) || 0);
+  s.primed = p[7] === '1';
+  p[8].split(',').forEach((v, i) => { if (i < PT.RING_MAX) s.ring[i] = Number(v) || 0; });
+  return s;
+};
+
+if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W, A, PT, clip, chars, slen, ljust, rjustS, center, COL, CELL };
+
+/* =====================================================================================================
+   ГРАФИТ · GRAFIT OS MOBILE — capteurs du téléphone, voyants, formats, pupitre tactile, rendu.
+   Chaque source est LIVE (capteur réel), SIM (simulée, signalée partout) ou N/A (absente sur cette
+   plateforme). Les capteurs que le navigateur n'expose pas (baromètre, température batterie, lumière,
+   proximité) arrivent par la passerelle de l'APK :
+     window.dispatchEvent(new CustomEvent('grafit-native', {detail: {baro: 1008.2, battTemp: 31.5,
+                                                                     light: 120, prox: 5, ambient: 22.4}}))
+   baro en hPa (pression station), battTemp et ambient en °C, light en lux, prox en cm.
+   ===================================================================================================== */
+
+// ---------------------------------------------------------------------------------------- configuration
+const CFG = {
+  VERSION: '1.0.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
+  // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
+  FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
+  // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
+  AL: { BattLowCaut: 20, BattLowCrit: 10, HystPct: 3, BattTempCaut: 40, BattTempCrit: 45, HystTemp: 3,
+    GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
+    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, SensorsFrozen: 10, ConfirmSecs: 5 },
+  TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
+  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
+  TLE_URL: 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
+};
+const now = () => Date.now() / 1000;
+const hhmm = ts => { const d = new Date(ts * 1000); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+const hhmmss = ts => { const d = new Date(ts * 1000); return hhmm(ts) + ':' + pad2(d.getSeconds()); };
+const sgn = (v, d = 0) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
+const durHM = s => s == null || !isFinite(s) ? '—' : Math.floor(s / 3600) + 'h' + pad2(Math.floor(s % 3600 / 60));
+const fmtLL = (lat, lon) => Math.abs(lat).toFixed(2) + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(2) + (lon >= 0 ? 'E' : 'W');
+const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
+
+// ---------------------------------------------------------------------------------------- réglages (par appareil)
+const SET = { sim: 'AUTO', haptics: true, pad: true, scale: 1, wake: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
+function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
+function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
+
+// ---------------------------------------------------------------------------------------- journal de bord (FEED)
+const FEED = [];
+function log(tag, msg, warn = false) { FEED.push([now(), tag, msg, warn]); if (FEED.length > 300) FEED.shift(); }
+
+// ---------------------------------------------------------------------------------------- sources
+class Hist {
+  constructor(cap, every) { this.v = []; this.cap = cap; this.every = every; this.t = 0; }
+  push(v, ts = now(), force = false) { if (!force && ts - this.t < this.every) return; this.t = ts; this.v.push(v); if (this.v.length > this.cap) this.v.shift(); }
+  last() { return this.v.length ? this.v[this.v.length - 1] : null; }
+}
+// mode : wait (en attente du 1er relevé), live, sim, na (absent ici), off (désarmé)
+const SRC = {};
+const SOURCES = [
+  ['orient', 'ORIENT', 'DEVICE ORIENTATION'], ['motion', 'MOTION', 'ACCELEROMETER · GYRO'], ['geo', 'GNSS', 'GEOLOCATION'],
+  ['batt', 'BATTERY', 'BATTERY STATUS'], ['net', 'NETWORK', 'NETWORK INFORMATION'], ['mic', 'MIC', 'MICROPHONE'],
+  ['baro', 'BARO', 'BAROMETER · APK'], ['btemp', 'BATT TEMP', 'BATTERY THERMISTOR · APK'], ['light', 'LIGHT', 'AMBIENT LIGHT · APK'],
+  ['amb', 'AMBIENT T', 'AMBIENT TEMP · APK'], ['wx', 'WEATHER', 'OPEN-METEO'], ['tle', 'ISS TLE', 'CELESTRAK'],
+];
+SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
+SRC.mic.mode = 'off';
+const HIST = { g: new Hist(400, 0.25), batt: new Hist(600, 30), press: new Hist(200, 60), rtt: new Hist(300, 2), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
+
+function feedLive(k, v) {
+  const s = SRC[k];
+  if (SET.sim === 'ON') return;                                      // tout simulé : on ignore les capteurs
+  if (s.mode !== 'live') { log('SYS', SRC_NAME[k] + ' LIVE'); if (k === 'baro') resetTrend('BARO LIVE'); }
+  s.mode = 'live'; s.liveT = now(); s.t = now();
+  Object.assign(s.v, v);
+}
+const SRC_NAME = Object.fromEntries(SOURCES.map(([k, n]) => [k, n]));
+
+// passerelle de l'APK
+window.addEventListener('grafit-native', e => {
+  const d = e.detail || {};
+  if (d.baro != null) feedLive('baro', { hpa: +d.baro });
+  if (d.battTemp != null) feedLive('btemp', { c: +d.battTemp });
+  if (d.light != null) feedLive('light', { lux: +d.light });
+  if (d.ambient != null) feedLive('amb', { c: +d.ambient });
+});
+
+// matrice de rotation W3C (alpha, beta, gamma) -> repère terrestre (x Est, y Nord, z zénith)
+function rotM(a, b, g) {
+  const x = b * RAD, y = g * RAD, z = a * RAD, cX = Math.cos(x), cY = Math.cos(y), cZ = Math.cos(z), sX = Math.sin(x), sY = Math.sin(y), sZ = Math.sin(z);
+  return [[cZ * cY - sZ * sX * sY, -cX * sZ, cY * sZ * sX + cZ * sY], [cY * sZ + cZ * sX * sY, cZ * cX, sZ * sY - cZ * cY * sX], [-cX * sY, sX, cX * cY]];
+}
+function aimFromOrient(o) {
+  const m = rotM(o.alpha, o.beta, o.gamma);
+  const cam = [-m[0][2], -m[1][2], -m[2][2]];                       // axe de l'appareil photo arrière
+  const top = [m[0][1], m[1][1], m[2][1]];                          // haut de l'écran
+  const el = Math.asin(Math.max(-1, Math.min(1, cam[2]))) * DEG;
+  const hdg = A.norm360(Math.atan2(top[0], top[1]) * DEG);
+  const az = el < -60 ? hdg : A.norm360(Math.atan2(cam[0], cam[1]) * DEG);
+  return { az, el, hdg, grav: [m[2][0] * 9.80665, m[2][1] * 9.80665, m[2][2] * 9.80665] };
+}
+
+function startSensors() {
+  const onOr = e => {
+    if (e.alpha == null && e.beta == null) return;
+    let alpha = e.alpha || 0;
+    if (e.webkitCompassHeading != null) alpha = 360 - e.webkitCompassHeading;   // iOS
+    feedLive('orient', { alpha, beta: e.beta || 0, gamma: e.gamma || 0, abs: !!(e.absolute || e.webkitCompassHeading != null || e.type === 'deviceorientationabsolute') });
+  };
+  if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', onOr);
+  else window.addEventListener('deviceorientation', onOr);
+  window.addEventListener('devicemotion', e => {
+    const a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    const r = e.rotationRate || {};
+    feedLive('motion', { ax: a.x, ay: a.y, az: a.z, ra: r.alpha || 0, rb: r.beta || 0, rg: r.gamma || 0 });
+  });
+  try {
+    if (navigator.geolocation) navigator.geolocation.watchPosition(p => {
+      const c = p.coords;
+      feedLive('geo', { lat: c.latitude, lon: c.longitude, alt: c.altitude, acc: c.accuracy, altAcc: c.altitudeAccuracy, speed: c.speed, course: c.heading, fixT: p.timestamp / 1000 });
+    }, err => { if (SRC.geo.mode === 'wait') log('NAV', 'GNSS ' + (err.code === 1 ? 'PERMISSION DENIED' : 'UNAVAILABLE'), true); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
+  } catch (e) { /* refusé par le cadre */ }
+  try {
+    if (navigator.getBattery) navigator.getBattery().then(b => {
+      const up = () => feedLive('batt', { level: b.level, charging: b.charging, tFull: b.chargingTime, tEmpty: b.dischargingTime });
+      up(); ['levelchange', 'chargingchange', 'chargingtimechange', 'dischargingtimechange'].forEach(ev => b.addEventListener(ev, up));
+      setInterval(up, 30000);
+    }).catch(() => {});
+  } catch (e) { /* idem */ }
+  const net = () => {
+    const c = navigator.connection;
+    if (!c) return;
+    feedLive('net', { online: navigator.onLine, type: c.type || '', eff: c.effectiveType || '', down: c.downlink, rtt: c.rtt, save: !!c.saveData });
+  };
+  if (navigator.connection) { navigator.connection.addEventListener('change', net); setInterval(net, 2000); net(); }
+  window.addEventListener('online', () => { log('NET', 'LINK UP'); net(); });
+  window.addEventListener('offline', () => { log('NET', 'LINK LOST', true); net(); });
+}
+
+// iOS : l'orientation demande une autorisation sur un geste
+function armSensorsGesture() {
+  try { if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) DeviceOrientationEvent.requestPermission().catch(() => {}); } catch (e) { /* */ }
+  try { if (typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission) DeviceMotionEvent.requestPermission().catch(() => {}); } catch (e) { /* */ }
+}
+
+// micro : niveau en dBFS (non étalonné)
+let MIC = null;
+async function micArm(on) {
+  if (!on) {
+    if (MIC) { MIC.stream.getTracks().forEach(tr => tr.stop()); try { MIC.ctx.close(); } catch (e) { /* */ } MIC = null; }
+    SRC.mic.mode = 'off'; log('AUD', 'MIC DISARMED'); return;
+  }
+  SRC.mic.mode = 'wait'; SRC.mic.armed = now();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)(), an = ctx.createAnalyser();
+    an.fftSize = 2048; ctx.createMediaStreamSource(stream).connect(an);
+    MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize) };
+    log('AUD', 'MIC ARMED');
+  } catch (e) { log('AUD', 'MIC REFUSED · ' + (e.name || 'ERROR'), true); }
+}
+function micPoll() {
+  if (!MIC) return;
+  MIC.an.getFloatTimeDomainData(MIC.buf);
+  let s = 0; for (const v of MIC.buf) s += v * v;
+  feedLive('mic', { db: Math.max(-90, 10 * Math.log10(s / MIC.buf.length + 1e-12)) });
+}
+
+// ---------------------------------------------------------------------------------------- flux réseau
+const NETQ = { active: 0, lastEnd: 0 };
+async function getText(url) {
+  NETQ.active++;
+  try {
+    const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 12000);
+    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+    clearTimeout(to);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return await r.text();
+  } finally { NETQ.active--; NETQ.lastEnd = now(); }
+}
+let TLE = A.parseTle(CFG.TLE), TLE_SRC = 'CACHED';
+const WX = { t: 0, tryT: 0, failed: false };
+async function fetchWx() {
+  WX.tryT = now();
+  const { lat, lon } = here();
+  try {
+    const j = JSON.parse(await getText(CFG.WX_URL.replace('%LAT%', lat.toFixed(3)).replace('%LON%', lon.toFixed(3))));
+    const c = j.current, h = j.hourly;
+    const nowIso = c.time.slice(0, 13);
+    let ni = h.time.findIndex(x => x.slice(0, 13) === nowIso); if (ni < 0) ni = 24;
+    feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
+      dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni, at: now() });
+    if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
+    WX.failed = false; WX.t = now();
+    if (c.pressure_msl < CFG.FCU.DavMin) log('WX', 'QNH ' + c.pressure_msl.toFixed(1) + ' hPa < ' + CFG.FCU.DavMin);
+  } catch (e) {
+    if (!WX.failed) log('WX', 'WEATHER FEED UNREACHABLE', true);
+    WX.failed = true;
+  }
+}
+async function fetchTle() {
+  try { const tl = A.parseTle(await getText(CFG.TLE_URL)); if (tl) { TLE = tl; TLE_SRC = 'CELESTRAK'; feedLive('tle', { epoch: tl.epoch }); log('ISS', 'TLE UPDATED · CELESTRAK'); } }
+  catch (e) { if (SRC.tle.mode === 'wait') log('ISS', 'TLE FEED UNREACHABLE · CACHED TLE', true); }
+}
+
+// ---------------------------------------------------------------------------------------- simulation
+const SIM = { t0: now(), seeded: false };
+const nz = (t, a, b, c) => Math.sin(t / a) * 0.6 + Math.sin(t / b + 1.3) * 0.3 + Math.sin(t / c + 4.1) * 0.1;
+function simValue(k, t) {
+  const dt = t - SIM.t0;
+  switch (k) {
+    case 'orient': return { alpha: A.norm360(360 - (200 + 110 * nz(t, 41, 13, 5))), beta: 72 + 14 * nz(t, 9, 23, 3), gamma: 9 * nz(t, 13, 7, 2), abs: true };
+    case 'motion': {
+      const o = simValue('orient', t), m = rotM(o.alpha, o.beta, o.gamma), G = 9.80665;
+      const sp = (dt % 75) < 0.35 ? 2.1 * G : 0;                      // choc bref toutes les 75 s
+      return { ax: m[2][0] * G + sp + 0.15 * Math.sin(t * 7.1), ay: m[2][1] * G + 0.12 * Math.sin(t * 5.3), az: m[2][2] * G + 0.1 * Math.sin(t * 6.7), ra: 18 * nz(t, 2, 0.7, 0.3), rb: 12 * nz(t, 1.7, 0.9, 0.4), rg: 9 * nz(t, 2.3, 1.1, 0.5) };
+    }
+    case 'geo': return { lat: 44.8378 + 0.0003 * Math.sin(t / 50), lon: -0.5792 + 0.0004 * Math.cos(t / 61), alt: 24 + 2 * Math.sin(t / 30), acc: 11 + 5 * Math.sin(t / 17), altAcc: 8, speed: 0.4 + 0.3 * Math.sin(t / 9), course: null, fixT: t - 1 };
+    case 'batt': return { level: Math.max(0.05, 0.64 - dt / 36000), charging: false, tFull: Infinity, tEmpty: 6.2 * 3600 - dt };
+    case 'net': return { online: true, type: 'wifi', eff: '4g', down: 38 + 6 * Math.sin(t / 20), rtt: 50 + 18 * nz(t, 5, 2, 1) + ((dt % 47) < 4 ? 320 : 0), save: false };
+    case 'mic': return { db: -44 + 7 * nz(t, 1.3, 0.4, 0.17) + ((dt % 40) < 4.5 ? 34 : 0) };
+    case 'baro': return { hpa: 1009.6 - 0.9 * dt / 3600 + 0.04 * Math.sin(t / 7) };
+    case 'btemp': return { c: 31.5 + 1.4 * Math.sin(t / 90) };
+    case 'light': return { lux: 180 + 60 * Math.sin(t / 25) };
+    case 'wx': {
+      const hp = [], ht = [], hpop = [], htime = [];
+      const base = new Date(); base.setMinutes(0, 0, 0); base.setHours(base.getHours() - 24);
+      for (let i = 0; i < 72; i++) {
+        const d = new Date(base.getTime() + i * 3600000);
+        htime.push(d.toISOString()); hp.push(+(1016.4 - i * 0.22 + 0.6 * Math.sin(i / 5)).toFixed(1));
+        ht.push(+(14 + 5 * Math.sin((d.getHours() - 9) / 24 * 2 * Math.PI)).toFixed(1)); hpop.push(Math.max(0, Math.min(100, Math.round(20 + i * 1.1 + 15 * Math.sin(i / 3)))));
+      }
+      return { temp: 17.6, feel: 16.9, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, at: t };
+    }
+    default: return null;
+  }
+}
+// Sources simulées : tout en SIM forcé ; en AUTO, une source sans relevé 4 s après son armement
+const SIMABLE = ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'];
+// Mode réel : dès qu'un capteur du téléphone (orientation, mouvement, GNSS) répond, plus rien n'est simulé en AUTO
+// (les sources sans donnée passent en N/A) ; sans aucun capteur (aperçu, ordinateur), tout ce qui manque est simulé.
+let REAL = false;
+function simTick() {
+  const t = now();
+  if (!REAL && SET.sim === 'AUTO' && ['orient', 'motion', 'geo'].some(k => SRC[k].mode === 'live')) {
+    REAL = true; log('SYS', 'PHONE SENSORS LIVE · SIM OFF');
+    for (const k of SIMABLE) if (SRC[k].mode === 'sim') { SRC[k].mode = k === 'mic' ? 'off' : 'na'; SRC[k].v = {}; if (k === 'baro') resetTrend('SIM OFF'); }
+    if (TREND_SRC === 'SIM') resetTrend('SIM OFF');
+  }
+  for (const k of SIMABLE) {
+    if (REAL && SET.sim === 'AUTO') {
+      const s = SRC[k];
+      if (s.mode === 'wait' && t - s.armed > 4 && k !== 'wx') s.mode = 'na';
+      if (k === 'wx' && WX.failed && s.mode !== 'live') s.mode = 'na';
+      if (s.mode === 'live' && k !== 'motion' && k !== 'orient' && t - s.liveT > (k === 'wx' ? CFG.FCU.WxMaxAge : (k === 'batt' ? 90 : (k === 'net' ? 10 : 20)))) { s.mode = 'wait'; s.armed = t; }
+      continue;
+    }
+    const s = SRC[k];
+    if (k === 'mic' && s.mode === 'off' && SET.sim !== 'ON') continue;
+    const stale = s.mode === 'live' && t - s.liveT > (k === 'wx' ? CFG.FCU.WxMaxAge : (k === 'batt' ? 90 : (k === 'net' ? 10 : 20)));
+    const wantSim = SET.sim === 'ON' || (SET.sim === 'AUTO' && (s.mode === 'sim' || (s.mode === 'wait' && t - s.armed > 4) || (k === 'wx' && WX.failed && s.mode !== 'live')));
+    if (wantSim && s.mode !== 'live') {
+      if (s.mode !== 'sim') { s.mode = 'sim'; if (k === 'baro') seedSimTrend(); }
+      Object.assign(s.v, simValue(k, t)); s.t = t;
+    } else if (SET.sim === 'OFF' && s.mode === 'sim') { s.mode = 'na'; s.v = {}; }
+    else if (s.mode === 'wait' && SET.sim === 'OFF' && t - s.armed > 4) s.mode = 'na';
+    if (stale && k !== 'motion' && k !== 'orient') { s.mode = 'wait'; s.armed = t; }
+  }
+  if (SET.sim === 'ON') ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'].forEach(k => { if (SRC[k].mode !== 'sim') { SRC[k].mode = 'sim'; if (k === 'baro') seedSimTrend(); } });
+  if (SRC.tle.mode === 'wait' && t - SRC.tle.armed > 15) SRC.tle.mode = 'sim';   // TLE embarqué (cache de S18)
+  if (SRC.amb.mode === 'wait' && t - SRC.amb.armed > 4) SRC.amb.mode = 'na';     // sonde ambiante : rare, APK seulement
+}
+const live = k => SRC[k].mode === 'live' || SRC[k].mode === 'sim';
+const tag = k => ({ live: 'LIVE', sim: 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[SRC[k].mode];
+const here = () => live('geo') ? { lat: SRC.geo.v.lat, lon: SRC.geo.v.lon, name: 'GNSS' } : CFG.HOME;
+
+// ---------------------------------------------------------------------------------------- grandeurs dérivées
+const DER = { u: [0, 0, 1], gPeak: 0, gPeakT: 0, prevRho: 0, prevT: 0 };
+function gravityUp() {                                         // vecteur « haut » lissé, repère de l'appareil
+  const m = SRC.motion.v; if (!live('motion')) return null;
+  const n = Math.hypot(m.ax, m.ay, m.az) || 1, k = 0.15;
+  DER.u = DER.u.map((v, i) => v + ([m.ax, m.ay, m.az][i] / n - v) * k);
+  return DER.u;
+}
+function attitude() {
+  const u = DER.u, flat = Math.abs(u[2]) >= Math.abs(u[1]);
+  if (flat) return { mode: 'FLAT', pitch: Math.atan2(u[1], u[2]) * DEG, roll: Math.atan2(-u[0], u[2]) * DEG };
+  return { mode: 'UPRIGHT', pitch: Math.atan2(-u[2], u[1]) * DEG, roll: Math.atan2(-u[0], u[1]) * DEG };
+}
+function gLoad() { const m = SRC.motion.v; return live('motion') ? Math.hypot(m.ax, m.ay, m.az) / 9.80665 : null; }
+function aim() { return live('orient') ? aimFromOrient(SRC.orient.v) : null; }
+// Pression au niveau de la mer (QNH) : baromètre (APK) ramené au niveau de la mer par l'altitude GNSS,
+// sinon pression météo, sinon rien.
+function pressure() {
+  if (live('baro')) {
+    const p = SRC.baro.v.hpa;
+    if (SRC.baro.mode === 'sim') return { p, src: 'SIM' };
+    const h = live('geo') && SRC.geo.v.alt != null ? SRC.geo.v.alt : null;
+    if (h == null) return { p, src: 'STATION · NO ALT' };
+    const T = live('wx') ? SRC.wx.v.temp : 15;
+    return { p: p * Math.pow(1 - 0.0065 * h / (T + 0.0065 * h + 273.15), -5.257), src: 'PHONE · QNH' };
+  }
+  if (live('wx') && now() - (SRC.wx.v.at || 0) <= CFG.FCU.WxMaxAge && SRC.wx.v.p != null) return { p: SRC.wx.v.p, src: SRC.wx.mode === 'sim' ? 'SIM' : 'WEATHER · MSL' };
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------- ДЕП
+const PTC = PT.defaults();
+let TREND = PT.reset({}), TREND_SRC = '';
+function resetTrend(why) { TREND = PT.reset({}); TREND_SRC = ''; if (why) log('FCU', 'ДЕП RESET · ' + why); }
+function seedSimTrend() {                                       // 3 h d'historique simulé pour montrer la veille
+  TREND = PT.reset({}); TREND_SRC = 'SIM';
+  const t1 = now() * 1000, t0 = t1 - 3 * 3600000;
+  HIST.press.v = [];
+  for (let ms = t0; ms <= t1; ms += 5000) {
+    const p = simValue('baro', ms / 1000).hpa;
+    PT.update(TREND, PTC, Math.round(p * 100), ms);
+    if ((ms - t0) % 60000 === 0) HIST.press.v.push(p);
+  }
+  HIST.press.t = now();
+}
+function trendTick() {
+  const pr = pressure();
+  if (!pr) { if (TREND.primed) resetTrend('NO PRESSURE SOURCE'); return; }
+  const srcKey = pr.src === 'SIM' ? 'SIM' : (pr.src.startsWith('PHONE') || pr.src.startsWith('STATION') ? 'BARO' : 'WX');
+  if (TREND_SRC && TREND_SRC !== srcKey) { resetTrend('SOURCE ' + srcKey); HIST.press.v = []; }
+  TREND_SRC = srcKey;
+  const before = TREND.level;
+  PT.update(TREND, PTC, Math.round(pr.p * 100), Date.now());
+  if (TREND.level !== before) log('DEP', 'ДЕП ' + PT.NAMES[before] + ' → ' + PT.NAMES[TREND.level], TREND.level >= PT.WATCH);
+  HIST.press.push(pr.p);
+  if (srcKey !== 'SIM') { try { localStorage.setItem('grafit.dep', srcKey + '|' + PT.serialize(TREND)); } catch (e) { /* */ } }
+}
+function restoreTrend() {
+  try {
+    const raw = localStorage.getItem('grafit.dep'); if (!raw) return;
+    const [src, line] = raw.split('|'); const s = PT.deserialize(line);
+    if (s && Date.now() - s.block_start < PTC.block_ms) { TREND = s; TREND_SRC = src; }
+  } catch (e) { /* */ }
+}
+
+// ---------------------------------------------------------------------------------------- annonciateurs + FCU
+const AL = CFG.AL;
+function hi(x, cur, caut, crit, h) { let l = 0; if (caut != null && (x >= caut || (cur >= 1 && x > caut - h))) l = 1; if (crit != null && (x >= crit || (cur >= 2 && x > crit - h))) l = 2; return l; }
+function lo(x, cur, caut, crit, h) { let l = 0; if (caut != null && (x < caut || (cur >= 1 && x < caut + h))) l = 1; if (crit != null && (x < crit || (cur >= 2 && x < crit + h))) l = 2; return l; }
+const SEV = ['NOMINAL', 'CAUT', 'CRIT'];
+const ANN = [
+  { key: 'BATT', lab: 'BATT LOW', tag: 'PWR', title: 'BATTERY CHARGE', act: 'PLUG CHARGER · ENABLE BATTERY SAVER', lim: `CAUT < ${AL.BattLowCaut} % · CRIT < ${AL.BattLowCrit} %`,
+    fn: c => { if (!live('batt')) return null; const b = SRC.batt.v, p = b.level * 100; return [b.charging ? 0 : lo(p, c, AL.BattLowCaut, AL.BattLowCrit, AL.HystPct), Math.round(p) + ' %' + (b.charging ? ' ↑' : '')]; } },
+  { key: 'BTEMP', lab: 'BATT TEMP', tag: 'TMP', title: 'BATTERY THERMISTOR', act: 'STOP CHARGING · REMOVE CASE · SHADE', lim: `CAUT ≥ ${AL.BattTempCaut} °C · CRIT ≥ ${AL.BattTempCrit} °C`,
+    fn: c => { if (!live('btemp')) return null; const x = SRC.btemp.v.c; return [hi(x, c, AL.BattTempCaut, AL.BattTempCrit, AL.HystTemp), x.toFixed(1) + ' °C']; } },
+  { key: 'GLOAD', lab: 'G-LOAD', tag: 'MOT', confirm: 0, title: 'SHOCK · ACCELERATION', act: `LATCHED ${AL.GLatchSecs} S AFTER THE PEAK`, lim: `CAUT ≥ ${AL.GLoadCaut} g · CRIT ≥ ${AL.GLoadCrit} g`,
+    fn: () => { const g = gLoad(); if (g == null) return null; const pk = now() - DER.gPeakT < AL.GLatchSecs ? DER.gPeak : g; return [pk >= AL.GLoadCrit ? 2 : (pk >= AL.GLoadCaut ? 1 : 0), pk.toFixed(2) + ' g']; } },
+  { key: 'NET', lab: 'NET LINK', tag: 'NET', title: 'NET LINK', act: 'CHECK WI-FI / MOBILE DATA', lim: `CAUT RTT ≥ ${AL.NetRttCaut} ms · CRIT OFFLINE`,
+    fn: c => { if (!live('net')) return navigator.onLine === false ? [2, 'OFFLINE'] : null; const n = SRC.net.v; if (!n.online) return [2, 'OFFLINE']; return [n.rtt != null ? hi(n.rtt, c, AL.NetRttCaut, null, AL.HystRtt) : 0, (n.rtt != null ? n.rtt + ' ms' : 'ONLINE')]; } },
+  { key: 'GNSS', lab: 'GNSS', tag: 'NAV', title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `CAUT ACC > ${AL.GnssAccCaut} m · CRIT NO FIX ${AL.GnssLostSecs} s`,
+    fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - g.fixT > AL.GnssLostSecs) return [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
+  { key: 'NOISE', lab: 'NOISE', tag: 'AUD', title: 'MICROPHONE LEVEL', act: 'UNCALIBRATED · RELATIVE TO FULL SCALE', lim: `CAUT ≥ ${AL.NoiseCaut} dBFS ${AL.NoiseSecs} s`, confirm: AL.NoiseSecs,
+    fn: c => { if (!live('mic')) return null; const d = SRC.mic.v.db; return [hi(d, c, AL.NoiseCaut, null, 3), d.toFixed(0) + ' dB']; } },
+  { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
+    fn: () => { if (!live('orient')) return null; return [SRC.orient.v.abs ? 0 : 1, SRC.orient.v.abs ? 'ABS' : 'REL']; } },
+  { key: 'SENSORS', lab: 'SENSORS', tag: 'HW', confirm: 0, title: 'MOTION SENSOR STREAM', act: 'REOPEN GRAFIT · CHECK SENSOR PERMISSION', lim: `CRIT STREAM FROZEN > ${AL.SensorsFrozen} s`,
+    fn: () => { const s = SRC.motion; if (s.mode !== 'live') return s.mode === 'sim' ? [0, 'SIM'] : null; const age = now() - s.liveT; return age > AL.SensorsFrozen ? [2, 'FROZEN ' + Math.round(age) + ' s'] : [0, 'OK']; } },
+];
+ANN.forEach(a => { a.lvl = 0; a.val = '—'; a.pend = null; a.since = 0; if (a.confirm == null) a.confirm = AL.ConfirmSecs; });
+const ALS = { caut: 0, crit: 0, fcu: {} };
+function alarmsTick() {
+  const t = now();
+  for (const a of ANN) {
+    const r = a.fn(a.lvl);
+    if (!r) { a.val = '—'; a.pend = null; if (a.lvl) { a.lvl = 0; } continue; }
+    const [raw, val] = r; a.val = val;
+    if (raw > a.lvl) {
+      if (a.pend !== raw) { a.pend = raw; a.since = t; }
+      if (t - a.since >= a.confirm) { a.pend = null; setLevel(a, raw); }
+    } else { a.pend = null; if (raw < a.lvl) setLevel(a, raw); }
+  }
+  ALS.caut = ANN.filter(a => a.lvl === 1).length; ALS.crit = ANN.filter(a => a.lvl === 2).length;
+  ALS.fcu = fcu();
+}
+function setLevel(a, n) {
+  const old = a.lvl; a.lvl = n;
+  if (n > old) { log(a.tag, a.lab + ' ' + SEV[n] + ' · ' + a.val, true); haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
+  else if (n === 0) log(a.tag, a.lab + ' NOMINAL · ' + a.val);
+  else log(a.tag, a.lab + ' CRIT → CAUT · ' + a.val, true);
+}
+// voyants du FCU : 'w' blanc fixe, 'r' rouge fixe, 'rf' / 'rs' rouge clignotant rapide / lent, 'off', 'na'
+function fcu() {
+  const pr = pressure(), F = CFG.FCU;
+  const zag = (NETQ.active > 0 || now() - NETQ.lastEnd < 0.4) ? 'w' : 'off';
+  const dav = !pr ? 'rf' : (pr.p < F.DavMin ? 'r' : 'off');
+  const dep = !pr ? 'rf' : (TREND.level === PT.ALERT ? 'rf' : (TREND.level === PT.WATCH ? 'rs' : 'off'));
+  let t1 = 'na', t2 = 'na';
+  if (live('btemp')) t1 = (SRC.btemp.mode === 'live' && now() - SRC.btemp.liveT > 30) ? 'rf' : (SRC.btemp.v.c > F.T1Max ? 'r' : 'off');
+  const ext = live('amb') ? SRC.amb.v.c : (live('wx') ? SRC.wx.v.temp : null);
+  if (ext != null) t2 = ext > F.T2Max ? 'r' : 'off';
+  return { hv: 'w', zag, dav, dep, t1, t2, p: pr ? pr.p : null, psrc: pr ? pr.src : 'NO SOURCE', ext };
+}
+const FCU_ROWS = [[['hv', '240 В'], ['dav', 'ДАВ'], ['t1', 'ТЕМП1']], [['zag', 'ЗАГ'], ['dep', 'ДЕП'], ['t2', 'ТЕМП2']]];
+const FCU_RED = new Set(['dav', 't1', 'dep', 't2']);
+const FCU_INFO = {
+  hv: ['POWER · PROGRAM RUNNING', 'ALWAYS LIT WHILE GRAFIT RUNS', 'OFF = IGNORE THE OTHER LAMPS'],
+  zag: ['ACCESS (ЗАГРУЗКА)', 'LIT DURING A NETWORK FETCH', 'PHONE EQUIVALENT OF THE DISK LED'],
+  dav: ['PRESSURE (ДАВЛЕНИЕ)', 'FIXED: QNH < 1013.25 hPa', 'FAST BLINK: NO PRESSURE SOURCE'],
+  dep: ['DEPRESSION TREND', 'SLOW: WATCH ≥0.7 hPa/h & ≥1.0', 'FAST: ALERT ≥1.3 hPa/h & ≥2.0 · 3 h'],
+  t1: ['INTERNAL TEMP · BATTERY', 'FIXED: > 50 °C (APK)', 'FAST BLINK: SENSOR SILENT'],
+  t2: ['EXTERNAL TEMP', 'FIXED: > 35 °C', 'AMBIENT SENSOR, ELSE WEATHER'],
+};
+function annState(lvl, val, blink, lt) {
+  if (lt && lt.ann) return lt.ann === 1 ? 'caut' : 'crit';
+  if (val === '—') return 'na';
+  if (lvl >= 2) return blink ? 'crit' : 'critoff';
+  return lvl === 1 ? 'caut' : 'nom';
+}
+function fcuState(key, st, lt) {
+  if (lt) return lt.lit === key ? (FCU_RED.has(key) ? 'crit' : 'on') : 'nom';
+  const ms = Date.now(), fast = Math.floor(ms / CFG.FCU.BlinkFastMs) % 2 === 0, slow = Math.floor(ms / CFG.FCU.BlinkSlowMs) % 2 === 0;
+  if (st === 'w') return 'on';
+  if (st === 'r' || (st === 'rf' && fast) || (st === 'rs' && slow)) return 'crit';
+  return st === 'na' ? 'na' : 'nom';
+}
+
+// ---------------------------------------------------------------------------------------- retours
+function haptic(p) { if (SET.haptics && navigator.vibrate) { try { navigator.vibrate(p); } catch (e) { /* */ } } }
+let WAKE = null;
+async function wakeSet(on) {
+  SET.wake = on; saveSettings();
+  try {
+    if (on && navigator.wakeLock) { WAKE = await navigator.wakeLock.request('screen'); WAKE.addEventListener('release', () => { WAKE = null; }); }
+    else if (!on && WAKE) { await WAKE.release(); WAKE = null; }
+  } catch (e) { APP && APP.say('WAKE LOCK REFUSED', true); }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && SET.wake && !WAKE) wakeSet(true); });
+
+// ---------------------------------------------------------------------------------------- formats
+// Une page = un code (S.. repris de Grafit quand la fonction est la même, M.. propre au téléphone),
+// un nom, ses touches d'action ([touche, libellé, fonction]) et un dessin dans le rectangle r.
+const LAND = [[[-168, 66], [-165, 60], [-162, 55], [-155, 58], [-150, 61], [-140, 60], [-135, 58], [-130, 54], [-125, 50], [-124, 46], [-124, 40], [-121, 35], [-117, 32], [-115, 31], [-112, 29], [-110, 24], [-106, 23], [-105, 20], [-97, 16], [-92, 14], [-85, 11], [-80, 7], [-77, 8], [-79, 9], [-83, 10], [-83, 15], [-87, 16], [-88, 21], [-91, 18], [-95, 18], [-97, 21], [-97, 26], [-95, 29], [-89, 30], [-83, 29], [-80, 25], [-81, 31], [-76, 35], [-74, 40], [-70, 42], [-66, 45], [-60, 47], [-56, 52], [-60, 55], [-64, 60], [-70, 59], [-77, 61], [-78, 55], [-82, 52], [-94, 59], [-90, 58], [-80, 63], [-85, 70], [-95, 72], [-115, 68], [-128, 70], [-140, 70], [-156, 71], [-162, 70]], [[-73, 78], [-58, 75], [-54, 67], [-50, 62], [-44, 60], [-40, 65], [-30, 68], [-22, 70], [-18, 75], [-20, 80], [-30, 83], [-60, 82]], [[-77, 8], [-72, 12], [-62, 11], [-52, 5], [-50, 0], [-44, -2], [-35, -5], [-35, -9], [-39, -15], [-41, -22], [-48, -26], [-53, -34], [-58, -38], [-62, -40], [-65, -45], [-68, -50], [-69, -55], [-74, -52], [-75, -45], [-73, -37], [-71, -30], [-70, -18], [-76, -14], [-81, -6], [-80, -2], [-80, 1], [-78, 7]], [[-9, 37], [-9, 43], [-2, 43.5], [-1, 46], [-4, 48], [2, 51], [5, 53], [8, 54], [8, 57], [10, 59], [5, 59], [5, 62], [10, 64], [15, 69], [25, 71], [33, 69], [41, 66], [44, 68], [50, 68], [60, 69], [66, 70], [70, 73], [80, 73], [95, 76], [105, 78], [113, 74], [130, 71], [140, 72], [150, 72], [160, 70], [170, 70], [180, 69], [180, 65], [170, 60], [163, 60], [156, 57], [150, 59], [141, 59], [135, 55], [141, 53], [140, 48], [130, 42], [129, 35], [126, 38], [122, 40], [118, 39], [121, 37], [122, 31], [120, 26], [114, 22], [108, 21], [109, 12], [105, 9], [100, 13], [103, 6], [104, 1], [100, 4], [98, 8], [98, 16], [94, 16], [92, 22], [87, 21], [80, 16], [80, 13], [77, 8], [73, 20], [67, 24], [62, 25], [56, 27], [50, 29], [48, 30], [50, 27], [56, 26], [59, 22], [52, 16], [43, 13], [39, 21], [34, 28], [34, 31], [35, 33], [36, 36], [29, 41], [26, 41], [26, 38], [22, 37], [19, 42], [13, 45], [18, 40], [16, 38], [12, 42], [10, 44], [7, 43], [3, 42], [-1, 37], [-6, 36]], [[-17, 21], [-13, 27], [-10, 30], [-6, 36], [-2, 35], [3, 37], [10, 37], [10, 35], [15, 32], [20, 31], [25, 32], [32, 31], [34, 27], [38, 18], [44, 11], [51, 11], [48, 5], [42, 0], [39, -5], [40, -10], [40, -16], [35, -24], [32, -29], [26, -34], [20, -35], [18, -33], [15, -27], [12, -18], [13, -12], [12, -5], [10, 0], [9, 4], [5, 6], [-2, 5], [-8, 4], [-12, 7], [-15, 11], [-17, 15]], [[114, -22], [122, -18], [125, -14], [130, -12], [136, -12], [141, -13], [143, -11], [146, -19], [153, -25], [153, -30], [150, -37], [146, -39], [140, -38], [137, -35], [131, -31], [123, -34], [118, -35], [114, -34]], [[-180, -90], [180, -90], [180, -70], [150, -68], [90, -66], [45, -68], [0, -70], [-60, -64], [-70, -70], [-100, -73], [-150, -77], [-180, -78]], [[-5, 50], [1, 51], [-2, 56], [-5, 58], [-6, 55]], [[-10, 52], [-6, 52], [-6, 55], [-8, 55]], [[130, 31], [135, 34], [140, 35], [142, 40], [141, 45], [140, 42], [136, 36], [130, 33]], [[109, -3], [117, -4], [119, 1], [117, 7], [110, 2]], [[95, 5], [106, -6], [102, -4], [98, 2]], [[131, -1], [141, -3], [150, -10], [142, -9], [135, -4]], [[44, -25], [47, -25], [50, -15], [49, -12], [44, -17]], [[167, -46], [174, -41], [178, -38], [173, -35], [172, -41]], [[-24, 64], [-14, 64], [-15, 66], [-22, 66]], [[120, 18], [122, 12], [126, 7], [124, 14]], [[-85, 22], [-77, 20], [-74, 20], [-80, 23]]];
+const WMO = { 0: 'CLEAR', 1: 'MAINLY CLEAR', 2: 'PARTLY CLOUDY', 3: 'OVERCAST', 45: 'FOG', 48: 'RIME FOG', 51: 'LIGHT DRIZZLE', 53: 'DRIZZLE', 55: 'DENSE DRIZZLE',
+  61: 'LIGHT RAIN', 63: 'RAIN', 65: 'HEAVY RAIN', 66: 'FREEZING RAIN', 67: 'FREEZING RAIN', 71: 'LIGHT SNOW', 73: 'SNOW', 75: 'HEAVY SNOW', 77: 'SNOW GRAINS',
+  80: 'SHOWERS', 81: 'SHOWERS', 82: 'VIOLENT SHOWERS', 85: 'SNOW SHOWERS', 86: 'SNOW SHOWERS', 95: 'THUNDERSTORM', 96: 'THUNDERSTORM · HAIL', 99: 'THUNDERSTORM · HAIL' };
+const srcStyle = k => SRC[k].mode === 'live' ? t.TD : (SRC[k].mode === 'sim' ? t.T : t.TF);
+const noData = (scr, x, y, w, text) => scr.put(x, y, clip(text, w), t.F);
+function sub(scr, x, y, w, title, rt = '', rts = t.D) { W.section(scr, x, y, w, title, rt, rts); }
+function locator(lat, lon) {                                 // grand carré Maidenhead (6 caractères)
+  lon += 180; lat += 90;
+  const L = 'ABCDEFGHIJKLMNOPQR', l = 'abcdefghijklmnopqrstuvwx';
+  return L[Math.floor(lon / 20)] + L[Math.floor(lat / 10)] + Math.floor(lon % 20 / 2) + Math.floor(lat % 10) + l[Math.floor(lon % 2 * 12)] + l[Math.floor(lat % 1 * 24)];
+}
+function twoUp(r, gap = 1) { const w = Math.floor((r.w - gap) / 2); return [w, r.x + w + gap]; }
+
+const PAGES = {};
+// ------------------------------------------------------------------ S00 OVERVIEW
+PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
+  draw(scr, r, app) {
+    const rt = ALS.crit ? ALS.crit + ' CRIT · ' + ALS.caut + ' CAUT' : (ALS.caut ? ALS.caut + ' CAUT' : 'NOMINAL');
+    const ir = W.panel(scr, r, this.code, this.name, rt, (ALS.crit || ALS.caut) ? t.TR : t.TD);
+    let y = ir.y; const lim = ir.b;
+    const [hw, x2] = twoUp(ir);
+    const b = SRC.batt.v, a = aim();
+    W.readout(scr, ir.x, y, hw, 'CHARGE ' + tag('batt'), live('batt') ? Math.round(b.level * 100) : '', '%', t.N, live('batt') && b.level * 100 < AL.BattLowCaut && !b.charging, true, 3);
+    W.readout(scr, x2, y, hw, 'HDG ' + tag('orient'), a ? Math.round(a.hdg) : '', '°', t.N, false, true, 3);
+    y += 6;
+    sub(scr, ir.x, y++, ir.w, 'VITALS', SRC_NAME.motion + ' ' + tag('motion'));
+    const bw = Math.max(6, ir.w - 18), row = (lab, f, val, al = false) => { if (y >= lim) return; scr.put(ir.x, y, lab, t.D); if (f != null) W.segBar(scr, ir.x + 6, y, bw, f, 0.8, al); W.rjust(scr, ir.r, y, val, al ? t.RB : t.N); y++; };
+    const g = gLoad(), mic = SRC.mic.v, n = SRC.net.v, pr = pressure(), at = attitude();
+    row('BATT', live('batt') ? b.level : null, live('batt') ? Math.round(b.level * 100) + ' %' + (b.charging ? ' ↑' : ' ↓') : tag('batt'));
+    row('G', g != null ? g / 5 : null, g != null ? g.toFixed(2) + ' g' : tag('motion'), g != null && g >= AL.GLoadCaut);
+    row('NOISE', live('mic') ? (mic.db + 60) / 60 : null, live('mic') ? mic.db.toFixed(0) + ' dB' : 'MIC ' + tag('mic'));
+    if (y < lim) { W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? (n.type || 'LINK').toUpperCase() + ' · ' + (n.eff || '').toUpperCase() + ' · ' + n.rtt + ' ms' : 'OFFLINE') : tag('net')); }
+    if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tag('geo')); }
+    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · ДЕП ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, pr && pr.p < CFG.FCU.DavMin ? t.R : t.N);
+    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
+    y++;
+    if (y + 5 <= lim) {
+      sub(scr, ir.x, y++, ir.w, 'S01 ALARMS', ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (ALS.caut || ALS.crit) ? t.RB : t.D);
+      const cw = Math.floor((ir.w - 5) / 4), lt = app.lamp(), blink = app.blink();
+      y += W.tileGrid(scr, ir.x, y, 4, cw, ANN.map(a => [a.lab, annState(a.lvl, a.val, blink, lt), () => app.go('S01', a.key)]), app.hits);
+    }
+    if (y + 4 <= lim) {
+      sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
+      const lt = app.lamp(), cw = Math.floor((ir.w - 7) / 6), f = ALS.fcu;
+      W.tileGrid(scr, ir.x, y, 6, cw, [].concat(...FCU_ROWS).map(([k, lab]) => [lab, fcuState(k, f[k], lt), () => app.go('S01', k)]), app.hits);
+    }
+  } };
+
+// ------------------------------------------------------------------ M01 POWER
+PAGES.M01 = { code: 'M01', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTERY', 'BATT'], fps: 2,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, 'BATTERY ' + tag('batt'), srcStyle('batt'));
+    let y = ir.y; const [hw, x2] = twoUp(ir), b = SRC.batt.v;
+    const low = live('batt') && !b.charging && b.level * 100 < AL.BattLowCaut;
+    W.readout(scr, ir.x, y, hw, 'CHARGE', live('batt') ? Math.round(b.level * 100) : '', '%', t.N, low, true, 3);
+    W.readout(scr, x2, y, hw, 'BATT T ' + tag('btemp'), live('btemp') ? SRC.btemp.v.c.toFixed(1) : '', '°C', t.N, live('btemp') && SRC.btemp.v.c >= AL.BattTempCaut, true, 3);
+    y += 6;
+    if (live('batt')) {
+      W.hbar(scr, ir.x, y, ir.w, b.level, low, [AL.BattLowCrit / 100, AL.BattLowCaut / 100]); y += 3;
+      W.kv(scr, ir.x, y++, ir.w, 'STATE', b.charging ? (b.level >= 1 ? 'FULL' : 'CHARGING') : 'DISCHARGING', t.D, b.charging ? t.B : t.N);
+      W.kv(scr, ir.x, y++, ir.w, b.charging ? 'TIME TO FULL' : 'TIME TO EMPTY', durHM(b.charging ? b.tFull : b.tEmpty));
+    } else { noData(scr, ir.x, y++, ir.w, SRC.batt.mode === 'na' ? 'NO BATTERY STATUS API IN THIS BROWSER' : 'WAITING FOR BATTERY STATUS'); y++; }
+    W.kv(scr, ir.x, y++, ir.w, 'THERMISTOR', live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C · ' + tag('btemp') : 'APK ONLY · NO WEB API', t.D, live('btemp') ? t.N : t.F);
+    W.kv(scr, ir.x, y++, ir.w, 'LIMITS', 'CAUT < ' + AL.BattLowCaut + ' % · CRIT < ' + AL.BattLowCrit + ' %', t.D, t.F);
+    y++;
+    if (ir.b - y >= 7) {
+      sub(scr, ir.x, y++, ir.w, 'CHARGE HISTORY', '30 s / POINT');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.batt.v, t.N]], { vmin: 0, vmax: 100, step: 30, unit: '%', fmt: v => String(Math.round(v)),
+        limits: [[AL.BattLowCaut, 0, 'CAUT', 'lo'], [AL.BattLowCrit, 0, 'CRIT', 'lo']], yticks: [0, 25, 50, 75, 100] });
+    }
+  } };
+
+// ------------------------------------------------------------------ M02 MOTION
+PAGES.M02 = { code: 'M02', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'ACCEL', 'GYRO', 'G'], fps: 8,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, 'ACCEL · GYRO ' + tag('motion'), srcStyle('motion'));
+    let y = ir.y; const [hw, x2] = twoUp(ir), g = gLoad();
+    if (g == null) { noData(scr, ir.x, y, ir.w, SRC.motion.mode === 'na' ? 'NO MOTION SENSOR' : 'WAITING FOR MOTION SENSOR'); return; }
+    const pk = now() - DER.gPeakT < AL.GLatchSecs ? DER.gPeak : g;
+    W.readout(scr, ir.x, y, hw, 'G-LOAD', g.toFixed(2), 'g', t.N, g >= AL.GLoadCaut, true, 3);
+    W.readout(scr, x2, y, hw, 'PEAK ' + AL.GLatchSecs + ' s', pk.toFixed(2), 'g', t.N, pk >= AL.GLoadCaut, true, 3);
+    y += 6;
+    const m = SRC.motion.v, G = 9.80665;
+    for (const [lab, v] of [['X', m.ax / G], ['Y', m.ay / G], ['Z', m.az / G]]) {
+      if (y + 3 > ir.b) break;
+      scr.put(ir.x, y + 1, lab, t.B);
+      W.hbar(scr, ir.x + 2, y, ir.w - 11, (Math.max(-2, Math.min(2, v)) + 2) / 4, Math.abs(v) >= AL.GLoadCaut, [], 4, true);
+      W.rjust(scr, ir.r, y + 1, sgn(v, 2) + ' g', t.N);
+      y += 3;
+    }
+    if (y < ir.b) { W.kv(scr, ir.x, y++, ir.w, 'GYRO α β γ', [m.ra, m.rb, m.rg].map(v => sgn(v, 0)).join(' ') + ' °/s'); }
+    y++;
+    if (ir.b - y >= 7) {
+      sub(scr, ir.x, y++, ir.w, '|a| HISTORY', 'g');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.g.v, t.N]], { vmin: 0, vmax: 5, step: 0.25, unit: ' g', fmt: v => v.toFixed(1),
+        yticks: [0, 1, 2, 3, 4, 5].filter((_, i, a) => (ir.b - y) >= 12 || i % 2 === 0), limits: [[AL.GLoadCaut, 0, 'CAUT'], [AL.GLoadCrit, 0, 'CRIT']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ M03 BARO
+PAGES.M03 = { code: 'M03', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE', 'DEP', 'QNH'], fps: 2,
+  draw(scr, r, app) {
+    const pr = pressure();
+    const ir = W.panel(scr, r, this.code, this.name, pr ? pr.src : 'NO SOURCE', pr ? (pr.src === 'SIM' ? t.T : t.TD) : t.TR);
+    let y = ir.y;
+    const wd = Math.min(ir.w, 30), f = ALS.fcu, lt = app.lamp();
+    W.readout(scr, ir.x, y, wd, 'QNH', pr ? pr.p.toFixed(1) : '', 'hPa', t.N, !!(pr && pr.p < CFG.FCU.DavMin), true, 5, 3);
+    if (ir.w - wd >= 12) {
+      const tx = ir.x + wd + 1, tw = ir.r - tx;
+      W.tile(scr, tx, y, tw, 3, 'ДАВ', '', fcuState('dav', f.dav, lt));
+      W.tile(scr, tx, y + 2, tw, 3, 'ДЕП', '', fcuState('dep', f.dep, lt));
+      scr.put(tx, y + 2, '├', t.F); scr.put(tx + tw - 1, y + 2, '┤', t.F);
+    }
+    y += 6;
+    const span = PT.span_ms(TREND, PTC), drop = PT.drop(TREND, PTC) / 10, hrs = span / 3600000;
+    W.kv(scr, ir.x, y++, ir.w, 'ДЕП TREND', PT.NAMES[TREND.level], t.D, TREND.level >= PT.WATCH ? t.RB : t.B);
+    W.kv(scr, ir.x, y++, ir.w, 'DROP / WINDOW', (span ? sgn(-drop, 1) : '—') + ' hPa · ' + (span ? hrs.toFixed(1) + ' h' : 'WARMING'));
+    W.kv(scr, ir.x, y++, ir.w, 'RATE', span ? sgn(-drop / Math.max(hrs, 1e-6), 2) + ' hPa/h' : '—');
+    W.kv(scr, ir.x, y++, ir.w, 'BLOCKS', TREND.count + ' / ' + PTC.ring_len + ' · 5 MIN');
+    W.kv(scr, ir.x, y++, ir.w, 'WATCH · ALERT', '0.7/h&1.0 · 1.3/h&2.0', t.D, t.F);
+    W.kv(scr, ir.x, y++, ir.w, 'SENSOR', live('baro') ? SRC.baro.v.hpa.toFixed(1) + ' hPa ' + tag('baro') : 'APK ONLY · NO WEB API', t.D, live('baro') ? t.N : t.F);
+    y++;
+    if (ir.b - y >= 7) {
+      sub(scr, ir.x, y++, ir.w, 'QNH · 3 h', '1 MIN / POINT');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.press.v, t.N]], { auto: true, minSpan: 4, step: 60, fmt: v => v.toFixed(0), limits: [[CFG.FCU.DavMin, 0, 'ДАВ', 'lo']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ S01 ALARMS
+PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'ANN', 'FCU', 'LAMP'], fps: 6, sel: 'BATT',
+  keys: [['1', 'LAMP TEST', app => app.lampTest()]],
+  draw(scr, r, app) {
+    const lt = app.lamp(), blink = app.blink();
+    const ir = W.panel(scr, r, this.code, this.name, lt ? 'LAMP TEST' : ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (lt || ALS.caut || ALS.crit) ? t.TR : t.TD);
+    let y = ir.y;
+    const cw = Math.floor((ir.w - 3) / 2);
+    y += W.tileGrid(scr, ir.x, y, 2, cw, ANN.map(a => [a.lab + '  ' + a.val, annState(a.lvl, a.val, blink, lt), () => { this.sel = a.key; }]), app.hits);
+    if (y + 6 <= ir.b) {
+      y++;
+      sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
+      const fw = Math.floor((ir.w - 4) / 3), f = ALS.fcu;
+      y += W.tileGrid(scr, ir.x, y, 3, fw, [].concat(...FCU_ROWS).map(([k, lab]) => [lab, fcuState(k, f[k], lt), () => { this.sel = k; }]), app.hits);
+      scr.put(ir.x, y++, clip((f.p != null ? f.p.toFixed(1) + ' hPa · ' : '') + 'ДЕП ' + PT.NAMES[TREND.level] + ' · ' + f.psrc, ir.w), t.F);
+    }
+    // détail de l'élément choisi
+    if (y + 3 <= ir.b) {
+      y++;
+      const a = ANN.find(x => x.key === this.sel);
+      if (a) {
+        sub(scr, ir.x, y++, ir.w, a.lab, SEV[a.lvl], a.lvl ? t.RB : t.D);
+        if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, a.title, a.val, t.D, a.lvl ? t.RB : t.B);
+        if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'LIMITS', a.lim, t.D, t.F);
+        if (y < ir.b) scr.put(ir.x, y++, clip('▸ ' + a.act, ir.w), t.D);
+      } else if (FCU_INFO[this.sel]) {
+        const [ti, l1, l2] = FCU_INFO[this.sel];
+        sub(scr, ir.x, y++, ir.w, FCU_ROWS.flat().find(([k]) => k === this.sel)[1], ti);
+        if (y < ir.b) scr.put(ir.x, y++, clip(l1, ir.w), t.N);
+        if (y < ir.b) scr.put(ir.x, y++, clip(l2, ir.w), t.D);
+      }
+    }
+  } };
+
+// ------------------------------------------------------------------ S03 FEED
+PAGES.S03 = { code: 'S03', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS');
+    const rows = FEED.slice(-ir.h);
+    rows.forEach(([ts, tg, msg, warn], i) => {
+      const yy = ir.y + ir.h - rows.length + i;
+      scr.put(ir.x, yy, hhmmss(ts), t.F);
+      scr.put(ir.x + 9, yy, ljust(tg, 4), warn ? t.RB : t.B);
+      scr.put(ir.x + 14, yy, clip(msg, ir.w - 14), warn ? t.R : (i === rows.length - 1 ? t.N : t.D));
+    });
+  } };
+
+// ------------------------------------------------------------------ S12 NETWORK
+PAGES.S12 = { code: 'S12', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', 'NET', 'LINK', 'WIFI'], fps: 2,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, 'LINK ' + tag('net'), srcStyle('net'));
+    let y = ir.y; const [hw, x2] = twoUp(ir), n = SRC.net.v;
+    if (!live('net')) {
+      W.kv(scr, ir.x, y++, ir.w, 'STATUS', navigator.onLine ? 'ONLINE' : 'OFFLINE', t.D, navigator.onLine ? t.B : t.RB);
+      noData(scr, ir.x, y + 1, ir.w, SRC.net.mode === 'na' ? 'NO NETWORK INFORMATION API HERE' : 'WAITING FOR LINK DATA'); return;
+    }
+    W.readout(scr, ir.x, y, hw, 'RTT', n.online ? Math.min(999, Math.round(n.rtt)) : '', 'ms', t.N, n.rtt >= AL.NetRttCaut, true, 3);
+    W.readout(scr, x2, y, hw, 'DOWNLINK', n.online ? n.down.toFixed(n.down < 10 ? 1 : 0) : '', 'Mb/s', t.N, false, true, 3, 4);
+    y += 6;
+    W.kv(scr, ir.x, y++, ir.w, 'STATUS', n.online ? 'ONLINE' : 'OFFLINE', t.D, n.online ? t.B : t.RB);
+    W.kv(scr, ir.x, y++, ir.w, 'BEARER', (n.type || 'UNKNOWN').toUpperCase());
+    W.kv(scr, ir.x, y++, ir.w, 'EFFECTIVE TYPE', (n.eff || '—').toUpperCase());
+    W.kv(scr, ir.x, y++, ir.w, 'DATA SAVER', n.save ? 'ON' : 'OFF');
+    W.kv(scr, ir.x, y++, ir.w, 'FEEDS', 'WX ' + tag('wx') + ' · TLE ' + TLE_SRC, t.D, t.D);
+    y++;
+    if (ir.b - y >= 7) {
+      sub(scr, ir.x, y++, ir.w, 'RTT HISTORY', '2 s / POINT');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.rtt.v, t.N]], { vmin: 0, step: 2, minSpan: 400, fmt: v => String(Math.round(v)), unit: ' ms', limits: [[AL.NetRttCaut, 0, 'CAUT']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ S08 AUDIO
+PAGES.S08 = { code: 'S08', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
+  keys: [['1', 'ARM MIC', () => micArm(SRC.mic.mode === 'off')]],
+  draw(scr, r) {
+    this.keys[0][1] = SRC.mic.mode === 'off' ? 'ARM MIC' : 'DISARM MIC';
+    const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
+    let y = ir.y;
+    if (!live('mic')) {
+      W.box(scr, ir.x, y, ir.w, 5, t.L); scr.put(ir.x + 2, y + 2, clip(SRC.mic.mode === 'off' ? 'MICROPHONE DISARMED · TAP [*1] ARM MIC' : 'WAITING FOR MICROPHONE', ir.w - 4), t.D);
+      app_hit(ir.x, y, ir.w, 5, () => micArm(true));
+      scr.put(ir.x, y + 6, clip('LEVEL ONLY · NOTHING IS RECORDED OR SENT', ir.w), t.F);
+      return;
+    }
+    const d = SRC.mic.v.db, caut = d >= AL.NoiseCaut;
+    W.readout(scr, ir.x, y, Math.min(ir.w, 28), 'LEVEL', d.toFixed(1), 'dBFS', t.N, caut, true, 4, 4);
+    y += 6;
+    W.hbar(scr, ir.x, y, ir.w, (d + 60) / 60, caut, [(AL.NoiseCaut + 60) / 60], 6); y += 3;
+    scr.put(ir.x, y, '−60', t.F); W.rjust(scr, ir.r, y, '0 dBFS', t.F); scr.put(ir.x + Math.round((AL.NoiseCaut + 60) / 60 * ir.w) - 2, y, String(AL.NoiseCaut), caut ? t.R : t.RZ); y += 2;
+    if (ir.b - y >= 7) {
+      sub(scr, ir.x, y++, ir.w, 'LEVEL HISTORY', 'UNCALIBRATED');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.mic.v, t.N]], { vmin: -60, vmax: 0, step: 0.25, fmt: v => String(Math.round(v)), yticks: [-60, -45, -30, -15, 0], limits: [[AL.NoiseCaut, 0, 'CAUT']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ S18 TRACK
+// Carte équirectangulaire vectorielle : terres remplies, nuit ombrée, graticule, traces de l'ISS en splines.
+function splitLon(pts) { const out = [[]]; pts.forEach((p, i) => { if (i && Math.abs(p[1] - pts[i - 1][1]) > 180) out.push([]); out[out.length - 1].push(p); }); return out.filter(s => s.length > 1); }
+function markSun(c, x, y, d, col) { c.strokeStyle = col; c.lineWidth = 1.3 * d; c.beginPath(); c.arc(x, y, 4.5 * d, 0, 2 * Math.PI); c.stroke(); c.fillStyle = col; c.beginPath(); c.arc(x, y, 1.4 * d, 0, 2 * Math.PI); c.fill(); }
+function markMoon(c, x, y, d, col) { c.fillStyle = col; c.beginPath(); c.arc(x, y, 4.5 * d, 0.35 * Math.PI, 1.65 * Math.PI, false); c.arc(x + 2.2 * d, y, 3.6 * d, 1.62 * Math.PI, 0.38 * Math.PI, true); c.closePath(); c.fill(); }
+function markIss(c, x, y, d, col) { c.fillStyle = rgba(RED, 0.25); c.beginPath(); c.arc(x, y, 7 * d, 0, 2 * Math.PI); c.fill(); c.fillStyle = col; c.fillRect(x - 3 * d, y - 3 * d, 6 * d, 6 * d); c.strokeStyle = col; c.lineWidth = 1.2 * d; c.beginPath(); c.moveTo(x - 7 * d, y); c.lineTo(x - 4 * d, y); c.moveTo(x + 4 * d, y); c.lineTo(x + 7 * d, y); c.stroke(); }
+function markHome(c, x, y, d, col) { c.strokeStyle = col; c.lineWidth = 1.2 * d; c.beginPath(); c.arc(x, y, 3.5 * d, 0, 2 * Math.PI); c.moveTo(x - 7 * d, y); c.lineTo(x - 3.5 * d, y); c.moveTo(x + 3.5 * d, y); c.lineTo(x + 7 * d, y); c.moveTo(x, y - 7 * d); c.lineTo(x, y - 3.5 * d); c.moveTo(x, y + 3.5 * d); c.lineTo(x, y + 7 * d); c.stroke(); }
+const LEG = (scr, x, y, items) => { for (const [g, txt, st] of items) { x += scr.put(x, y, g, st) + 1; x += scr.put(x, y, txt, t.F) + 2; } };
+
+PAGES.S18 = { code: 'S18', name: 'TRACK', ru: 'ТРАСС', words: ['TRACK', 'ISS', 'MAP', 'ORBIT'], fps: 1, tab: 'ISS', passT: 0, pass: null,
+  keys: [['1', 'ISS', () => { PAGES.S18.tab = 'ISS'; }], ['2', 'SUN', () => { PAGES.S18.tab = 'SUN'; }], ['3', 'MOON', () => { PAGES.S18.tab = 'MOON'; }]],
+  draw(scr, r) {
+    const T = now(), h = here(), tab = this.tab;
+    const ir = W.panel(scr, r, this.code, this.name, tab + ' · TLE ' + TLE_SRC, t.TD);
+    const mh = Math.max(4, Math.min(Math.round(ir.w / 2 / CELL.aspect), ir.h - 10));
+    const term = A.terminator(T), iss = TLE ? A.issAt(TLE, T) : null, tr = iss ? A.issTrack(TLE, T) : null;
+    const fpt = iss ? A.footprint(iss[0], iss[1], iss[2], 6) : null;
+    const [sra, sdec] = A.sun(T), [mra, mdec] = A.moon(T), sp = A.subpoint(sra, sdec, T), mp = A.subpoint(mra, mdec, T);
+    scr.vector(ir.x, ir.y, ir.w, mh, (c, b) => {
+      const d = b.d, P = (la, lo) => [b.x + (lo + 180) / 360 * b.w, b.y + (90 - la) / 180 * b.h];
+      c.strokeStyle = COL.L; c.lineWidth = d; c.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      // graticule 30°
+      c.strokeStyle = COL.K; dash(c, d, 1, 3); c.beginPath();
+      for (let lo = -150; lo <= 150; lo += 30) { const [x] = P(0, lo); c.moveTo(Math.round(x) + 0.5, b.y); c.lineTo(Math.round(x) + 0.5, b.y + b.h); }
+      for (let la = -60; la <= 60; la += 30) { const [, y] = P(la, 0); c.moveTo(b.x, Math.round(y) + 0.5); c.lineTo(b.x + b.w, Math.round(y) + 0.5); }
+      c.stroke(); dash(c, d, 0);
+      // terres
+      c.beginPath();
+      for (const poly of LAND) { poly.forEach(([lo, la], i) => { const [x, y] = P(la, lo); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.closePath(); }
+      c.fillStyle = rgba(WHITE, 0.11); c.fill('evenodd'); c.strokeStyle = rgba(DIM, 0.9); c.lineWidth = d; c.lineJoin = 'round'; c.stroke();
+      // nuit
+      c.beginPath(); const p0 = P(term.nightPole, -180); c.moveTo(p0[0], p0[1]);
+      for (const [la, lo] of term.points) { const [x, y] = P(la, lo); c.lineTo(x, y); }
+      const p1 = P(term.nightPole, 180); c.lineTo(p1[0], p1[1]); c.closePath(); c.fillStyle = 'rgba(0,0,0,0.42)'; c.fill();
+      c.beginPath(); W.mono(c, term.points.map(([la, lo]) => P(la, lo))); c.strokeStyle = rgba(DIM, 0.45); dash(c, d, 2, 2); c.stroke(); dash(c, d, 0);
+      if (iss) {
+        for (const s of splitLon(fpt)) { c.beginPath(); W.spline(c, s.map(p => P(...p))); c.strokeStyle = rgba(DIM, 0.8); dash(c, d, 3, 3); c.lineWidth = d; c.stroke(); }
+        dash(c, d, 0);
+        for (const s of splitLon(tr.past)) { c.beginPath(); W.spline(c, s.map(p => P(...p))); c.strokeStyle = rgba(WHITE, 0.45); dash(c, d, 1, 3); c.lineWidth = 1.4 * d; c.lineCap = 'round'; c.stroke(); }
+        dash(c, d, 0);
+        for (const s of splitLon(tr.future)) { c.beginPath(); W.spline(c, s.map(p => P(...p))); c.strokeStyle = tab === 'ISS' ? COL.N : COL.D; c.lineWidth = 1.5 * d; c.stroke(); }
+      }
+      markSun(c, ...P(...sp), d, tab === 'SUN' ? COL.RR : COL.N);
+      markMoon(c, ...P(...mp), d, tab === 'MOON' ? COL.RR : COL.N);
+      markHome(c, ...P(h.lat, h.lon), d, COL.N);
+      if (iss) markIss(c, ...P(iss[0], iss[1]), d, tab === 'ISS' ? COL.RR : COL.N);
+    });
+    let y = ir.y + mh;
+    LEG(scr, ir.x, y, [['■', 'ISS', tab === 'ISS' ? t.RB : t.B], ['☉', 'SUN', tab === 'SUN' ? t.RB : t.B], ['☾', 'MOON', tab === 'MOON' ? t.RB : t.B], ['⌖', h.name === 'GNSS' ? 'YOU' : h.name, t.B]]);
+    W.rjust(scr, ir.r, y, hhmm(T), t.F);
+    y += 2;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (tab === 'ISS' && iss) {
+      if (T - this.passT > 60 || !this.pass || this.pass.los < T) { this.pass = A.nextPass(TLE, h.lat, h.lon, T, 24, 10, false); this.passT = T; }
+      const [az, el, rng, lit] = A.issLook(TLE, T, h.lat, h.lon);
+      sub(scr, ir.x, y++, ir.w, 'ISS · ZARYA', lit ? 'SUNLIT' : 'ECLIPSE');
+      kv('SUBPOINT', fmtLL(iss[0], iss[1]));
+      kv('ALTITUDE · VEL', Math.round(iss[2]) + ' km · 27 580 km/h');
+      kv('RANGE', Math.round(A.dist(iss[0], iss[1], h.lat, h.lon)) + ' km GROUND · ' + Math.round(rng) + ' km SLANT');
+      kv('AZ · EL', Math.round(az) + '° ' + card(az) + ' · ' + sgn(el, 1) + '°', el >= 10 ? t.RB : t.N);
+      if (el >= 10) kv('STATUS', 'IN VIEW', t.RB);
+      else if (this.pass) kv('NEXT AOS', hhmm(this.pass.aos) + ' · MAX ' + Math.round(this.pass.maxEl) + '° · ' + Math.max(1, Math.round((this.pass.los - this.pass.aos) / 60)) + ' MIN' + (this.pass.visible ? ' · VIS' : ''));
+      else kv('NEXT AOS', 'NONE IN 24 h');
+    } else if (tab === 'SUN') {
+      const s = A.sunInfo(T, h.lat, h.lon);
+      sub(scr, ir.x, y++, ir.w, 'SUN', s.day ? 'DAY' : 'NIGHT');
+      kv('SUBSOLAR', fmtLL(sp[0], sp[1])); kv('AZ · EL', Math.round(s.az) + '° ' + card(s.az) + ' · ' + sgn(s.el, 1) + '°');
+      kv('RISE · SET', (s.rise ? hhmm(s.rise) : '—') + ' · ' + (s.set ? hhmm(s.set) : '—')); kv('DAY LENGTH', durHM(s.length));
+    } else {
+      const m = A.moonInfo(T, h.lat, h.lon);
+      sub(scr, ir.x, y++, ir.w, 'MOON', m.phase);
+      kv('SUBLUNAR', fmtLL(mp[0], mp[1])); kv('AZ · EL', Math.round(m.az) + '° ' + card(m.az) + ' · ' + sgn(m.el, 1) + '°');
+      kv('RISE · SET', (m.rise ? hhmm(m.rise) : '—') + ' · ' + (m.set ? hhmm(m.set) : '—')); kv('ILLUMINATED', Math.round(m.frac * 100) + ' % · ' + (m.waxing ? 'WAXING' : 'WANING'));
+    }
+  } };
+
+// ------------------------------------------------------------------ S23 SKY
+PAGES.S23 = { code: 'S23', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 'PLANETS'], fps: 6, passT: 0, pass: null,
+  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }]],
+  draw(scr, r) {
+    this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
+    const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0;
+    const ir = W.panel(scr, r, this.code, this.name, (SET.skyRot && a ? 'HDG UP ' : 'NORTH UP ') + Math.round(rot) + '°', t.TD);
+    const rows = Math.max(6, Math.min(ir.h - 8, Math.ceil(ir.w / CELL.aspect)));
+    if (T - this.passT > 120 || (this.pass && this.pass.los < T)) { this.pass = TLE ? A.nextPass(TLE, h.lat, h.lon, T, 48, 10, true) : null; this.passT = T; }
+    const objs = A.skyObjects(T, h.lat, h.lon), pass = this.pass;
+    const issNow = TLE ? A.issLook(TLE, T, h.lat, h.lon) : null;
+    let near = null, best = 12;
+    if (a) for (const o of objs) { const sep = A.dist(o.el, o.az, a.el, a.az) / 6371 * DEG; if (sep < best) { best = sep; near = o; } }
+    scr.vector(ir.x, ir.y, ir.w, rows, (c, b) => {
+      const d = b.d, fs = b.fpx, R = Math.min(b.w, b.h) / 2 - fs * 0.95, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      const proj = (az, el) => { const rr = (90 - el) / 90 * R, aa = (az - rot) * RAD; return [cx + rr * Math.sin(aa), cy - rr * Math.cos(aa)]; };
+      c.fillStyle = rgba(WHITE, 0.035); c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.fill();
+      c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.stroke();
+      c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3);
+      for (const k of [1 / 3, 2 / 3]) { c.beginPath(); c.arc(cx, cy, R * k, 0, 2 * Math.PI); c.stroke(); }
+      c.beginPath(); for (let az = 0; az < 360; az += 45) { const [x, y] = proj(az, 0); c.moveTo(cx, cy); c.lineTo(x, y); } c.stroke(); dash(c, d, 0);
+      // graduations d'azimut tous les 10°
+      c.strokeStyle = COL.F; c.beginPath();
+      for (let az = 0; az < 360; az += 10) { const [x0, y0] = proj(az, 0), [x1, y1] = proj(az, az % 30 ? 3 : 6); c.moveTo(x0, y0); c.lineTo(x1, y1); }
+      c.stroke();
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      for (const [lab, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {
+        const rr = R + fs * 0.55, aa = (az - rot) * RAD;
+        c.font = (lab === 'N' ? '700 ' : '400 ') + (fs * 0.9).toFixed(1) + 'px ' + b.family; c.fillStyle = lab === 'N' ? COL.N : COL.D;
+        c.fillText(lab, cx + rr * Math.sin(aa), cy - rr * Math.cos(aa));
+      }
+      c.font = '400 ' + (fs * 0.62).toFixed(1) + 'px ' + b.family;
+      for (const lab of ['30', '60']) { const [x, y] = proj(rot + 135, +lab); c.fillStyle = COL.F; c.fillText(lab + '°', x, y); }
+      if (pass) {
+        const pts = pass.track.map(([az, el]) => proj(az, el));
+        c.beginPath(); W.spline(c, pts); c.strokeStyle = COL.RR; c.lineWidth = 1.4 * d; dash(c, d, 4, 3); c.stroke(); dash(c, d, 0);
+        if (pts.length > 1) { const [x0, y0] = pts[0]; c.fillStyle = COL.RR; c.beginPath(); c.arc(x0, y0, 2.2 * d, 0, 2 * Math.PI); c.fill(); c.fillText('AOS', x0, y0 - fs * 0.6); }
+      }
+      for (const o of objs.slice().reverse()) {
+        const [x, y] = proj(o.az, o.el), hot = near === o;
+        if (o.kind === 'star') { c.fillStyle = hot ? COL.N : COL.D; c.beginPath(); c.arc(x, y, (hot ? 1.8 : 1.2) * d, 0, 2 * Math.PI); c.fill(); continue; }
+        if (o.kind === 'moon') markMoon(c, x, y, d, COL.N);
+        else if (o.kind === 'sun') markSun(c, x, y, d, COL.N);
+        else { c.fillStyle = COL.N; c.beginPath(); c.moveTo(x, y - 3.5 * d); c.lineTo(x + 3.5 * d, y); c.lineTo(x, y + 3.5 * d); c.lineTo(x - 3.5 * d, y); c.closePath(); c.fill(); }
+        c.fillStyle = hot ? COL.N : COL.D; c.textAlign = 'left'; c.fillText(o.name.slice(0, 3), x + 6 * d, y); c.textAlign = 'center';
+      }
+      if (issNow && issNow[1] > 0) markIss(c, ...proj(issNow[0], issNow[1]), d, COL.RR);
+      if (a && a.el > -5) {
+        const [x, y] = proj(a.az, Math.max(0, a.el));
+        c.strokeStyle = COL.RR; c.lineWidth = 1.4 * d; c.beginPath(); c.arc(x, y, 8 * d, 0, 2 * Math.PI);
+        c.moveTo(x - 13 * d, y); c.lineTo(x - 4 * d, y); c.moveTo(x + 4 * d, y); c.lineTo(x + 13 * d, y); c.moveTo(x, y - 13 * d); c.lineTo(x, y - 4 * d); c.moveTo(x, y + 4 * d); c.lineTo(x, y + 13 * d); c.stroke();
+      }
+    });
+    let y = ir.y + rows + 1;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (a) kv('AIM ' + tag('orient'), Math.round(a.az) + '° ' + card(a.az) + ' · EL ' + sgn(a.el, 0) + '°' + (near ? ' ▸ ' + near.name : ''), near ? t.B : t.N);
+    else kv('AIM', 'NO COMPASS · ' + tag('orient'), t.F);
+    objs.filter(o => o.list).slice(0, 4).forEach(o => kv(o.name, Math.round(o.az) + '° ' + card(o.az) + ' · ' + o.el.toFixed(0) + '°'));
+    if (pass) kv('ISS VISIBLE', new Date(pass.aos * 1000).toLocaleDateString('en-GB', { weekday: 'short' }).toUpperCase() + ' ' + hhmm(pass.aos) + ' · MAX ' + Math.round(pass.maxEl) + '° · ' + Math.max(1, Math.round((pass.los - pass.aos) / 60)) + ' MIN');
+    else kv('ISS VISIBLE', 'NONE IN 48 h', t.F);
+    const [mf, wax] = A.moonPhase(T); kv('MOON', Math.round(mf * 100) + ' % · ' + A.moonPhaseName(mf, wax));
+  } };
+
+// ------------------------------------------------------------------ S24 KURS · ATT
+PAGES.S24 = { code: 'S24', name: 'KURS · ATT', ru: 'КУРС', words: ['KURS', 'ATT', 'ATTITUDE', 'DOCKING'], fps: 20, tgt: 'AUTO',
+  keys: [['1', 'AUTO', () => { PAGES.S24.tgt = 'AUTO'; }], ['2', 'ISS', () => { PAGES.S24.tgt = 'ISS'; }], ['3', 'MOON', () => { PAGES.S24.tgt = 'MOON'; }], ['4', 'SUN', () => { PAGES.S24.tgt = 'SUN'; }]],
+  target(T, h) {
+    const cand = [];
+    if (TLE) { const [az, el] = A.issLook(TLE, T, h.lat, h.lon); cand.push({ name: 'ISS', az, el }); }
+    const [mra, mdec] = A.moon(T), [maz, mel] = A.altaz(mra, mdec, h.lat, h.lon, T); cand.push({ name: 'MOON', az: maz, el: mel });
+    const [sra, sdec] = A.sun(T), [saz, sel] = A.altaz(sra, sdec, h.lat, h.lon, T); cand.push({ name: 'SUN', az: saz, el: sel });
+    if (this.tgt !== 'AUTO') return cand.find(c => c.name === this.tgt);
+    return cand.find(c => c.name === 'ISS' && c.el > 0) || cand.find(c => c.name === 'MOON' && c.el > 0) || cand.find(c => c.name === 'SUN' && c.el > 0) || cand[1];
+  },
+  draw(scr, r) {
+    const T = now(), h = here(), a = aim();
+    const [kr, ar] = r.w >= 2 * r.h ? r.splitH([1, 1]) : r.splitV([1, 1], 0);
+    // ---------------- KURS : réticule d'amarrage sur l'astre visé
+    const tg = this.target(T, h), bad = (ALS.caut + ALS.crit) > 0;
+    let sep = null, dx = 0, dy = 0;
+    if (a && tg) { sep = A.dist(tg.el, tg.az, a.el, a.az) / 6371 * DEG; dx = A.norm180(tg.az - a.az) * Math.cos(a.el * RAD); dy = -(tg.el - a.el); }
+    const cap = sep != null && sep < 2;
+    let inner = W.panel(scr, kr, this.code, 'KURS ▸ ' + (tg ? tg.name : '—'), sep == null ? 'NO ATTITUDE' : (cap ? 'CAPTURE' : 'ACQUIRE'), cap ? t.TD : (bad ? t.TR : t.TD));
+    const rdot = sep != null && DER.prevT ? Math.abs(sep - DER.prevRho) / Math.max(0.05, T - DER.prevT) : 0;
+    if (sep != null) { DER.prevRho = sep; DER.prevT = T; }
+    scr.vector(inner.x, inner.y, inner.w, inner.h - 1, (c, b) => {
+      const d = b.d, R = Math.min(b.w, b.h) / 2 - 3 * d, cx = b.x + b.w / 2, cy = b.y + b.h / 2, FULL = 30;
+      c.lineWidth = d;
+      for (const k of [1, 0.66, 0.33]) { c.strokeStyle = k === 1 ? COL.L : COL.F; c.beginPath(); c.arc(cx, cy, R * k, 0, 2 * Math.PI); c.stroke(); }
+      c.strokeStyle = COL.F; dash(c, d, 2, 3); c.beginPath(); c.moveTo(cx - R, cy); c.lineTo(cx + R, cy); c.moveTo(cx, cy - R); c.lineTo(cx, cy + R); c.stroke(); dash(c, d, 0);
+      c.strokeStyle = COL.F; c.beginPath();
+      for (let ang = 0; ang < 360; ang += 15) { const k = ang % 90 ? 0.95 : 0.9, s = Math.sin(ang * RAD), co = Math.cos(ang * RAD); c.moveTo(cx + R * s, cy - R * co); c.lineTo(cx + R * k * s, cy - R * k * co); }
+      c.stroke();
+      c.font = '400 ' + (b.fpx * 0.6).toFixed(1) + 'px ' + b.family; c.fillStyle = COL.F; c.textAlign = 'left'; c.textBaseline = 'bottom';
+      [[1, '30°'], [0.66, '20°'], [0.33, '10°']].forEach(([k, l]) => c.fillText(l, cx + R * k * 0.72 + 2 * d, cy - R * k * 0.72));
+      if (sep != null) {
+        const k = R / FULL, m = Math.hypot(dx, dy), s = m > FULL ? FULL / m : 1, tx = cx + dx * s * k, ty = cy + dy * s * k, L = R * 0.2;
+        const col = bad ? COL.RR : COL.N;
+        c.strokeStyle = rgba(WHITE, 0.25); dash(c, d, 2, 3); c.beginPath(); c.moveTo(cx, cy); c.lineTo(tx, ty); c.stroke(); dash(c, d, 0);
+        c.strokeStyle = col; c.lineWidth = 1.6 * d; c.beginPath();
+        c.moveTo(tx - L, ty); c.lineTo(tx - L * 0.35, ty); c.moveTo(tx + L * 0.35, ty); c.lineTo(tx + L, ty);
+        c.moveTo(tx, ty - L); c.lineTo(tx, ty - L * 0.35); c.moveTo(tx, ty + L * 0.35); c.lineTo(tx, ty + L);
+        c.moveTo(tx + R * 0.09, ty); c.arc(tx, ty, R * 0.09, 0, 2 * Math.PI); c.stroke();
+        if (m > FULL) { const ang = Math.atan2(dy, dx); c.fillStyle = col; c.beginPath(); c.moveTo(cx + Math.cos(ang) * (R + 2 * d), cy + Math.sin(ang) * (R + 2 * d)); c.lineTo(cx + Math.cos(ang + 0.08) * (R - 9 * d), cy + Math.sin(ang + 0.08) * (R - 9 * d)); c.lineTo(cx + Math.cos(ang - 0.08) * (R - 9 * d), cy + Math.sin(ang - 0.08) * (R - 9 * d)); c.closePath(); c.fill(); }
+      }
+      c.fillStyle = cap ? COL.N : COL.D; c.beginPath(); c.arc(cx, cy, 1.8 * d, 0, 2 * Math.PI); c.fill();
+    });
+    scr.put(inner.x, inner.b - 1, sep != null ? 'ρ ' + sep.toFixed(1) + '° · ρ̇ ' + rdot.toFixed(2) + '°/s' : 'ρ —', bad ? t.R : t.N);
+    if (tg) W.rjust(scr, inner.r, inner.b - 1, 'EL ' + sgn(tg.el, 0) + '°', tg.el > 0 ? t.D : t.F);
+    // ---------------- ATTITUDE : horizon artificiel (référence gravité)
+    const at = live('motion') ? attitude() : null;
+    inner = W.panel(scr, ar, this.code, 'ATTITUDE', at ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '°' : 'NO DATA');
+    scr.vector(inner.x, inner.y, inner.w, inner.h - 1, (c, b) => {
+      const d = b.d, R = Math.min(b.w, b.h) / 2 - 3 * d, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      c.save(); c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.clip();
+      if (at) {
+        const kp = R * 1.2 / 75, pitch = Math.max(-R, Math.min(R, at.pitch * kp)), roll = at.roll * RAD;
+        c.translate(cx, cy); c.rotate(roll);
+        c.fillStyle = rgba(WHITE, 0.05); c.fillRect(-2 * R, -2 * R, 4 * R, 2 * R + pitch);
+        const gr = c.createLinearGradient(0, pitch, 0, pitch + R * 1.4); gr.addColorStop(0, rgba(DIM, 0.42)); gr.addColorStop(1, rgba(DIM, 0.16));
+        c.fillStyle = gr; c.fillRect(-2 * R, pitch, 4 * R, 3 * R);
+        c.strokeStyle = COL.N; c.lineWidth = 1.6 * d; c.beginPath(); c.moveTo(-2 * R, pitch); c.lineTo(2 * R, pitch); c.stroke();
+        c.lineWidth = d; c.font = '400 ' + (b.fpx * 0.58).toFixed(1) + 'px ' + b.family; c.textBaseline = 'middle';
+        for (const st of [-30, -20, -10, -5, 5, 10, 20, 30]) {
+          const yy = pitch - st * kp, hl = R * (Math.abs(st) === 5 ? 0.08 : (Math.abs(st) % 20 ? 0.18 : 0.3));
+          c.strokeStyle = st > 0 ? COL.N : COL.D; c.beginPath(); if (st < 0) dash(c, d, 3, 2); c.moveTo(-hl, yy); c.lineTo(hl, yy); c.stroke(); dash(c, d, 0);
+          if (Math.abs(st) >= 10) { c.fillStyle = COL.D; c.textAlign = 'left'; c.fillText(String(Math.abs(st)), hl + 3 * d, yy); c.textAlign = 'right'; c.fillText(String(Math.abs(st)), -hl - 3 * d, yy); }
+        }
+        c.setTransform(1, 0, 0, 1, 0, 0);
+      }
+      c.restore();
+      c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.stroke();
+      // échelle de roulis (haut du cadran) et index
+      c.strokeStyle = COL.D; c.lineWidth = d; c.beginPath();
+      for (const ang of [-60, -45, -30, -20, -10, 0, 10, 20, 30, 45, 60]) { const k = ang % 30 ? 0.94 : 0.89, s = Math.sin(ang * RAD), co = Math.cos(ang * RAD); c.moveTo(cx + R * s, cy - R * co); c.lineTo(cx + R * k * s, cy - R * k * co); }
+      c.stroke();
+      if (at) {
+        const ro = at.roll * RAD, s = Math.sin(ro), co = Math.cos(ro), tip = R * 0.87;
+        c.fillStyle = COL.N; c.beginPath(); c.moveTo(cx + tip * s, cy - tip * co);
+        c.lineTo(cx + (tip - 8 * d) * s - 4.5 * d * co, cy - (tip - 8 * d) * co - 4.5 * d * s); c.lineTo(cx + (tip - 8 * d) * s + 4.5 * d * co, cy - (tip - 8 * d) * co + 4.5 * d * s); c.closePath(); c.fill();
+      }
+      // maquette (rouge Orbital, fixe)
+      c.strokeStyle = COL.RR; c.fillStyle = COL.RR; c.lineWidth = 2.4 * d; c.lineCap = 'round'; c.beginPath();
+      c.moveTo(cx - R * 0.5, cy); c.lineTo(cx - R * 0.16, cy); c.lineTo(cx - R * 0.1, cy + R * 0.07);
+      c.moveTo(cx + R * 0.5, cy); c.lineTo(cx + R * 0.16, cy); c.lineTo(cx + R * 0.1, cy + R * 0.07); c.stroke();
+      c.beginPath(); c.arc(cx, cy, 2.6 * d, 0, 2 * Math.PI); c.fill(); c.lineCap = 'butt';
+    });
+    scr.put(inner.x, inner.b - 1, clip(at ? 'GRAVITY REF · ' + at.mode + ' · ' + tag('motion') : 'WAITING FOR MOTION SENSOR', inner.w), t.F);
+  } };
+
+// ------------------------------------------------------------------ M04 GNSS
+PAGES.M04 = { code: 'M04', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 'POSITION', 'GEO'], fps: 1,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, 'GEOLOCATION ' + tag('geo'), srcStyle('geo'));
+    let y = ir.y; const g = SRC.geo.v, T = now();
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (live('geo')) {
+      const [hw, x2] = twoUp(ir);
+      W.readout(scr, ir.x, y, hw, 'ACCURACY', Math.round(g.acc), 'm', t.N, g.acc > AL.GnssAccCaut, true, 3);
+      W.readout(scr, x2, y, hw, 'SPEED', g.speed != null ? (g.speed * 3.6).toFixed(1) : '', 'km/h', t.N, false, true, 3, 4);
+      y += 6;
+      kv('LATITUDE', Math.abs(g.lat).toFixed(5) + '° ' + (g.lat >= 0 ? 'N' : 'S'));
+      kv('LONGITUDE', Math.abs(g.lon).toFixed(5) + '° ' + (g.lon >= 0 ? 'E' : 'W'));
+      kv('ALTITUDE', g.alt != null ? Math.round(g.alt) + ' m' + (g.altAcc != null ? ' ±' + Math.round(g.altAcc) : '') : '—');
+      kv('COURSE', g.course != null && isFinite(g.course) ? Math.round(g.course) + '° ' + card(g.course) : '—');
+      kv('LOCATOR', locator(g.lat, g.lon));
+      kv('FIX AGE', Math.max(0, Math.round(T - g.fixT)) + ' s', T - g.fixT > AL.GnssLostSecs ? t.RB : t.N);
+    } else { noData(scr, ir.x, y++, ir.w, SRC.geo.mode === 'na' ? 'NO POSITION · USING ' + CFG.HOME.name : 'WAITING FOR A FIX · USING ' + CFG.HOME.name); y++; }
+    const h = here(), s = A.sunInfo(T, h.lat, h.lon), m = A.moonInfo(T, h.lat, h.lon);
+    y++; if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'SUN · MOON', h.name === 'GNSS' ? 'AT YOUR FIX' : 'AT ' + h.name);
+    kv('SUN AZ · EL', Math.round(s.az) + '° · ' + sgn(s.el, 1) + '°');
+    kv('SUNRISE · SET', (s.rise ? hhmm(s.rise) : '—') + ' · ' + (s.set ? hhmm(s.set) : '—'));
+    kv('MOON EL · PHASE', sgn(m.el, 0) + '° · ' + Math.round(m.frac * 100) + ' %');
+    if (ir.b - y >= 7 && HIST.acc.v.length > 2) {
+      y++; sub(scr, ir.x, y++, ir.w, 'ACCURACY', '5 s / POINT');
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.acc.v, t.N]], { vmin: 0, step: 5, minSpan: 60, unit: ' m', fmt: v => String(Math.round(v)), limits: [[AL.GnssAccCaut, 0, 'CAUT']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ S19 WEATHER
+PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO'], fps: 1,
+  keys: [['1', 'REFRESH', () => fetchWx()]],
+  draw(scr, r) {
+    const w = SRC.wx.v;
+    const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
+    let y = ir.y;
+    if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO WEATHER DATA · NEEDS NETWORK'); return; }
+    const [hw, x2] = twoUp(ir);
+    W.readout(scr, ir.x, y, hw, 'TEMP', w.temp.toFixed(1), '°C', t.N, w.temp > CFG.FCU.T2Max, true, 3);
+    W.readout(scr, x2, y, hw, 'FEELS', w.feel.toFixed(1), '°C', t.N, false, true, 3);
+    y += 6;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    kv('CONDITION', WMO[w.code] || 'CODE ' + w.code);
+    kv('PRESSURE MSL', w.p.toFixed(1) + ' hPa', w.p < CFG.FCU.DavMin ? t.R : t.N);
+    kv('HUMIDITY', Math.round(w.rh) + ' %');
+    kv('WIND · GUSTS', Math.round(w.wind) + ' · ' + Math.round(w.gust) + ' km/h ' + card(w.dir));
+    kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : CFG.HOME.name);
+    y++;
+    if (ir.b - y >= 8 && w.hp) {
+      const span = Math.min(w.hp.length, Math.floor((ir.w - 10) / 1)), i0 = Math.max(0, Math.min(w.hp.length - span, w.ni - Math.floor(span * 0.6)));
+      const vals = w.hp.slice(i0, i0 + span), lo = Math.floor(Math.min(...vals, CFG.FCU.DavMin) - 2), hiV = Math.ceil(Math.max(...vals, CFG.FCU.DavMin) + 1);
+      const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
+      sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', '◂ PAST · FORECAST ▸');
+      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: lo, vmax: hiV, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
+        styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: [[CFG.FCU.DavMin, 0, 'ДАВ', 'lo']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ S29 CHRONO
+const CHR = { run: false, t0: 0, acc: 0, laps: [], tmr: 0, tmrEnd: 0, tmrRun: false, tmrLeft: 0, rang: false };
+const chrEl = () => CHR.acc + (CHR.run ? now() - CHR.t0 : 0);
+function tmrSet(s) { CHR.tmr = s; CHR.tmrLeft = s; CHR.tmrRun = false; CHR.rang = false; }
+function tmrGo() { if (CHR.tmrRun) { CHR.tmrLeft = Math.max(0, CHR.tmrEnd - now()); CHR.tmrRun = false; } else if (CHR.tmrLeft > 0) { CHR.tmrEnd = now() + CHR.tmrLeft; CHR.tmrRun = true; CHR.rang = false; } }
+function chrTick() {
+  if (CHR.tmrRun && now() >= CHR.tmrEnd) { CHR.tmrRun = false; CHR.tmrLeft = 0; CHR.rang = now(); log('TMR', 'TIMER ' + mmss(CHR.tmr) + ' ELAPSED', true); haptic([300, 150, 300, 150, 600]); }
+}
+const mmss = (s, tenth = false) => { s = Math.max(0, s); const m = Math.floor(s / 60), r = s - m * 60; return pad2(m) + ':' + pad2(Math.floor(r)) + (tenth ? '.' + Math.floor(r * 10 % 10) : ''); };
+PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['CHRONO', 'TIMER', 'STOPWATCH'], fps: 10,
+  keys: [['1', 'START', () => { if (CHR.run) { CHR.acc += now() - CHR.t0; CHR.run = false; } else { CHR.t0 = now(); CHR.run = true; } }],
+    ['2', 'LAP', () => { if (CHR.run) CHR.laps.unshift(chrEl()); }], ['3', 'RESET', () => { CHR.run = false; CHR.acc = 0; CHR.laps = []; }],
+    ['4', "5'", () => tmrSet(300)], ['5', "15'", () => tmrSet(900)], ['6', "30'", () => tmrSet(1800)], ['7', 'GO', () => tmrGo()]],
+  draw(scr, r) {
+    this.keys[0][1] = CHR.run ? 'STOP' : 'START'; this.keys[6][1] = CHR.tmrRun ? 'HOLD' : 'GO';
+    const ir = W.panel(scr, r, this.code, this.name, 'СЕКУНДОМЕР', t.TD);
+    let y = ir.y;
+    W.readout(scr, ir.x, y, ir.w, 'STOPWATCH' + (CHR.run ? ' ▶' : ''), mmss(chrEl(), true), '', CHR.run ? t.B : t.N, false, true);
+    y += 6;
+    CHR.laps.slice(0, 3).forEach((l, i) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'LAP ' + (CHR.laps.length - i), mmss(l, true) + (i < CHR.laps.length - 1 ? ' · +' + mmss(l - CHR.laps[i + 1], true) : '')); });
+    y++;
+    const left = CHR.tmrRun ? CHR.tmrEnd - now() : CHR.tmrLeft, last10 = CHR.tmrRun && left <= 10;
+    const ring = CHR.rang && now() - CHR.rang < 30, on = Math.floor(Date.now() / 500) % 2 === 0;
+    if (y + 5 <= ir.b) {
+      W.readout(scr, ir.x, y, ir.w, 'TIMER ' + (CHR.tmr ? Math.round(CHR.tmr / 60) + "'" : '—') + (CHR.tmrRun ? ' ▶' : ''), ring && !on ? '' : mmss(Math.ceil(left)), '', t.N, last10 || ring, true);
+      y += 6;
+    }
+    if (y < ir.b) scr.put(ir.x, y++, clip(ring ? 'TIMER ELAPSED' : (CHR.tmr ? 'PRESETS 5\' 15\' 30\' · GO / HOLD' : 'PICK A PRESET: [*4] 5\'  [*5] 15\'  [*6] 30\''), ir.w), ring ? t.RB : t.D);
+    if (y < ir.b) scr.put(ir.x, y++, clip('LASER · PRINT · SOLDER', ir.w), t.F);
+  } };
+
+// ------------------------------------------------------------------ S28 QUICK SET
+PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
+  keys: [['1', 'SIM', () => { SET.sim = { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); }],
+    ['2', 'WAKE', () => wakeSet(!SET.wake)], ['3', 'FULL', () => toggleFull()], ['4', 'HAPTIC', () => { SET.haptics = !SET.haptics; saveSettings(); }],
+    ['5', 'PAD', () => { SET.pad = !SET.pad; saveSettings(); }], ['6', 'ZOOM−', () => zoom(-1)], ['7', 'ZOOM+', () => zoom(1)], ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }]],
+  draw(scr, r, app) {
+    const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + ' MOBILE', t.TD);
+    let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
+    const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['WAKE LOCK', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
+      ['NUMPAD', SET.pad], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
+    items[6][0] = 'ZOOM +';
+    y += W.tileGrid(scr, ir.x, y, 2, cw, items.map(([lab, on], i) => ['*' + (i + 1) + ' ' + lab, on ? 'on' : 'nom', () => this.keys[i][2](app)]), app.hits);
+    y++;
+    sub(scr, ir.x, y++, ir.w, 'SOURCES', 'LIVE · SIM · N/A');
+    const half = Math.ceil(SOURCES.length / 2), cww = Math.floor((ir.w - 2) / 2);
+    SOURCES.forEach(([k, n], i) => {
+      const yy = y + (i % half), xx = ir.x + (i >= half ? cww + 2 : 0);
+      if (yy >= ir.b) return;
+      const m = k === 'tle' ? (TLE_SRC === 'CELESTRAK' ? 'live' : 'sim') : SRC[k].mode;
+      W.kv(scr, xx, yy, cww, n, ({ live: 'LIVE', sim: 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[m], t.D, m === 'live' ? t.B : (m === 'sim' ? t.INVN : t.F));
+    });
+    y += half + 1;
+    if (y < ir.b) scr.put(ir.x, y++, clip(REAL ? 'AUTO: PHONE SENSORS LIVE · NOTHING SIMULATED.' : 'AUTO: NO PHONE SENSOR · MISSING SOURCES SIMULATED.', ir.w), t.F);
+    if (y < ir.b) scr.put(ir.x, y++, clip('BARO · BATT TEMP · LIGHT: APK BRIDGE (grafit-native).', ir.w), t.F);
+  } };
+
+// groupes : mêmes numéros qu'au pavé de Grafit sur le PC
+const GROUPS = [
+  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
+  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
+];
+
+// ---------------------------------------------------------------------------------------- rendu (canvas)
+// Grille de cellules fixe : le texte passe par la police, les cadres, blocs et points braille sont dessinés
+// (comme tools/render.ps1 de Grafit), donc la grille reste juste quelle que soit la police de repli.
+const BOX = {};
+(() => {
+  const L = 1, H = 2, def = (chs, u, r, d, l) => { for (const c of chs) BOX[c] = [u, r, d, l]; };
+  def('─', 0, L, 0, L); def('│', L, 0, L, 0); def('┌', 0, L, L, 0); def('┐', 0, 0, L, L); def('└', L, L, 0, 0); def('┘', L, 0, 0, L);
+  def('├', L, L, L, 0); def('┤', L, 0, L, L); def('┬', 0, L, L, L); def('┴', L, L, 0, L); def('┼', L, L, L, L);
+  def('━', 0, H, 0, H); def('┃', H, 0, H, 0); def('┏', 0, H, H, 0); def('┓', 0, 0, H, H); def('┗', H, H, 0, 0); def('┛', H, 0, 0, H);
+  def('┣', H, H, H, 0); def('┫', H, 0, H, H); def('┳', 0, H, H, H); def('┻', H, H, 0, H); def('╋', H, H, H, H);
+  def('╹', H, 0, 0, 0); def('╻', 0, 0, H, 0); def('╸', 0, 0, 0, H); def('╺', 0, H, 0, 0);
+})();
+const DASH_H = { '┈': 4, '┄': 3, '╌': 2 }, DASH_V = { '┊': 4, '┆': 3, '╎': 2 };
+const LOWER = '▁▂▃▄▅▆▇', LEFT = '▏▎▍▌▋▊▉';
+
+class Renderer {
+  constructor(cv) { this.cv = cv; this.ctx = cv.getContext('2d'); this.family = '"Martian Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace'; this.adv = 0.6; }
+  measure() {
+    const c = this.ctx; c.font = '400 100px ' + this.family; try { c.fontStretch = 'condensed'; } catch (e) { /* */ }
+    this.adv = c.measureText('MMMMMMMMMM').width / 1000;
+  }
+  layout() {
+    const dpr = Math.min(3, window.devicePixelRatio || 1), box = this.cv.parentElement.getBoundingClientRect(), cw = Math.floor(box.width), ch = Math.floor(box.height);
+    const short = Math.min(cw, ch);
+    const cellW = Math.max(5, short / 46 / SET.scale), fpx = cellW / this.adv * 0.98, cellH = Math.round(fpx * 1.32 * dpr) / dpr;
+    this.cols = Math.max(30, Math.floor(cw / cellW)); this.rows = Math.max(24, Math.floor(ch / cellH));
+    this.cw = cw / this.cols; this.ch = ch / this.rows; CELL.aspect = this.ch / this.cw; this.fpx = Math.min(fpx, this.cw / this.adv * 0.98); this.dpr = dpr;
+    this.cv.width = Math.round(cw * dpr); this.cv.height = Math.round(ch * dpr);
+    this.cv.style.width = cw + 'px'; this.cv.style.height = ch + 'px';
+    return [this.cols, this.rows];
+  }
+  draw(scr) {
+    const c = this.ctx, d = this.dpr, cw = this.cw * d, chh = this.ch * d;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.fillStyle = STYLES[t.N].bg; c.fillRect(0, 0, this.cv.width, this.cv.height);
+    // 1. fonds des cellules
+    for (let y = 0; y < scr.h; y++) for (let x = 0; x < scr.w; x++) {
+      const s = STYLES[scr.st[y * scr.w + x]];
+      if (!s.base) { c.fillStyle = s.bg; c.fillRect(Math.round(x * cw), Math.round(y * chh), Math.round((x + 1) * cw) - Math.round(x * cw), Math.round((y + 1) * chh) - Math.round(y * chh)); }
+    }
+    // 2. couche vectorielle (courbes, cartes, instruments, afficheurs)
+    for (const v of scr.vec || []) {
+      const b = { x: v.x * cw, y: v.y * chh, w: v.w * cw, h: v.h * chh, cw, ch: chh, d, fpx: this.fpx * d, family: this.family };
+      c.save();
+      if (v.clip) { c.beginPath(); c.rect(b.x, b.y, b.w, b.h); c.clip(); }
+      try { v.fn(c, b); } catch (e) { console.error(e); }
+      c.restore();
+    }
+    // 3. caractères
+    const fN = '400 ' + (this.fpx * d).toFixed(2) + 'px ' + this.family, fB = '700 ' + (this.fpx * d).toFixed(2) + 'px ' + this.family;
+    c.textAlign = 'center'; c.textBaseline = 'middle';
+    try { c.fontStretch = 'condensed'; } catch (e) { /* */ }
+    const lw = Math.max(1, Math.round(cw * 0.1)), hw = Math.max(2, Math.round(cw * 0.22));
+    let curFont = '';
+    for (let y = 0; y < scr.h; y++) {
+      const y0 = Math.round(y * chh), y1 = Math.round((y + 1) * chh), hgt = y1 - y0;
+      for (let x = 0; x < scr.w; x++) {
+        const i = y * scr.w + x, ch = scr.ch[i];
+        if (ch === ' ') continue;
+        const s = STYLES[scr.st[i]], x0 = Math.round(x * cw), x1 = Math.round((x + 1) * cw), wid = x1 - x0;
+        c.fillStyle = s.fg;
+        const cp = ch.codePointAt(0);
+        if (cp >= 0x2800 && cp <= 0x28ff) {
+          const bits = cp - 0x2800, dw = Math.max(1, Math.round(wid * 0.34)), dh = Math.max(1, Math.round(hgt * 0.17));
+          for (let k = 0; k < 8; k++) if (bits & [1, 2, 4, 64, 8, 16, 32, 128][k]) {
+            const col = k < 4 ? 0 : 1, row = k % 4;
+            c.fillRect(Math.round(x0 + (col + 0.5) * wid / 2 - dw / 2), Math.round(y0 + (row + 0.5) * hgt / 4 - dh / 2), dw, dh);
+          }
+          continue;
+        }
+        const bx = BOX[ch];
+        if (bx) {
+          const mx = x0 + Math.floor(wid / 2), my = y0 + Math.floor(hgt / 2);
+          const th = k => k === 2 ? hw : lw, ext = Math.max(...bx.map(th));
+          if (bx[0]) c.fillRect(mx - Math.floor(th(bx[0]) / 2), y0, th(bx[0]), my - y0 + Math.ceil(ext / 2));
+          if (bx[2]) c.fillRect(mx - Math.floor(th(bx[2]) / 2), my - Math.floor(ext / 2), th(bx[2]), y1 - my + Math.floor(ext / 2));
+          if (bx[3]) c.fillRect(x0, my - Math.floor(th(bx[3]) / 2), mx - x0 + Math.ceil(ext / 2), th(bx[3]));
+          if (bx[1]) c.fillRect(mx - Math.floor(ext / 2), my - Math.floor(th(bx[1]) / 2), x1 - mx + Math.floor(ext / 2), th(bx[1]));
+          continue;
+        }
+        if (DASH_H[ch]) { const n = DASH_H[ch], seg = wid / n; for (let k = 0; k < n; k++) c.fillRect(Math.round(x0 + k * seg), y0 + Math.floor(hgt / 2) - Math.floor(lw / 2), Math.max(1, Math.round(seg * 0.55)), lw); continue; }
+        if (DASH_V[ch]) { const n = DASH_V[ch], seg = hgt / n; for (let k = 0; k < n; k++) c.fillRect(x0 + Math.floor(wid / 2) - Math.floor(lw / 2), Math.round(y0 + k * seg), lw, Math.max(1, Math.round(seg * 0.55))); continue; }
+        if (ch === '█') { c.fillRect(x0, y0, wid, hgt); continue; }
+        let k = LOWER.indexOf(ch); if (k >= 0) { const hh = Math.round(hgt * (k + 1) / 8); c.fillRect(x0, y1 - hh, wid, hh); continue; }
+        k = LEFT.indexOf(ch); if (k >= 0) { c.fillRect(x0, y0, Math.max(1, Math.round(wid * (k + 1) / 8)), hgt); continue; }
+        if (ch === '■') { const sz = Math.round(wid * 0.62); c.fillRect(x0 + Math.round((wid - sz) / 2), y0 + Math.round((hgt - sz) / 2), sz, sz); continue; }
+        if (ch === '▪') { const sz = Math.max(2, Math.round(wid * 0.34)); c.fillRect(x0 + Math.round((wid - sz) / 2), y0 + Math.round((hgt - sz) / 2), sz, sz); continue; }
+        if (ch === '▌') { c.fillRect(x0, y0, Math.round(wid / 2), hgt); continue; }
+        const f = s.bold ? fB : fN; if (f !== curFont) { c.font = f; curFont = f; }
+        c.fillText(ch, x0 + wid / 2, y0 + hgt / 2 + d * 0.5);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------- application
+let APP = null;
+function app_hit(x, y, w, h, fn) { if (APP) APP.hits.push({ x, y, w, h, fn }); }
+
+class App {
+  constructor() {
+    this.cmd = null; this.msg = ''; this.msgT = 0; this.msgWarn = false; this.armed = null;
+    this.pad = null; this.padT = 0; this.prev = null; this.lampT0 = 0; this.t0 = now(); this.hits = [];
+    this.gi = Math.min(SET.gi || 0, GROUPS.length - 1); this.pi = GROUPS.map((g, i) => Math.min((SET.pi || [])[i] || 0, g[3].length - 1));
+    this.splash = now();
+  }
+  get page() { return PAGES[GROUPS[this.gi][3][this.pi[this.gi]]]; }
+  show(gi, pi) {
+    const cur = [this.gi, this.pi[this.gi]];
+    this.gi = ((gi % GROUPS.length) + GROUPS.length) % GROUPS.length;
+    if (pi != null) { const n = GROUPS[this.gi][3].length; this.pi[this.gi] = ((pi % n) + n) % n; }
+    if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) this.prev = cur;
+    SET.gi = this.gi; SET.pi = this.pi.slice(); saveSettings();
+  }
+  step(d) {                                          // format suivant / précédent sur l'ensemble des groupes
+    const flat = []; GROUPS.forEach((g, gi) => g[3].forEach((_, pi) => flat.push([gi, pi])));
+    const i = flat.findIndex(([g, p]) => g === this.gi && p === this.pi[this.gi]);
+    const [g, p] = flat[(i + d + flat.length) % flat.length]; this.show(g, p);
+  }
+  go(code, sel) { const hit = this.find(code); if (hit) { this.show(...hit); if (sel && this.page.sel !== undefined) this.page.sel = sel; } }
+  address() { return (this.gi + 1) + '.' + (this.pi[this.gi] + 1); }
+  blink() { return Math.floor(Date.now() / 500) % 2 === 0; }      // annonciateur CRITICAL : 1 Hz
+  lampTest() { this.lampT0 = now(); log('SYS', 'LAMP TEST'); haptic([60, 240, 60, 240, 60, 240, 60, 240]); }
+  lamp() {
+    if (!this.lampT0) return null;
+    const k = Math.floor((now() - this.lampT0) / (CFG.FCU.LampStepMs / 1000));
+    if (k >= 13) { this.lampT0 = 0; return null; }
+    const ORD = ['hv', 'zag', 'dav', 'dep', 't1', 't2'];
+    return { ann: k < 4 ? 1 : (k < 8 ? 2 : 0), lit: (k % 2 === 1 && k <= 11) ? ORD[(k + 1) / 2 - 1] : null, k };
+  }
+  find(word) {
+    const wd = String(word).trim().toUpperCase(); if (!wd) return null;
+    const m = wd.match(/^(\d)\.(\d)$/);
+    if (m) { const g = +m[1] - 1, f = +m[2] - 1; if (GROUPS[g] && GROUPS[g][3][f]) return [g, f]; }
+    for (let gi = 0; gi < GROUPS.length; gi++) for (let pi = 0; pi < GROUPS[gi][3].length; pi++) {
+      const code = GROUPS[gi][3][pi], p = PAGES[code];
+      if (code === wd || code.slice(1) === wd.replace(/^[SM]/, '').padStart(2, '0') && /^[SM]?\d+$/.test(wd) && (wd[0] === code[0] || /^\d/.test(wd))) return [gi, pi];
+      if ([p.name.replace(' · ', ' ')].concat(p.words).some(n => n === wd || n.startsWith(wd) || n.split(' ')[0] === wd)) return [gi, pi];
+    }
+    return null;
+  }
+  say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; }
+  arm(id, label, fn) {
+    const t1 = now();
+    if (this.armed && this.armed[0] === id && t1 < this.armed[2]) { this.armed = null; fn(); return; }
+    this.armed = [id, label, t1 + 3]; this.say(label + ' · PRESS AGAIN WITHIN 3 S TO CONFIRM', true);
+  }
+  execute(line) {
+    line = line.trim(); if (!line) return;
+    const [verb, ...rest] = line.split(/\s+/), v = verb.toUpperCase(), arg = rest.join(' ').toUpperCase();
+    if (['HELP', '?', 'H'].includes(v)) return this.say('1-7 GROUP · . n FORMAT · * n ACTION · 0 RCL · +− STEP · / LAMP · S01 / BARO / 2.3 · SIM AUTO|ON|OFF · TIMER 7:30');
+    if (['LAMP', 'TEST', 'LT'].includes(v)) return this.lampTest();
+    if (v === 'SIM' && ['AUTO', 'ON', 'OFF'].includes(arg)) { SET.sim = arg; saveSettings(); simReset(); return this.say('SIM MODE ' + arg); }
+    if (v === 'TIMER' || v === 'TMR') { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (mm) { tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); this.go('S29'); return this.say('TIMER ' + arg + ' RUNNING'); } }
+    if (v === 'MIC') { micArm(SRC.mic.mode === 'off'); return; }
+    if (v === 'WAKE') { wakeSet(!SET.wake); return; }
+    if (v === 'PAD') { SET.pad = !SET.pad; saveSettings(); return; }
+    const hit = this.find(line); if (hit) return this.show(...hit);
+    this.say('UNKNOWN COMMAND · ' + line.toUpperCase() + ' · TYPE HELP', true);
+  }
+  // ---------------------------------------------------------- pavé numérique (pupitre)
+  onPad(p) {
+    const pend = now() < this.padT ? this.pad : null; this.pad = null;
+    if (p === 'ENTER') return openCmd();
+    if (p === 'NUM') { SET.pad = !SET.pad; saveSettings(); return; }
+    if (/^\d$/.test(p)) {
+      let n = +p; const pages = GROUPS[this.gi][3];
+      if (pend === '.') { n = n || 10; if (n <= pages.length) this.show(this.gi, n - 1); else this.say('NO FORMAT ' + (this.gi + 1) + '.' + n + ' · GROUP ' + (this.gi + 1) + ' HAS ' + pages.length, true); }
+      else if (pend === '*') { if (!this.action(p)) this.say('NO ACTION ' + p + ' ON ' + this.page.code + ' ' + this.page.name, true); }
+      else if (n === 0) { if (this.prev) this.show(...this.prev); }
+      else if (n <= GROUPS.length) this.show(n - 1);
+      else this.say('NO GROUP ' + n + ' · GROUPS 1-' + GROUPS.length, true);
+    } else if (p === '.' || p === '*') { this.pad = p; this.padT = now() + 4; }
+    else if (p === '+' || p === '-') this.step(p === '+' ? 1 : -1);
+    else if (p === '/') this.lampTest();
+  }
+  action(k) { const a = (this.page.keys || []).find(x => x[0] === k); if (!a) return false; a[2](this); return true; }
+  onKey(e) {
+    const k = e.key, code = e.code || '';
+    if (this.cmd !== null) return;                        // la saisie va dans le champ de commande
+    if (code.startsWith('Numpad')) { e.preventDefault(); const m = { NumpadEnter: 'ENTER', NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/' }; return this.onPad(m[code] || code.slice(6)); }
+    if (/^F[1-7]$/.test(k)) { e.preventDefault(); return this.show(+k.slice(1) - 1); }
+    if (k === 'ArrowLeft') return this.show(this.gi - 1);
+    if (k === 'ArrowRight') return this.show(this.gi + 1);
+    if (k === 'ArrowUp') return this.show(this.gi, this.pi[this.gi] - 1);
+    if (k === 'ArrowDown') return this.show(this.gi, this.pi[this.gi] + 1);
+    if (k === 'Enter' || k === ':') { e.preventDefault(); return openCmd(); }
+    if (k === '/') return this.lampTest();
+    if (/^[1-9]$/.test(k)) { if (!this.action(k)) { const n = +k - 1; if (n < GROUPS[this.gi][3].length) this.show(this.gi, n); } return; }
+    if (/^[a-z]$/i.test(k) && !e.ctrlKey && !e.metaKey) { openCmd(k); e.preventDefault(); }
+  }
+  // ---------------------------------------------------------- dessin
+  draw(scr) {
+    this.hits = [];
+    scr.clear();
+    const Wd = scr.w, H = scr.h, blink = this.blink();
+    if (now() - this.splash < 2.2) return this.drawSplash(scr);
+    this.drawBand(scr, Wd, blink);
+    const padOn = SET.pad && H >= 36, padH = padOn ? 11 : 0, cmdY = H - 1, fsY = H - 2 - padH, gbY = fsY - 1;
+    scr.put(0, 2, '─'.repeat(Wd), t.L);
+    scr.put(0, gbY - 1, '─'.repeat(Wd), t.L);
+    const r = new Rect(0, 3, Wd, gbY - 4);
+    const page = this.page;
+    try { page.draw(scr, r, this); }
+    catch (err) { const ir = W.panel(scr, r, page.code, page.name, 'FAULT', t.TR, true); scr.put(ir.x, ir.y + 1, clip('FORMAT FAULT · ' + err.message, ir.w), t.R); console.error(err); }
+    this.drawGroups(scr, gbY, Wd);
+    this.drawFormats(scr, fsY, Wd);
+    if (padOn) this.drawPad(scr, 0, fsY + 1, Wd);
+    this.drawCmd(scr, cmdY, Wd, blink);
+  }
+  drawSplash(scr) {
+    const el = now() - this.splash, cx = Math.floor(scr.w / 2), y0 = Math.max(2, Math.floor(scr.h / 2) - 8);
+    W.box(scr, cx - 12, y0 - 1, 24, 3, t.L);
+    scr.put(cx - 11, y0, center(CFG.OS_RU + ' · ' + CFG.OS, 22), t.B);
+    scr.put(0, y0 + 2, center(CFG.VERSION + ' · ' + CFG.STATION + ' · ВКЛ ●', scr.w), t.D);
+    const checks = [['ORIENT', 'orient'], ['MOTION', 'motion'], ['GNSS', 'geo'], ['BATTERY', 'batt'], ['NETWORK', 'net'], ['BAROMETER', 'baro'], ['WEATHER', 'wx'], ['FCU 0.4.1', null]];
+    checks.forEach(([n, k], i) => {
+      if (el < 0.25 + i * 0.18) return;
+      const st = k ? tag(k) : 'ONLINE', w = Math.min(32, scr.w - 4), x = cx - Math.floor(w / 2);
+      W.kv(scr, x, y0 + 5 + i, w, n, st, t.D, st === 'LIVE' || st === 'ONLINE' ? t.B : (st === 'SIM' ? t.INVN : t.F));
+    });
+    scr.put(0, y0 + 15, center('TAP TO SKIP', scr.w), t.F);
+    this.hits.push({ x: 0, y: 0, w: scr.w, h: scr.h, fn: () => { this.splash = 0; } });
+  }
+  drawBand(scr, Wd, blink) {
+    scr.fill(0, 0, Wd, 1, ' ', t.T);
+    let x = scr.put(0, 0, ' ' + CFG.OS_RU + ' ', t.INV);
+    const p = this.page, right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
+    const mid = ' Ф ' + this.address() + ' ', code = ' ' + p.code + ' ', name = ' ' + p.name;
+    if (Wd - x - right.length - 2 >= mid.length + code.length + slen(name) + 9) { x += scr.put(x, 0, ' ' + CFG.STATION + ' ', t.TR); x += scr.put(x, 0, '│', t.TF); }
+    x += scr.put(x, 0, mid, t.TD); x += scr.put(x, 0, code, t.INV); scr.put(x, 0, clip(name, Wd - x - right.length - 3), t.T);
+    W.rjust(scr, Wd - 2, 0, right, t.T); scr.put(Wd - 2, 0, '●', t.TR);
+    const up = now() - this.t0, d = Math.floor(up / 86400), rest = up % 86400;
+    scr.put(1, 1, 'MET T+' + d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60), t.D);
+    const sim = SOURCES.some(([k]) => SRC[k].mode === 'sim');
+    let xr = Wd - 1;
+    if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); app_hit(xr, 1, 5, 1, () => this.go('S28')); xr -= 1; }
+    let st, txt;
+    if (ALS.crit) { txt = ' MASTER CAUTION · ' + ALS.crit + ' CRIT '; st = blink ? t.ALERT : t.RB; }
+    else if (ALS.caut) { txt = ' CAUTION · ' + ALS.caut + ' '; st = t.RB; }
+    else { txt = 'NOMINAL '; st = t.F; }
+    W.rjust(scr, xr, 1, txt, st); app_hit(xr - slen(txt), 1, slen(txt), 1, () => this.go('S01'));
+  }
+  drawGroups(scr, y, Wd) {
+    let x = 0;
+    const full = GROUPS.reduce((a, g) => a + 4 + g[1].length, 0) <= Wd;
+    GROUPS.forEach(([key, name], gi) => {
+      const cur = gi === this.gi, x0 = x;
+      x += scr.put(x, y, ' ' + key + ' ', cur ? t.INV : t.D);
+      if (cur || full) x += scr.put(x, y, ' ' + name + ' ', cur ? t.B : t.N) ; else x += 1;
+      app_hit(x0, y, x - x0, 1, () => this.show(gi));
+    });
+    if (x < Wd - 4) W.rjust(scr, Wd, y, GROUPS[this.gi][2] + ' ', t.F);
+  }
+  drawFormats(scr, y, Wd) {
+    const codes = GROUPS[this.gi][3]; let x = 0;
+    const long = codes.reduce((a, c) => a + 5 + c.length + slen(PAGES[c].name) + 2, 0) <= Wd;
+    codes.forEach((c, i) => {
+      const sel = i === this.pi[this.gi], txt = ' .' + (i + 1) + ' ' + c + ((long || sel) ? ' ' + PAGES[c].name : '') + ' ', x0 = x;
+      x += scr.put(x, y, clip(txt, Wd - x), sel ? t.INV : t.N);
+      if (!sel) scr.put(x0 + 1, y, '.' + (i + 1), t.D);
+      app_hit(x0, y, x - x0, 1, () => this.show(this.gi, i));
+      x += 1;
+    });
+  }
+  drawPad(scr, x0, y0, Wd) {
+    // pupitre du pavé numérique de Grafit, en touches tactiles (4 colonnes x 5 rangées, + et ↵ sur deux)
+    const KEYS = { NUM: [0, 0, 1, 1], '/': [1, 0, 1, 1], '*': [2, 0, 1, 1], '-': [3, 0, 1, 1], '7': [0, 1, 1, 1], '8': [1, 1, 1, 1], '9': [2, 1, 1, 1], '+': [3, 1, 1, 2],
+      '4': [0, 2, 1, 1], '5': [1, 2, 1, 1], '6': [2, 2, 1, 1], '1': [0, 3, 1, 1], '2': [1, 3, 1, 1], '3': [2, 3, 1, 1], ENTER: [3, 3, 1, 2], '0': [0, 4, 2, 1], '.': [2, 4, 1, 1] };
+    const SHOW = { NUM: 'NUM', '-': '−', ENTER: '↵' };
+    const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', COMMS: 'COMM' };
+    const lab = { NUM: 'HIDE', '/': 'TEST', '*': 'ACT', '-': 'PREV', '+': 'NEXT', ENTER: 'CMD', '0': 'RCL', '.': 'FMT' };
+    GROUPS.forEach(([k, n]) => { lab[k] = SHORT[n] || n; });
+    const colW = Math.floor((Wd - 1) / 4), pw = colW * 4 + 1, ox = x0 + Math.floor((Wd - pw) / 2);
+    // filets : masque de directions par cellule, puis caractère de cadre
+    const mask = new Map(), add = (x, y, b) => { const k = x + ',' + y; mask.set(k, (mask.get(k) || 0) | b); }; // 1 haut, 2 droite, 4 bas, 8 gauche
+    const pend = now() < this.padT ? this.pad : null;
+    for (const [k, [c, r, cs, rs]] of Object.entries(KEYS)) {
+      const xa = c * colW, xb = (c + cs) * colW, ya = r * 2, yb = (r + rs) * 2;
+      for (let x = xa; x <= xb; x++) { if (x < xb) { add(x, ya, 2); add(x + 1, ya, 8); add(x, yb, 2); add(x + 1, yb, 8); } }
+      for (let y = ya; y <= yb; y++) { if (y < yb) { add(xa, y, 4); add(xa, y + 1, 1); add(xb, y, 4); add(xb, y + 1, 1); } }
+    }
+    const CH = { 3: '└', 5: '│', 6: '┌', 7: '├', 9: '┘', 10: '─', 11: '┴', 12: '┐', 13: '┤', 14: '┬', 15: '┼', 1: '╵', 2: '─', 4: '│', 8: '─' };
+    for (const [key, b] of mask) { const [x, y] = key.split(',').map(Number); scr.put(ox + x, y0 + y, CH[b] || ' ', t.L); }
+    for (const [k, [c, r, cs, rs]] of Object.entries(KEYS)) {
+      const kx = ox + c * colW + 1, kw = cs * colW - 1, ky = y0 + r * 2 + 1, kh = rs * 2 - 1;
+      const on = k === String(this.gi + 1) || k === pend || (k === '/' && this.lampT0);
+      const dead = (/^\d$/.test(k) && +k > GROUPS.length) && k !== '0';
+      if (on) for (let yy = ky; yy < ky + kh; yy++) scr.put(kx, yy, ' '.repeat(kw), t.INV);
+      const ty = ky + Math.floor(kh / 2), lbl = (SHOW[k] || k) + ' ' + (lab[k] || '');
+      scr.put(kx, ty, center(clip(lbl.trim(), kw), kw), on ? t.INV : (dead ? t.F : t.B));
+      if (!on && lab[k] && !dead) { const s = center(clip(lbl.trim(), kw), kw), i0 = s.indexOf(lab[k]); if (i0 > 0) scr.put(kx + i0, ty, lab[k], t.D); }
+      app_hit(kx - 1, ky - 1, kw + 2, kh + 2, () => { haptic(8); this.onPad(k); });
+    }
+  }
+  drawCmd(scr, y, Wd, blink) {
+    let x = scr.put(0, y, ' ' + CFG.STATION.slice(0, 3) + ' ▸ ', t.B);
+    if (this.cmd !== null) {
+      x += scr.put(x, y, this.cmd.slice(-(Wd - 20)), t.N); scr.put(x, y, blink ? '█' : ' ', t.N);
+      W.rjust(scr, Wd - 1, y, '↵ RUN · ESC', t.F); return;
+    }
+    const pend = now() < this.padT ? this.pad : null;
+    if (pend === '.') { x += scr.put(x, y, 'ФОРМАТ ' + (this.gi + 1) + '.', t.B); scr.put(x, y, blink ? '█' : ' ', t.N); return; }
+    if (pend === '*') { x += scr.put(x, y, 'ДЕЙСТВИЕ · ' + this.page.code + ' ', t.B); scr.put(x, y, blink ? '█' : ' ', t.N); return; }
+    if (now() - this.msgT < 6 && this.msg) { scr.put(x, y, clip(this.msg, Wd - x - 1), this.msgWarn ? t.RB : t.N); return; }
+    const keys = this.page.keys || [];
+    if (!keys.length) { scr.put(x, y, clip('↵ COMMAND · TYPE HELP', Wd - x - 1), t.D); return; }
+    for (const [k, lab, fn] of keys) {
+      const txt = '*' + k + ' ' + lab; if (x + slen(txt) + 1 > Wd) break;
+      scr.put(x, y, '*' + k, t.D); scr.put(x + 2, y, ' ' + lab, t.N);
+      app_hit(x, y, slen(txt), 1, () => { haptic(8); fn(this); });
+      x += slen(txt) + 2;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------- saisie, gestes
+const CMD_IN = document.getElementById('cmd');
+function openCmd(first = '') { APP.cmd = first; CMD_IN.value = first; try { CMD_IN.focus({ preventScroll: true }); } catch (e) { CMD_IN.focus(); } }
+CMD_IN.addEventListener('input', () => { if (APP.cmd !== null) APP.cmd = CMD_IN.value; });
+CMD_IN.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); const l = APP.cmd || ''; APP.cmd = null; CMD_IN.blur(); APP.execute(l); }
+  else if (e.key === 'Escape') { APP.cmd = null; CMD_IN.blur(); }
+});
+CMD_IN.addEventListener('blur', () => { if (APP.cmd === '') APP.cmd = null; });
+
+function toggleFull() {
+  try { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => APP.say('FULLSCREEN REFUSED', true)); }
+  catch (e) { APP.say('FULLSCREEN UNAVAILABLE', true); }
+}
+function zoom(d) { SET.scale = Math.max(0.7, Math.min(1.5, +(SET.scale + d * 0.1).toFixed(2))); saveSettings(); relayout(); }
+function simReset() { SOURCES.forEach(([k]) => { const s = SRC[k]; if (k === 'mic' && !MIC) { s.mode = SET.sim === 'ON' ? 'sim' : 'off'; return; } if (s.mode === 'sim' || s.mode === 'na') { s.mode = 'wait'; s.armed = now(); } }); if (SET.sim !== 'ON' && TREND_SRC === 'SIM') resetTrend('SIM OFF'); }
+
+const CV = document.getElementById('scr');
+const R = new Renderer(CV);
+let SCR = new Screen(46, 40);
+function relayout() { const [w, h] = R.layout(); SCR = new Screen(w, h); }
+function cellAt(ev) { const rect = CV.getBoundingClientRect(); return [Math.floor((ev.clientX - rect.left) / R.cw), Math.floor((ev.clientY - rect.top) / R.ch)]; }
+let TOUCH = null;
+CV.addEventListener('pointerdown', ev => { TOUCH = { x: ev.clientX, y: ev.clientY, t: now() }; armSensorsGesture(); });
+CV.addEventListener('pointerup', ev => {
+  if (!TOUCH) return;
+  const dx = ev.clientX - TOUCH.x, dy = ev.clientY - TOUCH.y; TOUCH = null;
+  if (Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) { APP.step(dx < 0 ? 1 : -1); haptic(6); frame(true); return; }
+  if (Math.hypot(dx, dy) > 16) return;
+  const [x, y] = cellAt(ev);
+  for (let i = APP.hits.length - 1; i >= 0; i--) { const h = APP.hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) { h.fn(APP); frame(true); return; } }
+});
+window.addEventListener('keydown', e => { if (e.target === CMD_IN) return; APP.onKey(e); frame(true); });
+window.addEventListener('resize', () => { relayout(); frame(true); });
+
+// ---------------------------------------------------------------------------------------- boucles
+let nextFrame = 0;
+function frame(force = false) {
+  const tt = now(), fps = APP.lampT0 ? 10 : (APP.page.fps || 2);
+  if (!force && tt < nextFrame) return;
+  nextFrame = tt + 1 / fps;
+  APP.draw(SCR); R.draw(SCR);
+}
+function fastTick() {                                   // 10 Hz : capteurs rapides
+  micPoll(); simTick(); gravityUp();
+  const g = gLoad(), T = now();
+  if (g != null) { HIST.g.push(g); if (g > (T - DER.gPeakT < AL.GLatchSecs ? DER.gPeak : 0)) { DER.gPeak = g; DER.gPeakT = T; } }
+  if (live('mic')) HIST.mic.push(SRC.mic.v.db);
+  chrTick();
+}
+function slowTick() {                                   // 1 Hz : alarmes, FCU, historiques
+  alarmsTick(); trendTick();
+  if (live('batt')) HIST.batt.push(SRC.batt.v.level * 100);
+  if (live('net') && SRC.net.v.online) HIST.rtt.push(SRC.net.v.rtt);
+  if (live('geo')) HIST.acc.push(SRC.geo.v.acc);
+  const T = now();
+  if (T - WX.tryT > (WX.failed ? 300 : 1800) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
+}
+
+function boot() {
+  loadSettings(); restoreTrend();
+  APP = new App();
+  log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
+  R.measure(); relayout();
+  startSensors();
+  if (SET.wake) wakeSet(true);
+  setInterval(fastTick, 100); setInterval(slowTick, 1000);
+  setTimeout(fetchWx, 1500); setTimeout(fetchTle, 2500); setInterval(fetchTle, 6 * 3600 * 1000);
+  // rendu : requestAnimationFrame quand le navigateur le fournit, plus une minuterie de secours
+  // (certains cadres intégrés suspendent requestAnimationFrame jusqu'au premier geste)
+  const loop = () => { frame(); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  setInterval(() => frame(), 50);
+  setTimeout(() => frame(true), 2300);
+  if (document.fonts && document.fonts.load) document.fonts.load('400 16px "Martian Mono"').then(() => { R.measure(); relayout(); frame(true); }).catch(() => {});
+}
+boot();
+
+</script>
+<script>
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+</script>
+</body>
+</html>
