@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.2.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.2.1', BUILD: '20261012', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -2421,18 +2421,9 @@ function drawLogo(c, cx, cy, size, d, o = {}) {
 function button(scr, x, y, w, h, head, tail, fn, o = {}) {
   const on = !!o.on, dead = !!o.dead;
   scr.vector(x, y, w, h, (c, b) => {
-    const d = b.d, ins = 2 * d, X = b.x + ins, Y = b.y + ins, Wb = b.w - 2 * ins, Hb = b.h - 2 * ins, rr = Math.min(5 * d, Hb / 3);
-    const path = () => { c.beginPath(); if (c.roundRect) c.roundRect(X, Y, Wb, Hb, rr); else c.rect(X, Y, Wb, Hb); };
-    if (!dead) { c.fillStyle = 'rgba(0,0,0,0.6)'; c.beginPath(); if (c.roundRect) c.roundRect(X, Y + 1.5 * d, Wb, Hb, rr); else c.rect(X, Y + 1.5 * d, Wb, Hb); c.fill(); }
-    path();
-    if (on) { c.fillStyle = COL.N; c.fill(); }
-    else {
-      const g = c.createLinearGradient(0, Y, 0, Y + Hb);
-      g.addColorStop(0, rgba(WHITE, dead ? 0.025 : (o.red ? 0.0 : 0.15))); g.addColorStop(1, rgba(WHITE, dead ? 0.01 : 0.045));
-      c.fillStyle = o.red ? rgba(RED, 0.85) : '#0f1215'; c.fill(); c.fillStyle = g; c.fill();
-      c.strokeStyle = dead ? COL.K : (o.red ? COL.RR : COL.L); c.lineWidth = d; c.stroke();
-      if (!dead) { c.strokeStyle = rgba(WHITE, 0.22); c.beginPath(); c.moveTo(X + rr, Y + 0.5 * d); c.lineTo(X + Wb - rr, Y + 0.5 * d); c.stroke(); }
-    }
+    const d = b.d, ins = 2 * d, X = Math.round(b.x + ins), Y = Math.round(b.y + ins), Wb = Math.round(b.w - 2 * ins), Hb = Math.round(b.h - 2 * ins);
+    c.fillStyle = on ? COL.N : (o.red ? COL.RR : (dead ? '#0d1012' : '#1b1f23')); c.fillRect(X, Y, Wb, Hb);
+    if (!on) { c.strokeStyle = dead ? COL.K : COL.L; c.lineWidth = d; c.strokeRect(X + 0.5 * d, Y + 0.5 * d, Wb - d, Hb - d); }
     const fg = on ? 'rgb(' + INK.join(',') + ')' : (dead ? COL.F : COL.N), fg2 = on ? 'rgba(' + INK.join(',') + ',0.7)' : (dead ? COL.F : COL.D);
     const fs = b.fpx * (o.small ? 0.78 : 1);
     c.textBaseline = 'middle';
@@ -2569,7 +2560,12 @@ class App {
       if (e > 0) drawLogo(c, X, Y, size, b.d, { fill: rgba(RED, e), rot: 45 * e });
     });
     let y = y0 + lr + 1;
-    scr.put(0, y++, center(CFG.OS_RU + ' · ' + CFG.OS, Wd), t.B);
+    scr.vector(0, y, Wd, 3, (c, b) => {
+      const fs = b.fpx * 2.3; c.font = '700 ' + fs.toFixed(1) + 'px ' + b.family; c.fillStyle = COL.N; c.textAlign = 'center'; c.textBaseline = 'middle';
+      try { c.letterSpacing = (fs * 0.18).toFixed(1) + 'px'; } catch (e) { /* */ }
+      c.fillText(CFG.OS_RU, b.x + b.w / 2 + fs * 0.09, b.y + b.h / 2);
+    }, false);
+    y += 3;
     scr.put(0, y++, center('ORBITAL VKL · ' + CFG.STATION + ' · ' + CFG.VERSION, Wd), t.D);
     y++;
     const checks = [['ORIENT', 'orient'], ['MOTION', 'motion'], ['GNSS', 'geo'], ['BATTERY', 'batt'], ['NETWORK', 'net'], ['BAROMETER', 'baro'], ['WEATHER', 'wx'], ['FCU 0.4.1', null]];
@@ -2590,11 +2586,11 @@ class App {
     const crit = ALS.crit > 0;
     scr.vector(0, 0, 5, 2, (c, b) => {
       const size = Math.min(b.h, b.w) * 0.94;
-      drawLogo(c, b.x + b.w / 2, b.y + b.h / 2, size, b.d, crit && blink ? { fill: COL.RR } : { stroke: COL.N, lw: 1 });
+      drawLogo(c, b.x + b.w / 2, b.y + b.h / 2, size, b.d, { fill: crit && !blink ? COL.R : COL.RR });
     });
     let x = 6;
     x += scr.put(x, 0, CFG.OS_RU, t.T) + 1;
-    if (Wd - x > 26) scr.put(x, 0, 'ORBITAL VKL', t.TD);
+    scr.put(x, 0, 'v' + CFG.VERSION + ' · ' + CFG.BUILD, t.TD);
     const right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
     W.rjust(scr, Wd - 2, 0, right, t.T); scr.put(Wd - 2, 0, '●', t.TR);
     const up = now() - this.t0, d = Math.floor(up / 86400), rest = up % 86400;
