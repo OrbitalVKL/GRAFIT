@@ -23,7 +23,8 @@
 :root { --bg: #0a0c0e; --fg: #cfd2d4; --dim: #82868a; --red: #9e4a4a; color-scheme: dark; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; }
 body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-#wrap { position: fixed; top: env(safe-area-inset-top, 0px); bottom: env(safe-area-inset-bottom, 0px); left: 16px; right: 16px; }
+/* marge basse : les coins arrondis de l'écran (Pixel) ne sont pas couverts par les zones sûres */
+#wrap { position: fixed; top: env(safe-area-inset-top, 0px); bottom: max(env(safe-area-inset-bottom, 0px), 26px); left: 16px; right: 16px; }
 #scr { display: block; touch-action: none; }
 #cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
 noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
@@ -886,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.0.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.1.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -895,7 +896,7 @@ const CFG = {
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
     GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, SensorsFrozen: 10, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
-  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
+  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
   TLE_URL: 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
 };
 const now = () => Date.now() / 1000;
@@ -908,7 +909,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, pad: true, scale: 1, wake: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
@@ -928,7 +929,8 @@ const SOURCES = [
   ['orient', 'ORIENT', 'DEVICE ORIENTATION'], ['motion', 'MOTION', 'ACCELEROMETER · GYRO'], ['geo', 'GNSS', 'GEOLOCATION'],
   ['batt', 'BATTERY', 'BATTERY STATUS'], ['net', 'NETWORK', 'NETWORK INFORMATION'], ['mic', 'MIC', 'MICROPHONE'],
   ['baro', 'BARO', 'BAROMETER · APK'], ['btemp', 'BATT TEMP', 'BATTERY THERMISTOR · APK'], ['light', 'LIGHT', 'AMBIENT LIGHT · APK'],
-  ['amb', 'AMBIENT T', 'AMBIENT TEMP · APK'], ['wx', 'WEATHER', 'OPEN-METEO'], ['tle', 'ISS TLE', 'CELESTRAK'],
+  ['amb', 'AMBIENT T', 'AMBIENT TEMP · APK'], ['stemp', 'SKIN T', 'THERMAL · APK'], ['wx', 'WEATHER', 'OPEN-METEO'], ['tle', 'ISS TLE', 'CELESTRAK'],
+  ['satcat', 'SAT CAT', 'CELESTRAK GROUPS'], ['gnssraw', 'GNSS RAW', 'GNSS STATUS · APK'], ['cell', 'CELL', 'CELL INFO · APK'],
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
@@ -1056,7 +1058,7 @@ async function fetchWx() {
     const c = j.current, h = j.hourly;
     const nowIso = c.time.slice(0, 13);
     let ni = h.time.findIndex(x => x.slice(0, 13) === nowIso); if (ni < 0) ni = 24;
-    feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
+    feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, dew: c.dew_point_2m, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
       dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni, at: now() });
     if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
     WX.failed = false; WX.t = now();
@@ -1098,7 +1100,7 @@ function simValue(k, t) {
         htime.push(d.toISOString()); hp.push(+(1016.4 - i * 0.22 + 0.6 * Math.sin(i / 5)).toFixed(1));
         ht.push(+(14 + 5 * Math.sin((d.getHours() - 9) / 24 * 2 * Math.PI)).toFixed(1)); hpop.push(Math.max(0, Math.min(100, Math.round(20 + i * 1.1 + 15 * Math.sin(i / 3)))));
       }
-      return { temp: 17.6, feel: 16.9, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, at: t };
+      return { temp: 17.6, feel: 16.9, dew: 12.4, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, at: t };
     }
     default: return null;
   }
@@ -1136,7 +1138,7 @@ function simTick() {
   }
   if (SET.sim === 'ON') ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'].forEach(k => { if (SRC[k].mode !== 'sim') { SRC[k].mode = 'sim'; if (k === 'baro') seedSimTrend(); } });
   if (SRC.tle.mode === 'wait' && t - SRC.tle.armed > 15) SRC.tle.mode = 'sim';   // TLE embarqué (cache de S18)
-  if (SRC.amb.mode === 'wait' && t - SRC.amb.armed > 4) SRC.amb.mode = 'na';     // sonde ambiante : rare, APK seulement
+  for (const k of ['amb', 'stemp', 'gnssraw', 'cell']) if (SRC[k].mode === 'wait' && t - SRC[k].armed > 4) SRC[k].mode = 'na';   // APK seulement
 }
 const live = k => SRC[k].mode === 'live' || SRC[k].mode === 'sim';
 const tag = k => ({ live: 'LIVE', sim: 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[SRC[k].mode];
@@ -1300,6 +1302,139 @@ async function wakeSet(on) {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && SET.wake && !WAKE) wakeSet(true); });
 
+// ---------------------------------------------------------------------------------------- catalogues de satellites
+// Orbites publiées par CelesTrak (TLE par groupe), propagées comme l'ISS (Kepler + J2, astro.py) : satellites de
+// positionnement (GNSS) et relais de communication en vue depuis la position du téléphone. Copie locale pour le
+// hors-ligne (24 h), repli simulé (constellations nominales, signalées SIM) si le catalogue est injoignable.
+// Le signal GNSS réellement reçu (C/N0, satellites utilisés) et les antennes-relais du réseau mobile arrivent par
+// l'APK : detail.gnss = [{c:'G', svid:13, az, el, cn0, used}], detail.cell = {rat, operator, pci, band, rsrp}.
+const SATNETS = [
+  ['G', 'GPS', 'gps-ops', 'gnss'], ['E', 'GALILEO', 'galileo', 'gnss'], ['R', 'GLONASS', 'glo-ops', 'gnss'], ['C', 'BEIDOU', 'beidou', 'gnss'],
+  ['I', 'IRIDIUM', 'iridium-NEXT', 'relay'], ['O', 'ONEWEB', 'oneweb', 'relay'], ['A', 'AMATEUR', 'amateur', 'relay'],
+  ['T', 'TDRS', 'tdrss', 'relay'], ['Q', 'GEO', 'geo', 'relay'],
+];
+const SATCAT = { sets: {}, src: {}, busy: false, t: 0, view: null, viewT: 0 };
+const SAT_URL = g => 'https://celestrak.org/NORAD/elements/gp.php?GROUP=' + encodeURIComponent(g) + '&FORMAT=tle';
+
+function parseTleSet(text) {
+  const L = String(text || '').split(/\r?\n/).map(s => s.replace(/\s+$/, '')).filter(Boolean), out = [];
+  for (let i = 0; i + 2 < L.length + 1; i++) {
+    if (L[i + 1] && L[i + 1].startsWith('1 ') && L[i + 2] && L[i + 2].startsWith('2 ')) {
+      const tl = A.parseTle(L[i + 1] + '\n' + L[i + 2]);
+      if (tl) out.push({ name: L[i].trim(), tle: tl });
+      i += 2;
+    }
+  }
+  return out;
+}
+function satLabel(k, name, i) {
+  let m = name.match(/PRN\s*[A-Z]?\s*(\d+)/i) || (k === 'C' && name.match(/\(C(\d+)\)/)) || (k === 'E' && name.match(/\(E(\d+)\)/));
+  if (['G', 'E', 'C'].includes(k) && m) return k + pad2(+m[1]);
+  if (k === 'R') return 'R' + pad2(i + 1);
+  return name.replace(/\s*\(.*\)\s*/g, '').slice(0, 10);
+}
+function setNet(k, list, src) {
+  SATCAT.sets[k] = list.map((s, i) => Object.assign(s, { k, label: satLabel(k, s.name, i) }));
+  SATCAT.src[k] = src; SATCAT.viewT = 0;
+}
+// constellations nominales (repli SIM) : plans, satellites par plan, inclinaison, tours par jour
+function simNets() {
+  const t0 = SIM.t0, g0 = A.gmst(t0);
+  const mk = (k, planes, per, inc, n, phase, names) => {
+    const out = [];
+    for (let p = 0; p < planes; p++) for (let s = 0; s < per; s++) {
+      const i = p * per + s;
+      out.push({ name: names ? names[i % names.length] : k + pad2(i + 1), tle: { epoch: t0, ndot: 0, inc, raan: p * 360 / planes, ecc: 0.0005, argp: 0, M: (s * 360 / per + p * phase) % 360, n } });
+    }
+    return out;
+  };
+  const geo = lons => lons.map(lo => ({ name: 'GEO ' + Math.abs(lo) + (lo >= 0 ? 'E' : 'W'), tle: { epoch: t0, ndot: 0, inc: 0.05, raan: 0, ecc: 0.0002, argp: 0, M: A.norm360(lo + g0), n: 1.00273791 } }));
+  return {
+    G: mk('G', 6, 5, 55, 2.0056, 12), E: mk('E', 3, 8, 56, 1.7085, 15), R: mk('R', 3, 8, 64.8, 2.1314, 15), C: mk('C', 3, 8, 55, 1.8618, 15),
+    I: mk('I', 6, 11, 86.4, 14.342, 16), O: mk('O', 12, 12, 87.9, 13.15, 10),
+    A: mk('A', 4, 5, 97.6, 14.9, 37, ['SO-50', 'AO-91', 'AO-7', 'FO-29', 'RS-44', 'IO-117', 'AO-27', 'PO-101', 'TEVEL-1', 'TEVEL-2', 'AO-73', 'XW-2A', 'CAS-4A', 'JO-97', 'UVSQ-SAT', 'LILACSAT-2', 'HADES-D', 'GREENCUBE', 'QO-100 FEED', 'SONATE-2']),
+    T: geo([-41, -47, -62, -171, -174]).map(s => Object.assign(s, { name: s.name.replace('GEO', 'TDRS') })),
+    Q: geo(Array.from({ length: 51 }, (_, i) => -60 + i * 3)),
+  };
+}
+async function fetchSatCat(force = false) {
+  if (SATCAT.busy) return;
+  SATCAT.busy = true;
+  const sim = simNets();
+  for (const [k, name, grp] of SATNETS) {
+    let raw = null, age = Infinity;
+    try { const c = JSON.parse(localStorage.getItem('grafit.sat.' + grp) || 'null'); if (c) { raw = c.text; age = now() - c.t; } } catch (e) { /* */ }
+    if (raw && !SATCAT.sets[k]) { const l = parseTleSet(raw); if (l.length) setNet(k, l, 'CACHED'); }
+    if (SET.sim !== 'ON' && (force || age > 12 * 3600)) {
+      try {
+        const txt = await getText(SAT_URL(grp)), l = parseTleSet(txt);
+        if (l.length) { setNet(k, l, 'CELESTRAK'); try { localStorage.setItem('grafit.sat.' + grp, JSON.stringify({ t: now(), text: txt })); } catch (e) { /* quota */ } }
+      } catch (e) { /* hors ligne ou refusé : copie locale ou simulation */ }
+    }
+    if (!SATCAT.sets[k] || SET.sim === 'ON') setNet(k, sim[k], 'SIM');
+  }
+  const live = SATNETS.filter(([k]) => SATCAT.src[k] !== 'SIM').length;
+  SRC.satcat.mode = live ? 'live' : 'sim'; SRC.satcat.t = now();
+  log('SAT', 'CATALOG · ' + SATNETS.map(([k]) => k + ' ' + (SATCAT.sets[k] || []).length).join(' ') + (live ? '' : ' · SIM'));
+  SATCAT.busy = false; SATCAT.t = now();
+}
+// vue d'un satellite depuis (lat, lon) : même géométrie que A.issLook
+function satView(T, lat, lon) {
+  if (SATCAT.view && T - SATCAT.viewT < 4 && SATCAT.view.lat === lat && SATCAT.view.lon === lon) return SATCAT.view;
+  const out = { lat, lon, list: [] };
+  for (const [k, , , fam] of SATNETS) for (const s of SATCAT.sets[k] || []) {
+    try {
+      const [az, el, rng] = A.issLook(s.tle, T, lat, lon);
+      if (el > -2 && isFinite(el)) out.list.push({ k, fam, name: s.name, label: s.label, az, el, rng });
+    } catch (e) { /* TLE inexploitable */ }
+  }
+  SATCAT.view = out; SATCAT.viewT = T;
+  return out;
+}
+// coefficients de dilution de précision (géométrie des satellites au-dessus du masque)
+function dop(list, mask = 10) {
+  const G = list.filter(s => s.el >= mask).map(s => { const e = s.el * RAD, a = s.az * RAD; return [-Math.cos(e) * Math.sin(a), -Math.cos(e) * Math.cos(a), -Math.sin(e), 1]; });
+  if (G.length < 4) return null;
+  const N = [0, 1, 2, 3].map(i => [0, 1, 2, 3].map(j => G.reduce((s, r) => s + r[i] * r[j], 0)));
+  const M = N.map((r, i) => r.concat([0, 1, 2, 3].map(j => (i === j ? 1 : 0))));
+  for (let c = 0; c < 4; c++) {
+    let p = c; for (let r = c + 1; r < 4; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const v = M[c][c]; if (Math.abs(v) < 1e-12) return null;
+    for (let j = 0; j < 8; j++) M[c][j] /= v;
+    for (let r = 0; r < 4; r++) if (r !== c) { const f = M[r][c]; for (let j = 0; j < 8; j++) M[r][j] -= f * M[c][j]; }
+  }
+  const Q = M.map(r => r.slice(4));
+  return { n: G.length, p: Math.sqrt(Q[0][0] + Q[1][1] + Q[2][2]), h: Math.sqrt(Q[0][0] + Q[1][1]), v: Math.sqrt(Q[2][2]), t: Math.sqrt(Q[3][3]) };
+}
+// point géostationnaire (longitude) vu de (lat, lon) : arc de la ceinture de Clarke
+function geoLook(lonG, T, lat, lon) {
+  const R0 = 42164, th = (lonG + A.gmst(T)) * RAD;
+  const x = R0 * Math.cos(th), y = R0 * Math.sin(th), z = 0, g = A.gmst(T) * RAD, f = lat * RAD, tt = g + lon * RAD;
+  const ox = 6378.137 * Math.cos(f) * Math.cos(tt), oy = 6378.137 * Math.cos(f) * Math.sin(tt), oz = 6378.137 * Math.sin(f);
+  const rx = x - ox, ry = y - oy, rz = z - oz;
+  const s = Math.sin(f) * Math.cos(tt) * rx + Math.sin(f) * Math.sin(tt) * ry - Math.cos(f) * rz, e = -Math.sin(tt) * rx + Math.cos(tt) * ry;
+  const u = Math.cos(f) * Math.cos(tt) * rx + Math.cos(f) * Math.sin(tt) * ry + Math.sin(f) * rz, rng = Math.hypot(rx, ry, rz);
+  return [A.norm360(Math.atan2(e, -s) * DEG), Math.asin(u / rng) * DEG];
+}
+
+// charge thermique du processeur (Compute Pressure API, Chrome) : nominal, fair, serious, critical
+const CPUP = { state: null, t: 0 };
+try {
+  if ('PressureObserver' in window) {
+    const po = new PressureObserver(recs => { const r = recs[recs.length - 1]; if (r) { if (CPUP.state && r.state !== CPUP.state) log('TMP', 'CPU PRESSURE ' + r.state.toUpperCase(), r.state === 'serious' || r.state === 'critical'); CPUP.state = r.state; CPUP.t = now(); } });
+    po.observe('cpu', { sampleInterval: 2000 }).catch(() => {});
+  }
+} catch (e) { /* non pris en charge */ }
+
+// passerelle de l'APK : GNSS brut, cellule radio, température de peau
+window.addEventListener('grafit-native', e => {
+  const d = e.detail || {};
+  if (Array.isArray(d.gnss)) feedLive('gnssraw', { sats: d.gnss });
+  if (d.cell) feedLive('cell', d.cell);
+  if (d.skinTemp != null) feedLive('stemp', { c: +d.skinTemp });
+});
+
 // ---------------------------------------------------------------------------------------- formats
 // Une page = un code (S.. repris de Grafit quand la fonction est la même, M.. propre au téléphone),
 // un nom, ses touches d'action ([touche, libellé, fonction]) et un dessin dans le rectangle r.
@@ -1338,6 +1473,7 @@ PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     if (y < lim) { W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? (n.type || 'LINK').toUpperCase() + ' · ' + (n.eff || '').toUpperCase() + ' · ' + n.rtt + ' ms' : 'OFFLINE') : tag('net')); }
     if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tag('geo')); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · ДЕП ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, pr && pr.p < CFG.FCU.DavMin ? t.R : t.N);
+    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'TEMP', 'OUT ' + (live('wx') ? SRC.wx.v.temp.toFixed(1) + ' °C' : '—') + ' · PHONE ' + (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : 'APK'));
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
     y++;
     if (y + 5 <= lim) {
@@ -1846,12 +1982,12 @@ PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
 PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
   keys: [['1', 'SIM', () => { SET.sim = { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); }],
     ['2', 'WAKE', () => wakeSet(!SET.wake)], ['3', 'FULL', () => toggleFull()], ['4', 'HAPTIC', () => { SET.haptics = !SET.haptics; saveSettings(); }],
-    ['5', 'PAD', () => { SET.pad = !SET.pad; saveSettings(); }], ['6', 'ZOOM−', () => zoom(-1)], ['7', 'ZOOM+', () => zoom(1)], ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }]],
+    ['5', 'FEEDS', () => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); }], ['6', 'ZOOM−', () => zoom(-1)], ['7', 'ZOOM+', () => zoom(1)], ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }]],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + ' MOBILE', t.TD);
     let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
     const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['WAKE LOCK', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
-      ['NUMPAD', SET.pad], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
+      ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
     items[6][0] = 'ZOOM +';
     y += W.tileGrid(scr, ir.x, y, 2, cw, items.map(([lab, on], i) => ['*' + (i + 1) + ' ' + lab, on ? 'on' : 'nom', () => this.keys[i][2](app)]), app.hits);
     y++;
@@ -1868,10 +2004,151 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     if (y < ir.b) scr.put(ir.x, y++, clip('BARO · BATT TEMP · LIGHT: APK BRIDGE (grafit-native).', ir.w), t.F);
   } };
 
-// groupes : mêmes numéros qu'au pavé de Grafit sur le PC
+// ------------------------------------------------------------------ cadran du ciel commun (SATS, RELAYS)
+function skyDial(c, b, rot, mask) {
+  const d = b.d, fs = b.fpx, R = Math.min(b.w, b.h) / 2 - fs * 0.95, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+  const proj = (az, el) => { const rr = (90 - Math.max(0, el)) / 90 * R, aa = (az - rot) * RAD; return [cx + rr * Math.sin(aa), cy - rr * Math.cos(aa)]; };
+  c.fillStyle = rgba(WHITE, 0.035); c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.fill();
+  c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.stroke();
+  c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3);
+  for (const k of [1 / 3, 2 / 3]) { c.beginPath(); c.arc(cx, cy, R * k, 0, 2 * Math.PI); c.stroke(); }
+  c.beginPath(); for (let az = 0; az < 360; az += 45) { const [x, y] = proj(az, 0); c.moveTo(cx, cy); c.lineTo(x, y); } c.stroke();
+  if (mask) { c.strokeStyle = COL.RZ; dash(c, d, 2, 3); c.beginPath(); c.arc(cx, cy, R * (90 - mask) / 90, 0, 2 * Math.PI); c.stroke(); }
+  dash(c, d, 0);
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  for (const [lab, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {
+    const rr = R + fs * 0.55, aa = (az - rot) * RAD;
+    c.font = (lab === 'N' ? '700 ' : '400 ') + (fs * 0.9).toFixed(1) + 'px ' + b.family; c.fillStyle = lab === 'N' ? COL.N : COL.D;
+    c.fillText(lab, cx + rr * Math.sin(aa), cy - rr * Math.cos(aa));
+  }
+  c.font = '400 ' + (fs * 0.56).toFixed(1) + 'px ' + b.family;
+  return { proj, R, cx, cy, d, fs };
+}
+// symboles : G cercle, E losange, R triangle, C carré, relais : ▲ Iridium, · OneWeb, ◆ amateur, ■ TDRS, | GEO
+function satGlyph(c, k, x, y, s, fill, col) {
+  c.fillStyle = col; c.strokeStyle = col; c.lineWidth = Math.max(1, s * 0.35);
+  c.beginPath();
+  if (k === 'G' || k === 'O') c.arc(x, y, s, 0, 2 * Math.PI);
+  else if (k === 'E' || k === 'A') { c.moveTo(x, y - s * 1.25); c.lineTo(x + s * 1.25, y); c.lineTo(x, y + s * 1.25); c.lineTo(x - s * 1.25, y); c.closePath(); }
+  else if (k === 'R' || k === 'I') { c.moveTo(x, y - s * 1.2); c.lineTo(x + s * 1.1, y + s * 0.8); c.lineTo(x - s * 1.1, y + s * 0.8); c.closePath(); }
+  else if (k === 'Q') { c.moveTo(x, y - s * 1.3); c.lineTo(x, y + s * 1.3); c.stroke(); return; }
+  else c.rect(x - s, y - s, 2 * s, 2 * s);
+  if (fill) c.fill(); else c.stroke();
+}
+const NETNAME = Object.fromEntries(SATNETS.map(([k, n]) => [k, n]));
+
+// ------------------------------------------------------------------ M05 SATS : satellites de positionnement en vue
+PAGES.M05 = { code: 'M05', name: 'SATS', ru: 'СПУТН', words: ['SATS', 'SATELLITES', 'GNSS SKY', 'GPS SKY', 'DOP'], fps: 2,
+  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'REFRESH', () => fetchSatCat(true)]],
+  draw(scr, r) {
+    this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
+    const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0, MASK = 10;
+    const raw = live('gnssraw') && SRC.gnssraw.mode === 'live' ? SRC.gnssraw.v.sats : null;
+    const view = satView(T, h.lat, h.lon);
+    const sats = raw ? raw.map(s => ({ k: s.c, label: s.c + pad2(s.svid), az: s.az, el: s.el, cn0: s.cn0, used: s.used }))
+      : view.list.filter(s => s.fam === 'gnss' && s.el > 0);
+    const src = raw ? 'APK · RECEIVED' : (['G', 'E', 'R', 'C'].every(k => SATCAT.src[k] === 'SIM') ? 'SIM' : 'PREDICTED · TLE');
+    const ir = W.panel(scr, r, this.code, this.name, src, src === 'SIM' ? t.T : t.TD);
+    const rows = Math.max(6, Math.min(ir.h - 9, Math.ceil(ir.w / CELL.aspect)));
+    scr.vector(ir.x, ir.y, ir.w, rows, (c, b) => {
+      const { proj, d, fs } = skyDial(c, b, rot, MASK);
+      for (const s of sats.slice().sort((p, q) => p.el - q.el)) {
+        const [x, y] = proj(s.az, s.el), up = s.el >= MASK, col = up ? COL.N : COL.F;
+        const size = (raw ? 2.2 + Math.max(0, Math.min(3, ((s.cn0 || 20) - 20) / 8)) : 3) * d;
+        satGlyph(c, s.k, x, y, size, raw ? !!s.used : up, col);
+        c.fillStyle = up ? COL.D : COL.F; c.fillText(s.label, x, y - size - fs * 0.42);
+      }
+    });
+    let y = ir.y + rows;
+    let x = ir.x;
+    for (const [k, lab] of [['G', '● GPS'], ['E', '◆ GAL'], ['R', '▲ GLO'], ['C', '■ BDS']]) { x += scr.put(x, y, lab, t.D) + 2; }
+    W.rjust(scr, ir.r, y, 'MASK ' + MASK + '°', t.RZ);
+    y += 2;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    for (const [k, n] of [['G', 'GPS'], ['E', 'GALILEO'], ['R', 'GLONASS'], ['C', 'BEIDOU']]) {
+      const s = sats.filter(q => q.k === k), up = s.filter(q => q.el >= MASK);
+      kv(n + (raw ? '' : ' · ' + (SATCAT.sets[k] || []).length), up.length + ' ≥' + MASK + '° · ' + s.length + ' UP' + (raw ? ' · ' + s.filter(q => q.used).length + ' USED' : ''));
+    }
+    const dp = dop(sats, MASK);
+    kv('PDOP · HDOP · VDOP', dp ? dp.p.toFixed(1) + ' · ' + dp.h.toFixed(1) + ' · ' + dp.v.toFixed(1) : '—', dp && dp.p > 6 ? t.RB : t.B);
+    kv('SATS IN FIX GEOMETRY', dp ? dp.n + (raw ? ' RECEIVED' : ' PREDICTED') : '—');
+    if (!raw && y < ir.b) scr.put(ir.x, y++, clip('RAW SIGNAL (C/N0, USED IN FIX): APK', ir.w), t.F);
+  } };
+
+// ------------------------------------------------------------------ M06 RELAYS : relais de communication en vue
+PAGES.M06 = { code: 'M06', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RELAY', 'COMSAT', 'IRIDIUM', 'AMATEUR', 'CELL'], fps: 2,
+  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'REFRESH', () => fetchSatCat(true)]],
+  draw(scr, r) {
+    this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
+    const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0;
+    const view = satView(T, h.lat, h.lon), rel = view.list.filter(s => s.fam === 'relay' && s.el > 0);
+    const sim = ['I', 'O', 'A', 'T', 'Q'].every(k => SATCAT.src[k] === 'SIM');
+    const ir = W.panel(scr, r, this.code, this.name, sim ? 'SIM' : 'PREDICTED · TLE', sim ? t.T : t.TD);
+    const rows = Math.max(6, Math.min(ir.h - 10, Math.ceil(ir.w / CELL.aspect)));
+    const arc = []; for (let lo = -180; lo <= 180; lo += 2) { const [az, el] = geoLook(lo, T, h.lat, h.lon); if (el > 0) arc.push([az, el, lo]); }
+    const ham = rel.filter(s => s.k === 'A').sort((p, q) => q.el - p.el);
+    scr.vector(ir.x, ir.y, ir.w, rows, (c, b) => {
+      const { proj, d, fs } = skyDial(c, b, rot, 0);
+      if (arc.length > 1) {
+        c.beginPath(); W.spline(c, arc.map(([az, el]) => proj(az, el))); c.strokeStyle = COL.D; c.lineWidth = 1.2 * d; dash(c, d, 4, 3); c.stroke(); dash(c, d, 0);
+        const mid = arc[Math.floor(arc.length / 2)], [mx, my] = proj(mid[0], mid[1]); c.fillStyle = COL.D; c.fillText('CLARKE BELT', mx, my + fs * 0.7);
+      }
+      for (const s of rel.slice().sort((p, q) => p.el - q.el)) {
+        const [x, y] = proj(s.az, s.el), k = s.k;
+        const col = k === 'A' ? COL.N : (k === 'T' ? COL.N : COL.D), size = (k === 'O' ? 1.4 : (k === 'Q' ? 2.2 : 2.8)) * d;
+        satGlyph(c, k, x, y, size, true, col);
+        if (k === 'A' || k === 'T') { c.fillStyle = COL.D; c.fillText(s.label, x, y - size - fs * 0.42); }
+      }
+    });
+    let y = ir.y + rows, x = ir.x;
+    for (const lab of ['◆ HAM', '▲ IRID', '● 1WEB', '■ TDRS', '¦ GEO']) x += scr.put(x, y, lab, t.D) + 2;
+    y += 2;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    const cnt = k => rel.filter(s => s.k === k).length;
+    kv('IN VIEW', 'IRID ' + cnt('I') + ' · 1WEB ' + cnt('O') + ' · GEO ' + cnt('Q') + ' · TDRS ' + cnt('T'));
+    kv('AMATEUR RELAYS', ham.length + ' UP' + (ham.length ? ' · ' + ham.filter(s => s.el >= 10).length + ' ≥10°' : ''));
+    ham.slice(0, 3).forEach(s => kv('  ' + s.label, Math.round(s.az) + '° ' + card(s.az) + ' · EL ' + Math.round(s.el) + '°', s.el >= 10 ? t.B : t.D));
+    const cl = SRC.cell.v;
+    kv('CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'CELL TOWERS · APK ONLY', t.D, live('cell') ? t.N : t.F);
+  } };
+
+// ------------------------------------------------------------------ S06 TEMPS : météo et téléphone
+PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP', 'TEMPERATURE', 'THERMAL'], fps: 1,
+  draw(scr, r) {
+    const ir = W.panel(scr, r, this.code, this.name, 'WEATHER ' + tag('wx') + ' · PHONE ' + (live('btemp') ? tag('btemp') : 'APK'), t.TD);
+    const w = SRC.wx.v, lo = -10, hi = 50, f = v => v == null ? null : (v - lo) / (hi - lo), F = CFG.FCU;
+    const tapes = [
+      ['OUT', live('wx') ? w.temp : null, [[f(F.T2Max), 'Т2']]],
+      ['FEELS', live('wx') ? w.feel : null, []],
+      ['DEW', live('wx') ? w.dew : null, []],
+      ['BATT', live('btemp') ? SRC.btemp.v.c : null, [[f(AL.BattTempCaut), ''], [f(AL.BattTempCrit), '']]],
+      ['SKIN', live('stemp') ? SRC.stemp.v.c : (live('amb') ? SRC.amb.v.c : null), []],
+    ];
+    const th = Math.max(9, Math.min(15, ir.h - 14)), n = tapes.length, step = Math.floor((ir.w - 1) / n);
+    tapes.forEach(([lab, v, marks], i) => {
+      const x = ir.x + 1 + i * step, alert = v != null && marks.some(m => f(v) >= m[0]);
+      W.vtape(scr, x, ir.y, th, f(v), v == null ? 'APK' : v.toFixed(1), lab, alert, marks.filter(m => m[0] != null), hi + '°', lo + '°', v == null);
+    });
+    let y = ir.y + th + 1;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    const cp = CPUP.state;
+    kv('CPU THERMAL LOAD', cp ? cp.toUpperCase() : ('PressureObserver' in window ? 'WAITING' : 'N/A IN THIS BROWSER'), cp === 'serious' || cp === 'critical' ? t.RB : (cp ? t.B : t.F));
+    kv('PHONE PROBES', live('btemp') ? 'BATTERY ' + tag('btemp') : 'BATTERY · SKIN: APK ONLY', t.D, live('btemp') ? t.N : t.F);
+    if (ir.b - y >= 7 && live('wx') && w.ht) {
+      y++;
+      const span = Math.min(w.ht.length, ir.w - 8), i0 = Math.max(0, Math.min(w.ht.length - span, w.ni - Math.floor(span * 0.6)));
+      const vals = w.ht.slice(i0, i0 + span), vmin = Math.floor(Math.min(...vals) - 2), vmax = Math.ceil(Math.max(...vals, vmin + 4) + 1);
+      const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
+      sub(scr, ir.x, y++, ir.w, 'OUTSIDE · °C', '◂ PAST · FORECAST ▸');
+      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin, vmax, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
+        styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: vmax > F.T2Max ? [[F.T2Max, 0, 'Т2']] : [] });
+    }
+  } };
+
+// groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
 const GROUPS = [
-  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
-  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
+  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
+  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
 ];
 
 // ---------------------------------------------------------------------------------------- rendu (canvas)
@@ -1984,7 +2261,8 @@ class App {
   show(gi, pi) {
     const cur = [this.gi, this.pi[this.gi]];
     this.gi = ((gi % GROUPS.length) + GROUPS.length) % GROUPS.length;
-    if (pi != null) { const n = GROUPS[this.gi][3].length; this.pi[this.gi] = ((pi % n) + n) % n; }
+    const n = GROUPS[this.gi][3].length;
+    this.pi[this.gi] = pi == null ? 0 : ((pi % n) + n) % n;          // changement de groupe : retour au format .1
     if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) this.prev = cur;
     SET.gi = this.gi; SET.pi = this.pi.slice(); saveSettings();
   }
@@ -2030,7 +2308,6 @@ class App {
     if (v === 'TIMER' || v === 'TMR') { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (mm) { tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); this.go('S29'); return this.say('TIMER ' + arg + ' RUNNING'); } }
     if (v === 'MIC') { micArm(SRC.mic.mode === 'off'); return; }
     if (v === 'WAKE') { wakeSet(!SET.wake); return; }
-    if (v === 'PAD') { SET.pad = !SET.pad; saveSettings(); return; }
     const hit = this.find(line); if (hit) return this.show(...hit);
     this.say('UNKNOWN COMMAND · ' + line.toUpperCase() + ' · TYPE HELP', true);
   }
@@ -2038,7 +2315,7 @@ class App {
   onPad(p) {
     const pend = now() < this.padT ? this.pad : null; this.pad = null;
     if (p === 'ENTER') return openCmd();
-    if (p === 'NUM') { SET.pad = !SET.pad; saveSettings(); return; }
+    if (p === 'ESC') { this.armed = null; this.msg = ''; if (this.cmd !== null) { this.cmd = null; CMD_IN.blur(); } return; }
     if (/^\d$/.test(p)) {
       let n = +p; const pages = GROUPS[this.gi][3];
       if (pend === '.') { n = n || 10; if (n <= pages.length) this.show(this.gi, n - 1); else this.say('NO FORMAT ' + (this.gi + 1) + '.' + n + ' · GROUP ' + (this.gi + 1) + ' HAS ' + pages.length, true); }
@@ -2054,7 +2331,7 @@ class App {
   onKey(e) {
     const k = e.key, code = e.code || '';
     if (this.cmd !== null) return;                        // la saisie va dans le champ de commande
-    if (code.startsWith('Numpad')) { e.preventDefault(); const m = { NumpadEnter: 'ENTER', NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/' }; return this.onPad(m[code] || code.slice(6)); }
+    if (code.startsWith('Numpad')) { e.preventDefault(); const m = { NumLock: 'ESC', NumpadEnter: 'ENTER', NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/' }; return this.onPad(m[code] || code.slice(6)); }
     if (/^F[1-7]$/.test(k)) { e.preventDefault(); return this.show(+k.slice(1) - 1); }
     if (k === 'ArrowLeft') return this.show(this.gi - 1);
     if (k === 'ArrowRight') return this.show(this.gi + 1);
@@ -2072,17 +2349,20 @@ class App {
     const Wd = scr.w, H = scr.h, blink = this.blink();
     if (now() - this.splash < 2.2) return this.drawSplash(scr);
     this.drawBand(scr, Wd, blink);
-    const padOn = SET.pad && H >= 36, padH = padOn ? 11 : 0, cmdY = H - 1, fsY = H - 2 - padH, gbY = fsY - 1;
     scr.put(0, 2, '─'.repeat(Wd), t.L);
-    scr.put(0, gbY - 1, '─'.repeat(Wd), t.L);
-    const r = new Rect(0, 3, Wd, gbY - 4);
+    const CONS = 17;                                  // pupitre : onglets des groupes (3) + des formats (3) + pavé (11)
+    let r;
+    if (Wd >= 80 && H < CONS + 12) {                  // paysage : pupitre à droite
+      const cw = Math.min(36, Math.floor(Wd * 0.4)), y0 = Math.max(3, H - 1 - CONS);
+      r = new Rect(0, 3, Wd - cw - 1, H - 4); this.drawConsole(scr, Wd - cw, y0, cw);
+    } else {
+      const y0 = H - 1 - CONS;
+      r = new Rect(0, 3, Wd, y0 - 3); this.drawConsole(scr, 0, y0, Wd);
+    }
     const page = this.page;
     try { page.draw(scr, r, this); }
     catch (err) { const ir = W.panel(scr, r, page.code, page.name, 'FAULT', t.TR, true); scr.put(ir.x, ir.y + 1, clip('FORMAT FAULT · ' + err.message, ir.w), t.R); console.error(err); }
-    this.drawGroups(scr, gbY, Wd);
-    this.drawFormats(scr, fsY, Wd);
-    if (padOn) this.drawPad(scr, 0, fsY + 1, Wd);
-    this.drawCmd(scr, cmdY, Wd, blink);
+    this.drawCmd(scr, H - 1, Wd, blink);
   }
   drawSplash(scr) {
     const el = now() - this.splash, cx = Math.floor(scr.w / 2), y0 = Math.max(2, Math.floor(scr.h / 2) - 8);
@@ -2117,56 +2397,56 @@ class App {
     else { txt = 'NOMINAL '; st = t.F; }
     W.rjust(scr, xr, 1, txt, st); app_hit(xr - slen(txt), 1, slen(txt), 1, () => this.go('S01'));
   }
-  drawGroups(scr, y, Wd) {
-    let x = 0;
-    const full = GROUPS.reduce((a, g) => a + 4 + g[1].length, 0) <= Wd;
-    GROUPS.forEach(([key, name], gi) => {
-      const cur = gi === this.gi, x0 = x;
-      x += scr.put(x, y, ' ' + key + ' ', cur ? t.INV : t.D);
-      if (cur || full) x += scr.put(x, y, ' ' + name + ' ', cur ? t.B : t.N) ; else x += 1;
-      app_hit(x0, y, x - x0, 1, () => this.show(gi));
-    });
-    if (x < Wd - 4) W.rjust(scr, Wd, y, GROUPS[this.gi][2] + ' ', t.F);
-  }
-  drawFormats(scr, y, Wd) {
-    const codes = GROUPS[this.gi][3]; let x = 0;
-    const long = codes.reduce((a, c) => a + 5 + c.length + slen(PAGES[c].name) + 2, 0) <= Wd;
-    codes.forEach((c, i) => {
-      const sel = i === this.pi[this.gi], txt = ' .' + (i + 1) + ' ' + c + ((long || sel) ? ' ' + PAGES[c].name : '') + ' ', x0 = x;
-      x += scr.put(x, y, clip(txt, Wd - x), sel ? t.INV : t.N);
-      if (!sel) scr.put(x0 + 1, y, '.' + (i + 1), t.D);
-      app_hit(x0, y, x - x0, 1, () => this.show(this.gi, i));
-      x += 1;
-    });
-  }
-  drawPad(scr, x0, y0, Wd) {
-    // pupitre du pavé numérique de Grafit, en touches tactiles (4 colonnes x 5 rangées, + et ↵ sur deux)
-    const KEYS = { NUM: [0, 0, 1, 1], '/': [1, 0, 1, 1], '*': [2, 0, 1, 1], '-': [3, 0, 1, 1], '7': [0, 1, 1, 1], '8': [1, 1, 1, 1], '9': [2, 1, 1, 1], '+': [3, 1, 1, 2],
-      '4': [0, 2, 1, 1], '5': [1, 2, 1, 1], '6': [2, 2, 1, 1], '1': [0, 3, 1, 1], '2': [1, 3, 1, 1], '3': [2, 3, 1, 1], ENTER: [3, 3, 1, 2], '0': [0, 4, 2, 1], '.': [2, 4, 1, 1] };
-    const SHOW = { NUM: 'NUM', '-': '−', ENTER: '↵' };
+  // pupitre : onglets des groupes, onglets des formats du groupe, pavé numérique ; filets communs (masque de directions)
+  drawConsole(scr, x0, y0, Wd) {
     const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', COMMS: 'COMM' };
-    const lab = { NUM: 'HIDE', '/': 'TEST', '*': 'ACT', '-': 'PREV', '+': 'NEXT', ENTER: 'CMD', '0': 'RCL', '.': 'FMT' };
+    const KEYS = { ESC: [0, 0, 1, 1], '/': [1, 0, 1, 1], '*': [2, 0, 1, 1], ENTER: [3, 0, 1, 1],
+      '7': [0, 1, 1, 1], '8': [1, 1, 1, 1], '9': [2, 1, 1, 1], '+': [3, 1, 1, 2],
+      '4': [0, 2, 1, 1], '5': [1, 2, 1, 1], '6': [2, 2, 1, 1],
+      '1': [0, 3, 1, 1], '2': [1, 3, 1, 1], '3': [2, 3, 1, 1], '-': [3, 3, 1, 2],
+      '0': [0, 4, 2, 1], '.': [2, 4, 1, 1] };
+    const SHOW = { '-': '−', ENTER: '↵' };
+    const lab = { ESC: '', '/': 'TEST', '*': 'ACT', '-': 'PREV', '+': 'NEXT', ENTER: 'CMD', '0': 'RCL', '.': 'FMT' };
     GROUPS.forEach(([k, n]) => { lab[k] = SHORT[n] || n; });
-    const colW = Math.floor((Wd - 1) / 4), pw = colW * 4 + 1, ox = x0 + Math.floor((Wd - pw) / 2);
-    // filets : masque de directions par cellule, puis caractère de cadre
-    const mask = new Map(), add = (x, y, b) => { const k = x + ',' + y; mask.set(k, (mask.get(k) || 0) | b); }; // 1 haut, 2 droite, 4 bas, 8 gauche
-    const pend = now() < this.padT ? this.pad : null;
-    for (const [k, [c, r, cs, rs]] of Object.entries(KEYS)) {
-      const xa = c * colW, xb = (c + cs) * colW, ya = r * 2, yb = (r + rs) * 2;
-      for (let x = xa; x <= xb; x++) { if (x < xb) { add(x, ya, 2); add(x + 1, ya, 8); add(x, yb, 2); add(x + 1, yb, 8); } }
-      for (let y = ya; y <= yb; y++) { if (y < yb) { add(xa, y, 4); add(xa, y + 1, 1); add(xb, y, 4); add(xb, y + 1, 1); } }
+    const span = Wd - 1, bx = (i, n) => Math.round(i * span / n);
+    const codes = GROUPS[this.gi][3], ng = GROUPS.length, nf = codes.length;
+    const boxes = [];                                   // [xa, ya, xb, yb, id] en coordonnées du pupitre
+    GROUPS.forEach((g, i) => boxes.push([bx(i, ng), 0, bx(i + 1, ng), 3, 'g' + i]));
+    codes.forEach((c, i) => boxes.push([bx(i, nf), 3, bx(i + 1, nf), 6, 'f' + i]));
+    for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) boxes.push([bx(c, 4), 6 + rr * 2, bx(c + cs, 4), 6 + (rr + rs) * 2, 'k' + k]);
+    const mask = new Map(), add = (x, y, b) => { const k = x + ',' + y; mask.set(k, (mask.get(k) || 0) | b); };
+    for (const [xa, ya, xb, yb] of boxes) {
+      for (let x = xa; x < xb; x++) { add(x, ya, 2); add(x + 1, ya, 8); add(x, yb, 2); add(x + 1, yb, 8); }
+      for (let y = ya; y < yb; y++) { add(xa, y, 4); add(xa, y + 1, 1); add(xb, y, 4); add(xb, y + 1, 1); }
     }
-    const CH = { 3: '└', 5: '│', 6: '┌', 7: '├', 9: '┘', 10: '─', 11: '┴', 12: '┐', 13: '┤', 14: '┬', 15: '┼', 1: '╵', 2: '─', 4: '│', 8: '─' };
-    for (const [key, b] of mask) { const [x, y] = key.split(',').map(Number); scr.put(ox + x, y0 + y, CH[b] || ' ', t.L); }
-    for (const [k, [c, r, cs, rs]] of Object.entries(KEYS)) {
-      const kx = ox + c * colW + 1, kw = cs * colW - 1, ky = y0 + r * 2 + 1, kh = rs * 2 - 1;
-      const on = k === String(this.gi + 1) || k === pend || (k === '/' && this.lampT0);
-      const dead = (/^\d$/.test(k) && +k > GROUPS.length) && k !== '0';
-      if (on) for (let yy = ky; yy < ky + kh; yy++) scr.put(kx, yy, ' '.repeat(kw), t.INV);
-      const ty = ky + Math.floor(kh / 2), lbl = (SHOW[k] || k) + ' ' + (lab[k] || '');
-      scr.put(kx, ty, center(clip(lbl.trim(), kw), kw), on ? t.INV : (dead ? t.F : t.B));
-      if (!on && lab[k] && !dead) { const s = center(clip(lbl.trim(), kw), kw), i0 = s.indexOf(lab[k]); if (i0 > 0) scr.put(kx + i0, ty, lab[k], t.D); }
-      app_hit(kx - 1, ky - 1, kw + 2, kh + 2, () => { haptic(8); this.onPad(k); });
+    const CH = { 3: '└', 5: '│', 6: '┌', 7: '├', 9: '┘', 10: '─', 11: '┴', 12: '┐', 13: '┤', 14: '┬', 15: '┼', 1: '│', 2: '─', 4: '│', 8: '─' };
+    for (const [key, b] of mask) { const [x, y] = key.split(',').map(Number); scr.put(x0 + x, y0 + y, CH[b] || ' ', t.L); }
+    const pend = now() < this.padT ? this.pad : null;
+    for (const [xa, ya, xb, yb, id] of boxes) {
+      const kx = x0 + xa + 1, kw = xb - xa - 1, ky0 = y0 + ya + 1, kh = yb - ya - 1;
+      let on, lines, fn;
+      if (id[0] === 'g') { const i = +id.slice(1), [k, n] = GROUPS[i]; on = i === this.gi; lines = [[k, t.B], [SHORT[n] || n, t.D]]; fn = () => this.show(i); }
+      else if (id[0] === 'f') { const i = +id.slice(1), c = codes[i]; on = i === this.pi[this.gi]; lines = [['.' + (i + 1) + ' ' + c, t.B], [PAGES[c].name.replace(' · ', '·'), t.D]]; fn = () => this.show(this.gi, i); }
+      else {
+        const k = id.slice(1), dead = /^[89]$/.test(k) && +k > ng;
+        on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
+        const head = SHOW[k] || k, tail = lab[k] || '';
+        lines = [[null, dead ? t.F : t.B, head, tail, dead]];
+        fn = () => this.onPad(k);
+      }
+      if (on) for (let yy = ky0; yy < ky0 + kh; yy++) scr.put(kx, yy, ' '.repeat(kw), t.INV);
+      const top = ky0 + Math.floor((kh - lines.length) / 2);
+      lines.forEach((ln, i) => {
+        if (ln[0] === null) {                           // touche du pavé : signe en blanc, fonction estompée
+          const [, st, head, tail, dead] = ln, txt = (head + ' ' + tail).trim(), s = center(clip(txt, kw), kw);
+          scr.put(kx, top, s, on ? t.INV : st);
+          const i0 = tail ? s.lastIndexOf(tail) : -1;
+          if (!on && !dead && i0 > 0) scr.put(kx + i0, top, tail, t.D);
+          return;
+        }
+        scr.put(kx, top + i, center(clip(ln[0], kw), kw), on ? (i ? t.INVN : t.INV) : ln[1]);
+      });
+      app_hit(kx - 1, ky0 - 1, kw + 2, kh + 2, () => { haptic(8); fn(); });
     }
   }
   drawCmd(scr, y, Wd, blink) {
@@ -2257,7 +2537,7 @@ function boot() {
   startSensors();
   if (SET.wake) wakeSet(true);
   setInterval(fastTick, 100); setInterval(slowTick, 1000);
-  setTimeout(fetchWx, 1500); setTimeout(fetchTle, 2500); setInterval(fetchTle, 6 * 3600 * 1000);
+  setTimeout(fetchWx, 1500); setTimeout(fetchTle, 2500); setTimeout(fetchSatCat, 3500); setInterval(() => fetchSatCat(), 6 * 3600 * 1000); setInterval(fetchTle, 6 * 3600 * 1000);
   // rendu : requestAnimationFrame quand le navigateur le fournit, plus une minuterie de secours
   // (certains cadres intégrés suspendent requestAnimationFrame jusqu'au premier geste)
   const loop = () => { frame(); requestAnimationFrame(loop); };
