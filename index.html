@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.1.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.2.0', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -1479,12 +1479,12 @@ PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     if (y + 5 <= lim) {
       sub(scr, ir.x, y++, ir.w, 'S01 ALARMS', ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (ALS.caut || ALS.crit) ? t.RB : t.D);
       const cw = Math.floor((ir.w - 5) / 4), lt = app.lamp(), blink = app.blink();
-      y += W.tileGrid(scr, ir.x, y, 4, cw, ANN.map(a => [a.lab, annState(a.lvl, a.val, blink, lt), () => app.go('S01', a.key)]), app.hits);
+      y += W.tileGrid(scr, ir.x, y, 4, cw, ANN.map(a => [a.lab, annState(a.lvl, a.val, blink, lt)]));
     }
     if (y + 4 <= lim) {
       sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
       const lt = app.lamp(), cw = Math.floor((ir.w - 7) / 6), f = ALS.fcu;
-      W.tileGrid(scr, ir.x, y, 6, cw, [].concat(...FCU_ROWS).map(([k, lab]) => [lab, fcuState(k, f[k], lt), () => app.go('S01', k)]), app.hits);
+      W.tileGrid(scr, ir.x, y, 6, cw, [].concat(...FCU_ROWS).map(([k, lab]) => [lab, fcuState(k, f[k], lt)]));
     }
   } };
 
@@ -1570,18 +1570,20 @@ PAGES.M03 = { code: 'M03', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
 
 // ------------------------------------------------------------------ S01 ALARMS
 PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'ANN', 'FCU', 'LAMP'], fps: 6, sel: 'BATT',
-  keys: [['1', 'LAMP TEST', app => app.lampTest()]],
+  keys: [['1', 'LAMP TEST', app => app.lampTest()], ['2', '◂ ITEM', () => PAGES.S01.cycle(-1)], ['3', 'ITEM ▸', () => PAGES.S01.cycle(1)]],
+  order() { return ANN.map(a => a.key).concat([].concat(...FCU_ROWS).map(([k]) => k)); },
+  cycle(dd) { const o = this.order(), i = o.indexOf(this.sel); this.sel = o[(i + dd + o.length) % o.length]; },
   draw(scr, r, app) {
-    const lt = app.lamp(), blink = app.blink();
+    const lt = app.lamp(), blink = app.blink(), mk = k => k === this.sel ? '› ' : '';
     const ir = W.panel(scr, r, this.code, this.name, lt ? 'LAMP TEST' : ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (lt || ALS.caut || ALS.crit) ? t.TR : t.TD);
     let y = ir.y;
     const cw = Math.floor((ir.w - 3) / 2);
-    y += W.tileGrid(scr, ir.x, y, 2, cw, ANN.map(a => [a.lab + '  ' + a.val, annState(a.lvl, a.val, blink, lt), () => { this.sel = a.key; }]), app.hits);
+    y += W.tileGrid(scr, ir.x, y, 2, cw, ANN.map(a => [mk(a.key) + a.lab + '  ' + a.val, annState(a.lvl, a.val, blink, lt)]));
     if (y + 6 <= ir.b) {
       y++;
       sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
       const fw = Math.floor((ir.w - 4) / 3), f = ALS.fcu;
-      y += W.tileGrid(scr, ir.x, y, 3, fw, [].concat(...FCU_ROWS).map(([k, lab]) => [lab, fcuState(k, f[k], lt), () => { this.sel = k; }]), app.hits);
+      y += W.tileGrid(scr, ir.x, y, 3, fw, [].concat(...FCU_ROWS).map(([k, lab]) => [mk(k) + lab, fcuState(k, f[k], lt)]));
       scr.put(ir.x, y++, clip((f.p != null ? f.p.toFixed(1) + ' hPa · ' : '') + 'ДЕП ' + PT.NAMES[TREND.level] + ' · ' + f.psrc, ir.w), t.F);
     }
     // détail de l'élément choisi
@@ -1647,8 +1649,7 @@ PAGES.S08 = { code: 'S08', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC'
     const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
     let y = ir.y;
     if (!live('mic')) {
-      W.box(scr, ir.x, y, ir.w, 5, t.L); scr.put(ir.x + 2, y + 2, clip(SRC.mic.mode === 'off' ? 'MICROPHONE DISARMED · TAP [*1] ARM MIC' : 'WAITING FOR MICROPHONE', ir.w - 4), t.D);
-      app_hit(ir.x, y, ir.w, 5, () => micArm(true));
+      button(scr, ir.x, y, ir.w, 4, SRC.mic.mode === 'off' ? 'ARM MIC' : 'WAITING…', SRC.mic.mode === 'off' ? 'MICROPHONE DISARMED' : 'PERMISSION PENDING', () => micArm(true), { dead: SRC.mic.mode !== 'off' });
       scr.put(ir.x, y + 6, clip('LEVEL ONLY · NOTHING IS RECORDED OR SENT', ir.w), t.F);
       return;
     }
@@ -1989,7 +1990,9 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['WAKE LOCK', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
       ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
     items[6][0] = 'ZOOM +';
-    y += W.tileGrid(scr, ir.x, y, 2, cw, items.map(([lab, on], i) => ['*' + (i + 1) + ' ' + lab, on ? 'on' : 'nom', () => this.keys[i][2](app)]), app.hits);
+    items.forEach(([lab, on], i) => { const c = i % 2, rw = Math.floor(i / 2), bw = Math.floor(ir.w / 2);
+      button(scr, ir.x + c * bw, y + rw * 2, c ? ir.w - bw : bw, 2, lab, '*' + (i + 1), () => this.keys[i][2](app), { on, small: true }); });
+    y += 8;
     y++;
     sub(scr, ir.x, y++, ir.w, 'SOURCES', 'LIVE · SIM · N/A');
     const half = Math.ceil(SOURCES.length / 2), cww = Math.floor((ir.w - 2) / 2);
@@ -2109,7 +2112,8 @@ PAGES.M06 = { code: 'M06', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RE
     kv('AMATEUR RELAYS', ham.length + ' UP' + (ham.length ? ' · ' + ham.filter(s => s.el >= 10).length + ' ≥10°' : ''));
     ham.slice(0, 3).forEach(s => kv('  ' + s.label, Math.round(s.az) + '° ' + card(s.az) + ' · EL ' + Math.round(s.el) + '°', s.el >= 10 ? t.B : t.D));
     const cl = SRC.cell.v;
-    kv('CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'CELL TOWERS · APK ONLY', t.D, live('cell') ? t.N : t.F);
+    kv('CELL TOWERS', 'SEE 4.3 M07 TOWERS', t.D, t.F);
+    if (false) kv('CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'CELL TOWERS · APK ONLY', t.D, live('cell') ? t.N : t.F);
   } };
 
 // ------------------------------------------------------------------ S06 TEMPS : météo et téléphone
@@ -2148,8 +2152,139 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
 // groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
-  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
+  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
 ];
+
+// ---------------------------------------------------------------------------------------- antennes-relais (ANFR)
+// Données publiques de l'ANFR (« Données sur les réseaux mobiles », data.gouv.fr, hebdomadaire, Licence Ouverte),
+// découpées en tuiles de 0,2° par tools/build_cells.py (GitHub Actions) dans cells/<la>_<lo>.json du site.
+// Une station = un support d'un opérateur : position, générations (bits 2G 3G 4G 5G), hauteur, azimuts des
+// antennes, bandes. L'appli charge les 9 tuiles autour du téléphone (≈ 66 × 48 km), en cache pour le hors-ligne.
+const CELLS = { tiles: {}, ops: [], date: '', state: 'WAIT', key: '', t: 0, busy: false, sim: false };
+const tileKey = (la, lo) => Math.floor(la * 5) + '_' + Math.floor(lo * 5);
+async function loadCells(lat, lon, force = false) {
+  const la = Math.floor(lat * 5), lo = Math.floor(lon * 5), key = la + '_' + lo;
+  if (CELLS.busy || (!force && key === CELLS.key && now() - CELLS.t < 3600)) return;
+  CELLS.busy = true; CELLS.key = key; CELLS.t = now();
+  let ok = 0, miss = 0, fail = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const k = (la + dy) + '_' + (lo + dx);
+    if (CELLS.tiles[k] && !force) { ok++; continue; }
+    try {
+      const r = await fetch('cells/' + k + '.json', { cache: 'no-cache' });
+      if (r.status === 404) { CELLS.tiles[k] = []; miss++; continue; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      CELLS.tiles[k] = j.s || []; CELLS.ops = j.ops || CELLS.ops; CELLS.date = j.d || CELLS.date; ok++;
+    } catch (e) { fail++; }
+  }
+  const n = Object.values(CELLS.tiles).reduce((a, s) => a + s.length, 0);
+  CELLS.sim = false;
+  if (n) CELLS.state = 'LIVE';
+  else if (SET.sim !== 'OFF' && !REAL) { CELLS.sim = true; CELLS.state = 'SIM'; }
+  else CELLS.state = fail ? 'UNREACHABLE' : 'NO SITES';
+  if (n || CELLS.state !== 'WAIT') log('NET', 'CELL SITES · ' + n + ' STATIONS · ' + CELLS.state + (CELLS.date ? ' · ANFR ' + CELLS.date : ''));
+  CELLS.busy = false;
+}
+// stations simulées autour d'un point (aperçu sans données)
+function simTowers(lat, lon) {
+  const out = [], ops = ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE'];
+  for (let i = 0; i < 16; i++) {
+    const a = (i * 137.5) * RAD, dist = 180 + (i * 233) % 2400;
+    const dla = dist * Math.cos(a) / 111320, dlo = dist * Math.sin(a) / (111320 * Math.cos(lat * RAD));
+    const az0 = (i * 47) % 120;
+    out.push([lat + dla, lon + dlo, i % 4, i % 3 ? 12 : 14, 18 + (i % 5) * 6, [az0, az0 + 120, az0 + 240].join('|'), i % 2 ? 'L8 L18 N35' : 'G9 L8 L26', 'SIM' + i]);
+  }
+  CELLS.ops = ops;
+  return out;
+}
+const OP_SHORT = { 'ORANGE': 'ORA', 'SFR': 'SFR', 'BOUYGUES TELECOM': 'BYT', 'FREE MOBILE': 'FREE' };
+const OP_GLYPH = { 'ORANGE': 'G', 'SFR': 'R', 'BOUYGUES TELECOM': 'C', 'FREE MOBILE': 'E' };   // formes de satGlyph
+const genTxt = g => ['2G', '3G', '4G', '5G'].filter((_, i) => g & (1 << i)).join(' ');
+function bearing(la1, lo1, la2, lo2) {
+  const p1 = la1 * RAD, p2 = la2 * RAD, dl = (lo2 - lo1) * RAD;
+  return A.norm360(Math.atan2(Math.sin(dl) * Math.cos(p2), Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl)) * DEG);
+}
+// stations dans un rayon (m) : distance, relèvement depuis le téléphone, secteur d'antenne tourné vers le téléphone
+function towersNear(lat, lon, radius = 3000) {
+  const list = CELLS.sim ? simTowers(lat, lon) : Object.values(CELLS.tiles).flat();
+  const out = [];
+  for (const s of list) {
+    const [la, lo, op, gen, h, az, sys, id] = s;
+    const dist = A.dist(lat, lon, la, lo) * 1000;
+    if (dist > radius) continue;
+    const brg = bearing(lat, lon, la, lo), back = A.norm360(brg + 180);
+    const azs = String(az || '').split('|').filter(Boolean).map(Number);
+    let sector = null, best = 61;
+    for (const a of azs) { const dd = Math.abs(A.norm180(back - a)); if (dd < best) { best = dd; sector = a; } }
+    const opName = CELLS.ops[op] || String(op);
+    out.push({ la, lo, op: opName, gen, h, azs, sys, id, dist, brg, sector, off: sector == null ? null : best });
+  }
+  return out.sort((a, b) => a.dist - b.dist);
+}
+
+// ------------------------------------------------------------------ M07 TOWERS : antennes-relais autour du téléphone
+PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', 'TOWER', 'CELL', 'ANTENNA', 'GSM', 'ANFR'], fps: 4, range: 1,
+  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'RANGE', () => { PAGES.M07.range = (PAGES.M07.range + 1) % 3; }], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }]],
+  draw(scr, r) {
+    this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
+    const h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0, RANGE = [1000, 2000, 5000][this.range];
+    if (CELLS.state === 'WAIT' || CELLS.key !== tileKey(h.lat, h.lon)) loadCells(h.lat, h.lon);
+    const all = towersNear(h.lat, h.lon, RANGE), src = CELLS.state === 'LIVE' ? 'ANFR ' + CELLS.date : CELLS.state;
+    const ir = W.panel(scr, r, this.code, this.name, src, CELLS.state === 'LIVE' ? t.TD : (CELLS.state === 'SIM' ? t.T : t.TR));
+    const rows = Math.max(6, Math.min(ir.h - 9, Math.ceil(ir.w / CELL.aspect)));
+    const nearest = {}; for (const s of all) if (!nearest[s.op]) nearest[s.op] = s;
+    scr.vector(ir.x, ir.y, ir.w, rows, (c, b) => {
+      const d = b.d, fs = b.fpx, R = Math.min(b.w, b.h) / 2 - fs * 0.95, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      const rad = m => R * Math.sqrt(Math.min(1, m / RANGE));             // échelle en racine : le proche reste lisible
+      const P = (dist, brg) => { const rr = rad(dist), aa = (brg - rot) * RAD; return [cx + rr * Math.sin(aa), cy - rr * Math.cos(aa)]; };
+      c.fillStyle = rgba(WHITE, 0.03); c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.fill();
+      c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.stroke();
+      c.font = '400 ' + (fs * 0.56).toFixed(1) + 'px ' + b.family; c.textAlign = 'left'; c.textBaseline = 'middle';
+      const rings = RANGE === 1000 ? [100, 250, 500] : RANGE === 2000 ? [250, 500, 1000] : [500, 1000, 2500];
+      c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3);
+      for (const m of rings) { c.beginPath(); c.arc(cx, cy, rad(m), 0, 2 * Math.PI); c.stroke(); c.fillStyle = COL.F; c.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', cx + rad(m) * 0.71 + 2 * d, cy - rad(m) * 0.71); }
+      c.fillStyle = COL.F; c.fillText(RANGE / 1000 + ' km', cx + R * 0.71 + 2 * d, cy - R * 0.71);
+      dash(c, d, 0);
+      c.textAlign = 'center';
+      for (const [lab, az] of [['N', 0], ['E', 90], ['S', 180], ['W', 270]]) {
+        const rr = R + fs * 0.55, aa = (az - rot) * RAD;
+        c.font = (lab === 'N' ? '700 ' : '400 ') + (fs * 0.9).toFixed(1) + 'px ' + b.family; c.fillStyle = lab === 'N' ? COL.N : COL.D;
+        c.fillText(lab, cx + rr * Math.sin(aa), cy - rr * Math.cos(aa));
+      }
+      // stations : secteurs d'antenne (traits), tourné vers toi en blanc, liaison vers la plus proche de chaque opérateur
+      for (const s of all.slice().reverse()) {
+        const [x, y] = P(s.dist, s.brg), near = nearest[s.op] === s;
+        if (near) { c.strokeStyle = rgba(WHITE, 0.3); dash(c, d, 2, 3); c.beginPath(); c.moveTo(cx, cy); c.lineTo(x, y); c.stroke(); dash(c, d, 0); }
+        for (const az of s.azs) {
+          const aa = (az - rot) * RAD, L = (az === s.sector ? 11 : 7) * d;
+          c.strokeStyle = az === s.sector ? COL.N : COL.F; c.lineWidth = (az === s.sector ? 1.6 : 1) * d;
+          c.beginPath(); c.moveTo(x, y); c.lineTo(x + L * Math.sin(aa), y - L * Math.cos(aa)); c.stroke();
+        }
+        satGlyph(c, OP_GLYPH[s.op] || 'Q', x, y, (near ? 3.2 : 2.4) * d, true, near ? COL.N : COL.D);
+      }
+      // toi : flèche dans le sens du téléphone
+      const hd = ((a ? a.hdg : 0) - rot) * RAD;
+      c.fillStyle = COL.RR; c.beginPath();
+      c.moveTo(cx + 8 * d * Math.sin(hd), cy - 8 * d * Math.cos(hd));
+      c.lineTo(cx + 5 * d * Math.sin(hd + 2.5), cy - 5 * d * Math.cos(hd + 2.5));
+      c.lineTo(cx + 5 * d * Math.sin(hd - 2.5), cy - 5 * d * Math.cos(hd - 2.5)); c.closePath(); c.fill();
+    });
+    let y = ir.y + rows, x = ir.x;
+    for (const lab of ['● ORA', '▲ SFR', '■ BYT', '◆ FREE']) x += scr.put(x, y, lab, t.D) + 2;
+    W.rjust(scr, ir.r, y, all.length + ' STN', t.F);
+    y += 2;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    for (const op of ['ORANGE', 'SFR', 'BOUYGUES TELECOM', 'FREE MOBILE']) {
+      const s = nearest[op];
+      if (!s) { kv(OP_SHORT[op], 'NONE ≤ ' + RANGE / 1000 + ' km', t.F); continue; }
+      const dTxt = s.dist < 1000 ? Math.round(s.dist) + ' m' : (s.dist / 1000).toFixed(1) + ' km';
+      kv(OP_SHORT[op] + ' ' + genTxt(s.gen).replace(/G/g, '').replace(/ /g, '·') + 'G', dTxt + ' · ' + Math.round(s.brg) + '° ' + card(s.brg) + (s.sector != null ? ' · SECT ' + s.sector + '°' : ''), s.sector != null ? t.B : t.N);
+    }
+    const cl = SRC.cell.v;
+    kv('SERVING CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'APK ONLY', t.D, live('cell') ? t.N : t.F);
+    if (y < ir.b) scr.put(ir.x, y++, clip('SECT = ANTENNA SECTOR FACING YOU (±60°)', ir.w), t.F);
+  } };
 
 // ---------------------------------------------------------------------------------------- rendu (canvas)
 // Grille de cellules fixe : le texte passe par la police, les cadres, blocs et points braille sont dessinés
@@ -2191,7 +2326,8 @@ class Renderer {
       const s = STYLES[scr.st[y * scr.w + x]];
       if (!s.base) { c.fillStyle = s.bg; c.fillRect(Math.round(x * cw), Math.round(y * chh), Math.round((x + 1) * cw) - Math.round(x * cw), Math.round((y + 1) * chh) - Math.round(y * chh)); }
     }
-    // 2. couche vectorielle (courbes, cartes, instruments, afficheurs)
+    // 2. couche vectorielle (courbes, cartes, instruments, afficheurs, touches)
+    try { c.fontStretch = 'condensed'; } catch (e) { /* */ }
     for (const v of scr.vec || []) {
       const b = { x: v.x * cw, y: v.y * chh, w: v.w * cw, h: v.h * chh, cw, ch: chh, d, fpx: this.fpx * d, family: this.family };
       c.save();
@@ -2250,12 +2386,77 @@ class Renderer {
 let APP = null;
 function app_hit(x, y, w, h, fn) { if (APP) APP.hits.push({ x, y, w, h, fn }); }
 
+// Logo Orbital VKL (claude/logo_OVK_contour.svg) : 8 lames et l'étoile, repère -2..102, centre (50, 50)
+const LOGO = {
+  blades: ['M34.1,73.9 45.2,99.7 46.9,99.8 47.0,99.9 48.5,99.9 48.6,100.0 52.5,100.0 52.6,99.9 54.1,99.9 54.2,99.8 56.8,99.6 56.9,99.5 58.1,99.4 60.6,98.9 64.3,97.9 69.4,96.0 73.0,94.3 77.5,91.7 77.3,91.5 76.1,91.1 75.6,90.8 73.4,90.0 72.9,89.7 71.2,89.1 70.7,88.8 69.0,88.2 68.5,87.9 66.3,87.1 65.8,86.8 64.1,86.2 63.6,85.9 61.9,85.3 61.4,85.0 59.2,84.2 58.7,83.9 57.0,83.3 56.5,83.0 54.3,82.2 53.8,81.9 52.1,81.3 51.6,81.0 49.9,80.4 49.4,80.1 47.2,79.3 46.7,79.0 45.0,78.4 44.5,78.1 42.8,77.5 42.3,77.2Z',
+    'M98.8,60.1 96.0,61.2 92.7,62.7 92.0,62.9 88.7,64.4 88.0,64.6 84.7,66.1 84.0,66.3 80.7,67.8 80.0,68.0 76.7,69.5 76.0,69.7 72.7,71.2 72.0,71.4 55.9,78.3 81.6,88.8 83.8,86.9 88.2,82.4 91.1,78.7 92.9,75.9 94.8,72.3 96.3,68.7 97.5,65.1Z',
+    'M21.8,55.8 11.4,81.8 15.9,86.4 18.2,88.4 21.3,90.8 25.3,93.4 29.3,95.5 32.1,96.7 35.6,97.9 40.1,99.0 40.0,98.5 37.4,92.6 37.2,91.9 34.9,86.7 34.7,86.0 32.4,80.8 32.2,80.1 29.9,74.9 29.7,74.2 27.4,69.0 27.2,68.3 24.9,63.1 21.9,55.8Z',
+    'M25.9,34.3 20.7,36.4 18.3,37.5 17.6,37.7 15.2,38.8 14.5,39.0 12.1,40.1 11.4,40.3 10.9,40.6 10.2,40.8 7.8,41.9 7.1,42.1 4.7,43.2 4.0,43.4 3.5,43.7 2.8,43.9 0.2,45.1 0.1,47.7 0.0,47.8 0.1,53.9 0.2,54.0 0.2,55.0 0.3,55.1 0.3,56.0 0.4,56.1 0.6,58.1 1.4,61.9 2.8,66.4 4.0,69.4 5.9,73.3 8.4,77.5 9.4,74.8 9.7,74.3 10.9,71.1 11.2,70.6 12.4,67.4 12.7,66.9 13.9,63.7 14.2,63.2 15.2,60.5 15.5,60.0 16.7,56.8 17.0,56.3 18.2,53.1 18.5,52.6 19.7,49.4 20.0,48.9 21.0,46.2 21.3,45.7 22.5,42.5 22.8,42.0 24.0,38.8 24.3,38.3Z',
+    'M91.7,22.6 91.4,23.1 90.4,25.8 90.1,26.3 88.9,29.5 88.6,30.0 87.4,33.2 87.1,33.7 86.1,36.4 85.8,36.9 84.6,40.1 84.3,40.6 83.1,43.8 82.8,44.3 81.6,47.5 81.3,48.0 80.3,50.7 80.0,51.2 78.8,54.4 78.5,54.9 77.3,58.1 77.0,58.6 75.8,61.8 75.5,62.3 74.1,65.8 99.8,54.8 99.9,48.3 99.8,48.2 99.7,45.2 99.6,45.1 99.6,44.2 99.5,44.1 99.5,43.3 99.4,43.2 99.2,41.2 98.2,36.6 97.1,33.1 95.7,29.7 93.8,26.0Z',
+    'M44.1,21.8 41.6,20.7 39.4,19.9 38.9,19.6 37.2,19.0 36.7,18.7 35.5,18.3 35.0,18.0 33.3,17.4 32.8,17.1 28.9,15.6 28.4,15.3 26.7,14.7 26.2,14.4 24.5,13.8 24.0,13.5 22.3,12.9 21.8,12.6 20.1,12.0 19.6,11.7 18.4,11.3 13.4,16.2 11.4,18.4 8.8,21.7 7.1,24.3 4.9,28.5 4.0,30.6 2.3,35.6 1.2,40.0Z',
+    'M59.9,0.9 78.2,44.3 88.6,18.5 88.6,18.2 83.7,13.2 82.1,11.8 78.5,9.0 75.6,7.1 73.7,6.0 70.5,4.4 67.9,3.3 63.2,1.7Z',
+    'M22.5,8.4 65.9,25.9 54.8,0.1 48.1,0.0 48.0,0.1 45.1,0.2 45.0,0.3 44.1,0.3 44.0,0.4 43.3,0.4 43.2,0.5 40.7,0.8 37.1,1.6 33.8,2.6 30.0,4.1 25.9,6.2Z'],
+  star: 'M28.1,42.5 39.7,51.0 41.7,52.6 36.5,68.3 50.1,58.6 50.4,58.7 51.1,59.3 63.8,68.3 60.3,58.0 60.3,57.7 58.6,52.8 58.6,52.5 72.2,42.5 55.4,42.5 50.1,26.5 49.2,29.2 49.2,29.5 47.3,35.0 47.3,35.3 45.5,40.5 45.5,40.8 45.0,42.3 44.8,42.5Z',
+};
+let LOGO_P = null;
+// Repos : contour blanc. « Survol » du skin : remplissage rouge délavé #9E4A4A, sans contour, lames tournées de 45°.
+function drawLogo(c, cx, cy, size, d, o = {}) {
+  if (typeof Path2D === 'undefined') return;
+  if (!LOGO_P) LOGO_P = { blades: LOGO.blades.map(p => new Path2D(p)), star: new Path2D(LOGO.star) };
+  const k = size / 104, lw = (o.lw || 1.1) * d / k;
+  c.save(); c.translate(cx, cy); c.scale(k, k); c.translate(-50, -50);
+  c.lineJoin = 'round';
+  c.save(); c.translate(50, 50); c.rotate((o.rot || 0) * RAD); c.translate(-50, -50);
+  for (const p of LOGO_P.blades) {
+    if (o.fill) { c.fillStyle = o.fill; c.fill(p); }
+    if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = lw; c.stroke(p); }
+  }
+  c.restore();
+  if (o.fill) { c.fillStyle = o.fill; c.fill(LOGO_P.star); }
+  if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = lw; c.stroke(LOGO_P.star); }
+  c.restore();
+}
+
+// Touche : relief, coins arrondis, libellé vectoriel ; seules les touches sont cliquables.
+function button(scr, x, y, w, h, head, tail, fn, o = {}) {
+  const on = !!o.on, dead = !!o.dead;
+  scr.vector(x, y, w, h, (c, b) => {
+    const d = b.d, ins = 2 * d, X = b.x + ins, Y = b.y + ins, Wb = b.w - 2 * ins, Hb = b.h - 2 * ins, rr = Math.min(5 * d, Hb / 3);
+    const path = () => { c.beginPath(); if (c.roundRect) c.roundRect(X, Y, Wb, Hb, rr); else c.rect(X, Y, Wb, Hb); };
+    if (!dead) { c.fillStyle = 'rgba(0,0,0,0.6)'; c.beginPath(); if (c.roundRect) c.roundRect(X, Y + 1.5 * d, Wb, Hb, rr); else c.rect(X, Y + 1.5 * d, Wb, Hb); c.fill(); }
+    path();
+    if (on) { c.fillStyle = COL.N; c.fill(); }
+    else {
+      const g = c.createLinearGradient(0, Y, 0, Y + Hb);
+      g.addColorStop(0, rgba(WHITE, dead ? 0.025 : (o.red ? 0.0 : 0.15))); g.addColorStop(1, rgba(WHITE, dead ? 0.01 : 0.045));
+      c.fillStyle = o.red ? rgba(RED, 0.85) : '#0f1215'; c.fill(); c.fillStyle = g; c.fill();
+      c.strokeStyle = dead ? COL.K : (o.red ? COL.RR : COL.L); c.lineWidth = d; c.stroke();
+      if (!dead) { c.strokeStyle = rgba(WHITE, 0.22); c.beginPath(); c.moveTo(X + rr, Y + 0.5 * d); c.lineTo(X + Wb - rr, Y + 0.5 * d); c.stroke(); }
+    }
+    const fg = on ? 'rgb(' + INK.join(',') + ')' : (dead ? COL.F : COL.N), fg2 = on ? 'rgba(' + INK.join(',') + ',0.7)' : (dead ? COL.F : COL.D);
+    const fs = b.fpx * (o.small ? 0.78 : 1);
+    c.textBaseline = 'middle';
+    if (tail && Hb > fs * 2.1) {
+      c.textAlign = 'center';
+      c.font = '700 ' + fs.toFixed(1) + 'px ' + b.family; c.fillStyle = fg; c.fillText(head, X + Wb / 2, Y + Hb * 0.38);
+      c.font = '400 ' + (fs * 0.72).toFixed(1) + 'px ' + b.family; c.fillStyle = fg2; c.fillText(tail, X + Wb / 2, Y + Hb * 0.74);
+    } else {
+      c.font = '700 ' + fs.toFixed(1) + 'px ' + b.family; const w1 = c.measureText(head).width;
+      c.font = '400 ' + (fs * 0.8).toFixed(1) + 'px ' + b.family; const w2 = tail ? c.measureText(' ' + tail).width : 0;
+      let tx = X + (Wb - w1 - w2) / 2; c.textAlign = 'left';
+      c.font = '700 ' + fs.toFixed(1) + 'px ' + b.family; c.fillStyle = fg; c.fillText(head, tx, Y + Hb / 2 + 0.5 * d);
+      if (tail) { c.font = '400 ' + (fs * 0.8).toFixed(1) + 'px ' + b.family; c.fillStyle = fg2; c.fillText(' ' + tail, tx + w1, Y + Hb / 2 + 0.5 * d); }
+    }
+  }, false);
+  if (fn && !dead) app_hit(x, y, w, h, () => { haptic(8); fn(); });
+}
+
 class App {
   constructor() {
     this.cmd = null; this.msg = ''; this.msgT = 0; this.msgWarn = false; this.armed = null;
     this.pad = null; this.padT = 0; this.prev = null; this.lampT0 = 0; this.t0 = now(); this.hits = [];
-    this.gi = Math.min(SET.gi || 0, GROUPS.length - 1); this.pi = GROUPS.map((g, i) => Math.min((SET.pi || [])[i] || 0, g[3].length - 1));
-    this.splash = now();
+    this.gi = 0; this.pi = GROUPS.map(() => 0);        // démarrage toujours sur 1.1 (S00 OVERVIEW)
+    this.splash = now(); this.ready = false;          // écran de chargement, puis attente d'un geste
   }
   get page() { return PAGES[GROUPS[this.gi][3][this.pi[this.gi]]]; }
   show(gi, pi) {
@@ -2264,13 +2465,8 @@ class App {
     const n = GROUPS[this.gi][3].length;
     this.pi[this.gi] = pi == null ? 0 : ((pi % n) + n) % n;          // changement de groupe : retour au format .1
     if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) this.prev = cur;
-    SET.gi = this.gi; SET.pi = this.pi.slice(); saveSettings();
   }
-  step(d) {                                          // format suivant / précédent sur l'ensemble des groupes
-    const flat = []; GROUPS.forEach((g, gi) => g[3].forEach((_, pi) => flat.push([gi, pi])));
-    const i = flat.findIndex(([g, p]) => g === this.gi && p === this.pi[this.gi]);
-    const [g, p] = flat[(i + d + flat.length) % flat.length]; this.show(g, p);
-  }
+  step(dd) { this.show(this.gi, this.pi[this.gi] + dd); }          // sous-section suivante / précédente du groupe
   go(code, sel) { const hit = this.find(code); if (hit) { this.show(...hit); if (sel && this.page.sel !== undefined) this.page.sel = sel; } }
   address() { return (this.gi + 1) + '.' + (this.pi[this.gi] + 1); }
   blink() { return Math.floor(Date.now() / 500) % 2 === 0; }      // annonciateur CRITICAL : 1 Hz
@@ -2294,15 +2490,10 @@ class App {
     return null;
   }
   say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; }
-  arm(id, label, fn) {
-    const t1 = now();
-    if (this.armed && this.armed[0] === id && t1 < this.armed[2]) { this.armed = null; fn(); return; }
-    this.armed = [id, label, t1 + 3]; this.say(label + ' · PRESS AGAIN WITHIN 3 S TO CONFIRM', true);
-  }
   execute(line) {
     line = line.trim(); if (!line) return;
     const [verb, ...rest] = line.split(/\s+/), v = verb.toUpperCase(), arg = rest.join(' ').toUpperCase();
-    if (['HELP', '?', 'H'].includes(v)) return this.say('1-7 GROUP · . n FORMAT · * n ACTION · 0 RCL · +− STEP · / LAMP · S01 / BARO / 2.3 · SIM AUTO|ON|OFF · TIMER 7:30');
+    if (['HELP', '?', 'H'].includes(v)) return this.say('1-7 GROUP · ◀ ▶ + − FORMAT · . n FORMAT · * n ACTION · 0 RCL · / LAMP · SIM AUTO|ON|OFF · TIMER 7:30');
     if (['LAMP', 'TEST', 'LT'].includes(v)) return this.lampTest();
     if (v === 'SIM' && ['AUTO', 'ON', 'OFF'].includes(arg)) { SET.sim = arg; saveSettings(); simReset(); return this.say('SIM MODE ' + arg); }
     if (v === 'TIMER' || v === 'TMR') { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (mm) { tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); this.go('S29'); return this.say('TIMER ' + arg + ' RUNNING'); } }
@@ -2329,28 +2520,30 @@ class App {
   }
   action(k) { const a = (this.page.keys || []).find(x => x[0] === k); if (!a) return false; a[2](this); return true; }
   onKey(e) {
+    if (!this.ready) { if (now() - this.splash >= 2.2) this.start(); return; }
     const k = e.key, code = e.code || '';
     if (this.cmd !== null) return;                        // la saisie va dans le champ de commande
-    if (code.startsWith('Numpad')) { e.preventDefault(); const m = { NumLock: 'ESC', NumpadEnter: 'ENTER', NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/' }; return this.onPad(m[code] || code.slice(6)); }
+    if (code.startsWith('Numpad') || code === 'NumLock') { e.preventDefault(); const m = { NumLock: 'ESC', NumpadEnter: 'ENTER', NumpadDecimal: '.', NumpadMultiply: '*', NumpadAdd: '+', NumpadSubtract: '-', NumpadDivide: '/' }; return this.onPad(m[code] || code.slice(6)); }
     if (/^F[1-7]$/.test(k)) { e.preventDefault(); return this.show(+k.slice(1) - 1); }
-    if (k === 'ArrowLeft') return this.show(this.gi - 1);
-    if (k === 'ArrowRight') return this.show(this.gi + 1);
-    if (k === 'ArrowUp') return this.show(this.gi, this.pi[this.gi] - 1);
-    if (k === 'ArrowDown') return this.show(this.gi, this.pi[this.gi] + 1);
+    if (k === 'ArrowLeft') return this.step(-1);
+    if (k === 'ArrowRight') return this.step(1);
+    if (k === 'ArrowUp') return this.show(this.gi - 1);
+    if (k === 'ArrowDown') return this.show(this.gi + 1);
+    if (k === 'Escape') return this.onPad('ESC');
     if (k === 'Enter' || k === ':') { e.preventDefault(); return openCmd(); }
     if (k === '/') return this.lampTest();
     if (/^[1-9]$/.test(k)) { if (!this.action(k)) { const n = +k - 1; if (n < GROUPS[this.gi][3].length) this.show(this.gi, n); } return; }
     if (/^[a-z]$/i.test(k) && !e.ctrlKey && !e.metaKey) { openCmd(k); e.preventDefault(); }
   }
+  start() { if (this.ready) return; this.ready = true; armSensorsGesture(); haptic(20); log('SYS', 'CONSOLE START · 1.1 OVERVIEW'); }
   // ---------------------------------------------------------- dessin
   draw(scr) {
     this.hits = [];
     scr.clear();
     const Wd = scr.w, H = scr.h, blink = this.blink();
-    if (now() - this.splash < 2.2) return this.drawSplash(scr);
+    if (!this.ready) return this.drawSplash(scr);
     this.drawBand(scr, Wd, blink);
-    scr.put(0, 2, '─'.repeat(Wd), t.L);
-    const CONS = 17;                                  // pupitre : onglets des groupes (3) + des formats (3) + pavé (11)
+    const CONS = 18;                                  // pupitre : onglets (7) + espace (1) + pavé (10)
     let r;
     if (Wd >= 80 && H < CONS + 12) {                  // paysage : pupitre à droite
       const cw = Math.min(36, Math.floor(Wd * 0.4)), y0 = Math.max(3, H - 1 - CONS);
@@ -2365,41 +2558,83 @@ class App {
     this.drawCmd(scr, H - 1, Wd, blink);
   }
   drawSplash(scr) {
-    const el = now() - this.splash, cx = Math.floor(scr.w / 2), y0 = Math.max(2, Math.floor(scr.h / 2) - 8);
-    W.box(scr, cx - 12, y0 - 1, 24, 3, t.L);
-    scr.put(cx - 11, y0, center(CFG.OS_RU + ' · ' + CFG.OS, 22), t.B);
-    scr.put(0, y0 + 2, center(CFG.VERSION + ' · ' + CFG.STATION + ' · ВКЛ ●', scr.w), t.D);
-    const checks = [['ORIENT', 'orient'], ['MOTION', 'motion'], ['GNSS', 'geo'], ['BATTERY', 'batt'], ['NETWORK', 'net'], ['BAROMETER', 'baro'], ['WEATHER', 'wx'], ['FCU 0.4.1', null]];
-    checks.forEach(([n, k], i) => {
-      if (el < 0.25 + i * 0.18) return;
-      const st = k ? tag(k) : 'ONLINE', w = Math.min(32, scr.w - 4), x = cx - Math.floor(w / 2);
-      W.kv(scr, x, y0 + 5 + i, w, n, st, t.D, st === 'LIVE' || st === 'ONLINE' ? t.B : (st === 'SIM' ? t.INVN : t.F));
+    const el = now() - this.splash, Wd = scr.w, cx = Math.floor(Wd / 2);
+    const lr = Math.max(6, Math.min(Math.floor(scr.h * 0.3), Math.round(Wd * 0.5 / CELL.aspect)));
+    const y0 = Math.max(1, Math.floor((scr.h - lr - 18) / 2));
+    // logo : contour blanc, puis « survol » (rotation 45° des lames, remplissage rouge délavé) en 0,9 s
+    const k = Math.max(0, Math.min(1, (el - 0.5) / 0.9)), e = k * k * (3 - 2 * k);
+    scr.vector(0, y0, Wd, lr, (c, b) => {
+      const size = Math.min(b.w, b.h) * 0.92, X = b.x + b.w / 2, Y = b.y + b.h / 2;
+      if (e < 1) drawLogo(c, X, Y, size, b.d, { stroke: rgba(WHITE, 1 - e), rot: 45 * e, lw: 1.4 });
+      if (e > 0) drawLogo(c, X, Y, size, b.d, { fill: rgba(RED, e), rot: 45 * e });
     });
-    scr.put(0, y0 + 15, center('TAP TO SKIP', scr.w), t.F);
-    this.hits.push({ x: 0, y: 0, w: scr.w, h: scr.h, fn: () => { this.splash = 0; } });
+    let y = y0 + lr + 1;
+    scr.put(0, y++, center(CFG.OS_RU + ' · ' + CFG.OS, Wd), t.B);
+    scr.put(0, y++, center('ORBITAL VKL · ' + CFG.STATION + ' · ' + CFG.VERSION, Wd), t.D);
+    y++;
+    const checks = [['ORIENT', 'orient'], ['MOTION', 'motion'], ['GNSS', 'geo'], ['BATTERY', 'batt'], ['NETWORK', 'net'], ['BAROMETER', 'baro'], ['WEATHER', 'wx'], ['FCU 0.4.1', null]];
+    checks.forEach(([n, kk], i) => {
+      if (el < 0.4 + i * 0.18) return;
+      const st = kk ? tag(kk) : 'ONLINE', w = Math.min(32, Wd - 4), x = cx - Math.floor(w / 2);
+      W.kv(scr, x, y + i, w, n, st, t.D, st === 'LIVE' || st === 'ONLINE' ? t.B : (st === 'SIM' ? t.INVN : t.F));
+    });
+    y += checks.length + 1;
+    if (el < 2.2) { scr.put(0, y, center('LOADING …', Wd), t.F); return; }
+    const on = Math.floor(Date.now() / 600) % 2 === 0, msg = ' ▸ TAP TO START ';
+    scr.put(cx - Math.floor(slen(msg) / 2), y, msg, on ? t.INV : t.B);
+    this.hits.push({ x: 0, y: 0, w: scr.w, h: scr.h, fn: () => this.start() });
   }
+  // bandeau : logo Orbital VKL, ГРАФИТ, heure, ВКЛ ● ; MET, état des alarmes, SIM (affichage seulement)
   drawBand(scr, Wd, blink) {
-    scr.fill(0, 0, Wd, 1, ' ', t.T);
-    let x = scr.put(0, 0, ' ' + CFG.OS_RU + ' ', t.INV);
-    const p = this.page, right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
-    const mid = ' Ф ' + this.address() + ' ', code = ' ' + p.code + ' ', name = ' ' + p.name;
-    if (Wd - x - right.length - 2 >= mid.length + code.length + slen(name) + 9) { x += scr.put(x, 0, ' ' + CFG.STATION + ' ', t.TR); x += scr.put(x, 0, '│', t.TF); }
-    x += scr.put(x, 0, mid, t.TD); x += scr.put(x, 0, code, t.INV); scr.put(x, 0, clip(name, Wd - x - right.length - 3), t.T);
+    scr.fill(0, 0, Wd, 2, ' ', t.T);
+    const crit = ALS.crit > 0;
+    scr.vector(0, 0, 5, 2, (c, b) => {
+      const size = Math.min(b.h, b.w) * 0.94;
+      drawLogo(c, b.x + b.w / 2, b.y + b.h / 2, size, b.d, crit && blink ? { fill: COL.RR } : { stroke: COL.N, lw: 1 });
+    });
+    let x = 6;
+    x += scr.put(x, 0, CFG.OS_RU, t.T) + 1;
+    if (Wd - x > 26) scr.put(x, 0, 'ORBITAL VKL', t.TD);
+    const right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
     W.rjust(scr, Wd - 2, 0, right, t.T); scr.put(Wd - 2, 0, '●', t.TR);
     const up = now() - this.t0, d = Math.floor(up / 86400), rest = up % 86400;
-    scr.put(1, 1, 'MET T+' + d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60), t.D);
+    scr.put(6, 1, 'MET T+' + d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60), t.TD);
     const sim = SOURCES.some(([k]) => SRC[k].mode === 'sim');
     let xr = Wd - 1;
-    if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); app_hit(xr, 1, 5, 1, () => this.go('S28')); xr -= 1; }
+    if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); xr -= 1; }
     let st, txt;
-    if (ALS.crit) { txt = ' MASTER CAUTION · ' + ALS.crit + ' CRIT '; st = blink ? t.ALERT : t.RB; }
-    else if (ALS.caut) { txt = ' CAUTION · ' + ALS.caut + ' '; st = t.RB; }
-    else { txt = 'NOMINAL '; st = t.F; }
-    W.rjust(scr, xr, 1, txt, st); app_hit(xr - slen(txt), 1, slen(txt), 1, () => this.go('S01'));
+    if (ALS.crit) { txt = ' MASTER CAUTION · ' + ALS.crit + ' CRIT '; st = blink ? t.ALERT : t.TR; }
+    else if (ALS.caut) { txt = ' CAUTION · ' + ALS.caut + ' '; st = t.TR; }
+    else { txt = 'NOMINAL '; st = t.TF; }
+    W.rjust(scr, xr, 1, txt, st);
+    scr.put(0, 2, '─'.repeat(Wd), t.L);
   }
-  // pupitre : onglets des groupes, onglets des formats du groupe, pavé numérique ; filets communs (masque de directions)
+  // pupitre : onglets d'affichage (groupes, formats du groupe) entourés des flèches ◀ ▶, espace, pavé de touches
   drawConsole(scr, x0, y0, Wd) {
     const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', COMMS: 'COMM' };
+    const codes = GROUPS[this.gi][3], ng = GROUPS.length, nf = codes.length, AW = 5;
+    const bx = (i, n, a, b) => a + Math.round(i * (b - a) / n);
+    const boxes = [];                                   // onglets : [xa, ya, xb, yb, id]
+    GROUPS.forEach((g, i) => boxes.push([bx(i, ng, 0, Wd - 1), 0, bx(i + 1, ng, 0, Wd - 1), 3, 'g' + i]));
+    codes.forEach((c, i) => boxes.push([bx(i, nf, AW, Wd - 1 - AW), 3, bx(i + 1, nf, AW, Wd - 1 - AW), 6, 'f' + i]));
+    const mask = new Map(), add = (x, y, b) => { const k = x + ',' + y; mask.set(k, (mask.get(k) || 0) | b); };
+    for (const [xa, ya, xb, yb] of boxes) {
+      for (let x = xa; x < xb; x++) { add(x, ya, 2); add(x + 1, ya, 8); add(x, yb, 2); add(x + 1, yb, 8); }
+      for (let y = ya; y < yb; y++) { add(xa, y, 4); add(xa, y + 1, 1); add(xb, y, 4); add(xb, y + 1, 1); }
+    }
+    const CH = { 3: '└', 5: '│', 6: '┌', 7: '├', 9: '┘', 10: '─', 11: '┴', 12: '┐', 13: '┤', 14: '┬', 15: '┼', 1: '│', 2: '─', 4: '│', 8: '─' };
+    for (const [key, b] of mask) { const [x, y] = key.split(',').map(Number); scr.put(x0 + x, y0 + y, CH[b] || ' ', t.F); }
+    for (const [xa, ya, xb, yb, id] of boxes) {
+      const kx = x0 + xa + 1, kw = xb - xa - 1, ky = y0 + ya + 1, kh = yb - ya - 1;
+      const i = +id.slice(1), isG = id[0] === 'g', on = isG ? i === this.gi : i === this.pi[this.gi];
+      const lines = isG ? [GROUPS[i][0], SHORT[GROUPS[i][1]] || GROUPS[i][1]] : ['.' + (i + 1) + ' ' + codes[i], PAGES[codes[i]].name.replace(' · ', '·')];
+      lines.forEach((s, j) => scr.put(kx, ky + j, center(clip(s, kw), kw), on ? (j ? t.N : t.B) : (j ? t.F : t.D)));
+      if (on) { scr.put(kx, ky + kh, '━'.repeat(kw), t.N); }       // onglet actif : trait gras dessous
+    }
+    // flèches latérales : sous-section précédente / suivante
+    button(scr, x0, y0 + 4, AW, 2, '◀', '', () => this.step(-1), { small: false });
+    button(scr, x0 + Wd - AW, y0 + 4, AW, 2, '▶', '', () => this.step(1), { small: false });
+    // pavé : ESC / * ↵ · 7 8 9 + · 4 5 6 · 1 2 3 − · 0 .
     const KEYS = { ESC: [0, 0, 1, 1], '/': [1, 0, 1, 1], '*': [2, 0, 1, 1], ENTER: [3, 0, 1, 1],
       '7': [0, 1, 1, 1], '8': [1, 1, 1, 1], '9': [2, 1, 1, 1], '+': [3, 1, 1, 2],
       '4': [0, 2, 1, 1], '5': [1, 2, 1, 1], '6': [2, 2, 1, 1],
@@ -2408,45 +2643,12 @@ class App {
     const SHOW = { '-': '−', ENTER: '↵' };
     const lab = { ESC: '', '/': 'TEST', '*': 'ACT', '-': 'PREV', '+': 'NEXT', ENTER: 'CMD', '0': 'RCL', '.': 'FMT' };
     GROUPS.forEach(([k, n]) => { lab[k] = SHORT[n] || n; });
-    const span = Wd - 1, bx = (i, n) => Math.round(i * span / n);
-    const codes = GROUPS[this.gi][3], ng = GROUPS.length, nf = codes.length;
-    const boxes = [];                                   // [xa, ya, xb, yb, id] en coordonnées du pupitre
-    GROUPS.forEach((g, i) => boxes.push([bx(i, ng), 0, bx(i + 1, ng), 3, 'g' + i]));
-    codes.forEach((c, i) => boxes.push([bx(i, nf), 3, bx(i + 1, nf), 6, 'f' + i]));
-    for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) boxes.push([bx(c, 4), 6 + rr * 2, bx(c + cs, 4), 6 + (rr + rs) * 2, 'k' + k]);
-    const mask = new Map(), add = (x, y, b) => { const k = x + ',' + y; mask.set(k, (mask.get(k) || 0) | b); };
-    for (const [xa, ya, xb, yb] of boxes) {
-      for (let x = xa; x < xb; x++) { add(x, ya, 2); add(x + 1, ya, 8); add(x, yb, 2); add(x + 1, yb, 8); }
-      for (let y = ya; y < yb; y++) { add(xa, y, 4); add(xa, y + 1, 1); add(xb, y, 4); add(xb, y + 1, 1); }
-    }
-    const CH = { 3: '└', 5: '│', 6: '┌', 7: '├', 9: '┘', 10: '─', 11: '┴', 12: '┐', 13: '┤', 14: '┬', 15: '┼', 1: '│', 2: '─', 4: '│', 8: '─' };
-    for (const [key, b] of mask) { const [x, y] = key.split(',').map(Number); scr.put(x0 + x, y0 + y, CH[b] || ' ', t.L); }
-    const pend = now() < this.padT ? this.pad : null;
-    for (const [xa, ya, xb, yb, id] of boxes) {
-      const kx = x0 + xa + 1, kw = xb - xa - 1, ky0 = y0 + ya + 1, kh = yb - ya - 1;
-      let on, lines, fn;
-      if (id[0] === 'g') { const i = +id.slice(1), [k, n] = GROUPS[i]; on = i === this.gi; lines = [[k, t.B], [SHORT[n] || n, t.D]]; fn = () => this.show(i); }
-      else if (id[0] === 'f') { const i = +id.slice(1), c = codes[i]; on = i === this.pi[this.gi]; lines = [['.' + (i + 1) + ' ' + c, t.B], [PAGES[c].name.replace(' · ', '·'), t.D]]; fn = () => this.show(this.gi, i); }
-      else {
-        const k = id.slice(1), dead = /^[89]$/.test(k) && +k > ng;
-        on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
-        const head = SHOW[k] || k, tail = lab[k] || '';
-        lines = [[null, dead ? t.F : t.B, head, tail, dead]];
-        fn = () => this.onPad(k);
-      }
-      if (on) for (let yy = ky0; yy < ky0 + kh; yy++) scr.put(kx, yy, ' '.repeat(kw), t.INV);
-      const top = ky0 + Math.floor((kh - lines.length) / 2);
-      lines.forEach((ln, i) => {
-        if (ln[0] === null) {                           // touche du pavé : signe en blanc, fonction estompée
-          const [, st, head, tail, dead] = ln, txt = (head + ' ' + tail).trim(), s = center(clip(txt, kw), kw);
-          scr.put(kx, top, s, on ? t.INV : st);
-          const i0 = tail ? s.lastIndexOf(tail) : -1;
-          if (!on && !dead && i0 > 0) scr.put(kx + i0, top, tail, t.D);
-          return;
-        }
-        scr.put(kx, top + i, center(clip(ln[0], kw), kw), on ? (i ? t.INVN : t.INV) : ln[1]);
-      });
-      app_hit(kx - 1, ky0 - 1, kw + 2, kh + 2, () => { haptic(8); fn(); });
+    const pend = now() < this.padT ? this.pad : null, py = y0 + 8;
+    for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) {
+      const xa = bx(c, 4, 0, Wd), xb = bx(c + cs, 4, 0, Wd);
+      const on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
+      const dead = /^[89]$/.test(k) && +k > ng;
+      button(scr, x0 + xa, py + rr * 2, xb - xa, rs * 2, SHOW[k] || k, lab[k], () => this.onPad(k), { on, dead, small: k === 'ENTER' });
     }
   }
   drawCmd(scr, y, Wd, blink) {
@@ -2461,11 +2663,10 @@ class App {
     if (now() - this.msgT < 6 && this.msg) { scr.put(x, y, clip(this.msg, Wd - x - 1), this.msgWarn ? t.RB : t.N); return; }
     const keys = this.page.keys || [];
     if (!keys.length) { scr.put(x, y, clip('↵ COMMAND · TYPE HELP', Wd - x - 1), t.D); return; }
-    for (const [k, lab, fn] of keys) {
-      const txt = '*' + k + ' ' + lab; if (x + slen(txt) + 1 > Wd) break;
-      scr.put(x, y, '*' + k, t.D); scr.put(x + 2, y, ' ' + lab, t.N);
-      app_hit(x, y, slen(txt), 1, () => { haptic(8); fn(this); });
-      x += slen(txt) + 2;
+    for (const [k, labl, fn] of keys) {                // actions du format : petites touches
+      const w = slen(labl) + 5; if (x + w > Wd) break;
+      button(scr, x, y, w, 1, '*' + k, labl, () => fn(this), { small: true });
+      x += w + 1;
     }
   }
 }
@@ -2497,7 +2698,7 @@ CV.addEventListener('pointerdown', ev => { TOUCH = { x: ev.clientX, y: ev.client
 CV.addEventListener('pointerup', ev => {
   if (!TOUCH) return;
   const dx = ev.clientX - TOUCH.x, dy = ev.clientY - TOUCH.y; TOUCH = null;
-  if (Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) { APP.step(dx < 0 ? 1 : -1); haptic(6); frame(true); return; }
+  if (APP.ready && Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) { APP.step(dx < 0 ? 1 : -1); haptic(6); frame(true); return; }
   if (Math.hypot(dx, dy) > 16) return;
   const [x, y] = cellAt(ev);
   for (let i = APP.hits.length - 1; i >= 0; i--) { const h = APP.hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) { h.fn(APP); frame(true); return; } }
