@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.4.1', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.4.2', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -1902,9 +1902,8 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
     const bh = Math.min(2 + 1 + nSteps + (why.length ? 1 + why.length : 0), by - y);
     if (!steps.length || bh < 4) return;
     W.box(scr, ir.x, y, ir.w, bh, t.L);
-    scr.put(ir.x + 2, y, ' INSTRUCTIONS ', t.B);
     let yy = y + 1; const yb = y + bh - 1, ix = ir.x + 2;
-    scr.put(ix, yy++, 'WHAT TO DO', t.B);
+    scr.put(ix, yy++, 'INSTRUCTIONS', t.B);
     steps.forEach((ls, k) => { if (yy >= yb) return; scr.put(ix, yy, (k + 1) + ' ▸', t.B); scr.put(ix + 4, yy++, ls[0], t.N); for (const l of ls.slice(1)) if (yy < yb) scr.put(ix + 4, yy++, l, t.N); });
     if (why.length && yy + 1 < yb) {
       scr.put(ix, yy++, 'CAUSE', t.B);
