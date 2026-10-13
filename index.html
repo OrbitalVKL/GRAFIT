@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.6.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.6.1', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -964,8 +964,20 @@ function stepsFeed(c) {
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
   feedLive('steps', { today: STEPS.today, total: c });
 }
+// mise à jour de l'APK : état envoyé par l'application (release GitHub du dépôt)
+const UPD = { current: null, latest: null, available: false, state: 'idle', progress: 0, msg: '', said: '' };
+function updCmd(app) {
+  if (!APK) return app && app.say('UPDATE: GRAFIT APK ONLY · THE WEB VERSION UPDATES ITSELF', true);
+  if (UPD.available) { nativeCmd({ cmd: 'update' }); app && app.say('UPDATE ' + UPD.latest + ' · DOWNLOADING'); }
+  else { nativeCmd({ cmd: 'checkUpdate' }); app && app.say('UPDATE · CHECKING GITHUB'); }
+}
 window.addEventListener('grafit-native', e => {
   const d = e.detail || {};
+  if (d.update) {
+    Object.assign(UPD, d.update);
+    if (UPD.available && UPD.said !== UPD.latest) { UPD.said = UPD.latest; log('SYS', 'APK UPDATE ' + UPD.latest + ' AVAILABLE · 7.1 [*9]'); }
+    if (UPD.state === 'error' && UPD.msg) log('SYS', UPD.msg, true);
+  }
   if (d.steps != null) stepsFeed(+d.steps);
   if (d.thermal) {
     const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
@@ -2431,17 +2443,20 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     ['2', 'SCREEN', (app, arg) => { wakeSet(onOff(arg, SET.wake)); app && app.say('SCREEN KEEP-ON ' + (SET.wake ? 'ON' : 'OFF')); }, ['SCREEN', 'KEEPON', 'WAKELOCK'], 'SCREEN [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
     ['5', 'FEEDS', app => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); app && app.say('ALL FEEDS · REFRESH REQUESTED'); }, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
-    ['8', 'ARM', () => { armSensorsGesture(); nativeCmd({ cmd: 'perms' }); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']]],
+    ['8', 'ARM', () => { armSensorsGesture(); nativeCmd({ cmd: 'perms' }); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']],
+    ['9', 'UPDATE', app => updCmd(app), ['UPDATE', 'UPGRADE'], 'UPDATE (APK)']],
   cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
     let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
     const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['SCREEN ON', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
-      ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
+      ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false],
+      [!APK ? 'UPDATE · APK ONLY' : (UPD.state === 'downloading' ? 'DOWNLOADING ' + UPD.progress + ' %' : (UPD.state === 'installing' ? 'INSTALLING…' : (UPD.available ? 'INSTALL ' + UPD.latest : (UPD.state === 'checking' ? 'CHECKING…' : 'CHECK UPDATE')))), UPD.available]];
     items[6][0] = 'ZOOM +';
     items.forEach(([lab, on], i) => { const c = i % 2, rw = Math.floor(i / 2), bw = Math.floor(ir.w / 2);
       button(scr, ir.x + c * bw, y + rw * 2, c ? ir.w - bw : bw, 2, lab, '*' + (i + 1), () => this.keys[i][2](app), { on, small: true }); });
-    y += 8;
+    y += 10;
+    if (APK && y < ir.b) { W.kv(scr, ir.x, y++, ir.w, 'APK ' + (UPD.current || CFG.VERSION), UPD.msg || (UPD.latest ? 'LATEST ' + UPD.latest : 'GITHUB RELEASES'), t.D, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)); }
     y++;
     sub(scr, ir.x, y++, ir.w, 'SOURCES', 'LIVE · SIM · N/A');
     const half = Math.ceil(SOURCES.length / 2), cww = Math.floor((ir.w - 2) / 2);
@@ -2453,7 +2468,6 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     });
     y += half + 1;
     if (y < ir.b) scr.put(ir.x, y++, clip(REAL ? 'AUTO: PHONE SENSORS LIVE · NOTHING SIMULATED.' : 'AUTO: NO PHONE SENSOR · MISSING SOURCES SIMULATED.', ir.w), t.F);
-    if (y < ir.b) scr.put(ir.x, y++, clip('BARO · BATT TEMP · LIGHT: APK BRIDGE (grafit-native).', ir.w), t.F);
   } };
 
 // ------------------------------------------------------------------ cadran du ciel commun (SATS, RELAYS)

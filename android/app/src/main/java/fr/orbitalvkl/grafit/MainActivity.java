@@ -2,7 +2,10 @@ package fr.orbitalvkl.grafit;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Build;
 import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.net.Uri;
@@ -49,6 +52,8 @@ public class MainActivity extends Activity {
 
     WebView web;
     Probes probes;
+    Updater updater;
+    long updT = 0;
     boolean pageReady = false, loaded = false;
 
     @Override
@@ -91,6 +96,8 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView v, String url) {
                 pageReady = true;
                 if (probes != null) probes.pushAll();
+                updater.report();
+                autoCheck();
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -114,6 +121,10 @@ public class MainActivity extends Activity {
                 });
         }
         probes = new Probes(this);
+        updater = new Updater(this);
+        IntentFilter f = new IntentFilter(Updater.ACTION);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(updater.receiver, f, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(updater.receiver, f);
         if (missing().isEmpty()) load(); else requestPermissions(missing().toArray(new String[0]), REQ_PERMS);
     }
 
@@ -161,6 +172,12 @@ public class MainActivity extends Activity {
                 case "settings":
                     startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
                     break;
+                case "checkUpdate":
+                    updT = System.currentTimeMillis(); updater.check();
+                    break;
+                case "update":
+                    updater.install();
+                    break;
                 case "keepOn":
                     if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -192,7 +209,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         web.onResume();
-        if (loaded) { probes.start(); probes.pushAll(); }
+        if (loaded) { probes.start(); probes.pushAll(); if (pageReady) autoCheck(); }
     }
 
     @Override
@@ -207,8 +224,16 @@ public class MainActivity extends Activity {
         moveTaskToBack(true);
     }
 
+    /** Recherche de mise à jour : au lancement, puis au retour au premier plan toutes les 6 h au plus. */
+    void autoCheck() {
+        if (System.currentTimeMillis() - updT < 6 * 3600 * 1000L) return;
+        updT = System.currentTimeMillis();
+        updater.check();
+    }
+
     @Override
     protected void onDestroy() {
+        try { unregisterReceiver(updater.receiver); } catch (Exception e) { /* */ }
         probes.stop();
         web.destroy();
         super.onDestroy();
