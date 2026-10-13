@@ -888,7 +888,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.6.2', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.6.3', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -3450,8 +3450,11 @@ class App {
     for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) {
       const xa = bx(c, 4, 0, Wd), xb = bx(c + cs, 4, 0, Wd);
       const on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
-      const dead = /^[89]$/.test(k) && +k > ng;
-      button(scr, x0 + xa, py + rr * 2, xb - xa, rs * 2, SHOW[k] || k, lab[k], () => this.onPad(k), { on, dead, small: k === 'ENTER' });
+      // touches chiffres selon le mode : groupe (1-7), puis après * l'action n du format, après . le format n du groupe
+      let tail = lab[k], dead = /^[89]$/.test(k) && +k > ng;
+      if (/^\d$/.test(k) && pend === '*') { const a = (this.page.keys || []).find(x => x[0] === k); tail = a ? a[1] : ''; dead = !a; }
+      else if (/^\d$/.test(k) && pend === '.') { const c = GROUPS[this.gi][3][(+k || 10) - 1]; tail = c || ''; dead = !c; }
+      button(scr, x0 + xa, py + rr * 2, xb - xa, rs * 2, SHOW[k] || k, tail, () => this.onPad(k), { on: on && !(pend && /^\d$/.test(k)), dead, small: k === 'ENTER' });
     }
   }
   drawCmd(scr, y, Wd, blink) {
