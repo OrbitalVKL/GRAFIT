@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.4.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.4.1', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -1800,7 +1800,7 @@ PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'AN
         if (y < ir.b) scr.put(ir.x, y++, clip(l2, ir.w), t.D);
       }
       const fe = FAIL.list.find(x => x.key === this.fkey());
-      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'CLOSED' : 'OPEN') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · *4 → 3.2', ir.w), fe.ack ? t.D : t.RB);
+      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · *4 → 3.2', ir.w), fe.ack ? t.D : t.RB);
     }
   } };
 
@@ -1856,7 +1856,7 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
   },
   draw(scr, r, app) {
     const fs = failStats(), L = FAIL.list, blink = app.blink();
-    const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' OPEN · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
+    const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' ACTIVE · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
     let y = ir.y; const by = ir.b - 2, bw = Math.floor(ir.w / 5);
     const ack1 = L.length && !L[this.idx()].ack, anyAck = fs.unack > 0, anyClr = L.some(e => e.ack && e.tend);
     [['ACK', '*1', 1, !ack1], ['ACK ALL', '*4', 4, !anyAck], ['CLEAR', '*5', 5, !anyClr], ['◂ SEL', '*2', 2, L.length < 2], ['SEL ▸', '*3', 3, L.length < 2]]
@@ -1864,7 +1864,7 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
     if (!L.length) {
       noData(scr, ir.x, y++, ir.w, 'NO FAULT RECORDED');
       y++;
-      ['A FAULT OPENS WHEN AN ANNUNCIATOR (3.1) TRIPS,', 'A RED FCU LAMP LIGHTS OR A FEED IS LOST.', '', 'ACK    SILENCES THE BLINK · STAYS LISTED', 'CLEAR  REMOVES ACK\'D + CLOSED FAULTS', '', 'COMMANDS: ACK [n|ALL] · CLEAR [n|ALL] · SEL n']
+      ['A FAULT OPENS WHEN AN ANNUNCIATOR (3.1) TRIPS,', 'A RED FCU LAMP LIGHTS OR A FEED IS LOST.', '', 'ACK    SILENCES THE BLINK · STAYS LISTED', 'CLEAR  REMOVES ACK\'D + ENDED FAULTS', 'ACTIVE = STILL PRESENT · ENDED = BACK TO NORMAL', '', 'COMMANDS: ACK [n|ALL] · CLEAR [n|ALL] · SEL n']
         .forEach(l => { if (y < by - 1) scr.put(ir.x, y++, clip(l, ir.w), t.D); });
       return;
     }
@@ -1882,27 +1882,34 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
       scr.put(ir.x + 3, y, e.ack ? ' ' : '▶', base || (red ? t.RB : t.D));
       scr.put(ir.x + 5, y, FSEV[e.sev], sel ? t.INV : (crit && blink ? t.ALERT : (red ? t.RB : (e.sev === 1 ? t.F : t.D))));
       scr.put(ir.x + 10, y, hhmm(e.t0), base || t.F);
-      const stt = live ? 'OPEN' : 'CLSD';
-      scr.put(ir.x + 16, y, clip(e.msg, ir.w - 22), base || (live ? (red ? t.R : t.N) : t.D));
+      const stt = live ? 'ACTIVE' : 'ENDED';
+      scr.put(ir.x + 16, y, clip(e.msg, ir.w - 24), base || (live ? (red ? t.R : t.N) : t.D));
       W.rjust(scr, ir.r, y, stt, sel ? t.INV : (live ? t.B : t.F));
       y++;
     }
-    // détail : explication et conduite à tenir
+    // détail : le défaut (données), puis un cadre INSTRUCTIONS (conduite à tenir, puis cause) bien séparé
     const e = L[si], doc = FAIL_DOC[e.key];
     y++;
     if (y >= by - 1) return;
-    sub(scr, ir.x, y++, ir.w, '#' + (si + 1) + ' ' + FSEV[e.sev] + ' · ' + e.tag, (e.tend ? 'CLOSED' : 'OPEN') + ' · ' + (e.ack ? 'ACK ' + hhmm(e.ackT) : 'UNACK'), e.ack ? t.D : t.RB);
+    sub(scr, ir.x, y++, ir.w, 'FAULT #' + (si + 1) + ' · ' + FSEV[e.sev] + ' · ' + e.tag, (e.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (e.ack ? 'ACK ' + hhmm(e.ackT) : 'UNACK'), e.ack ? t.D : t.RB);
     const kv = (k, v, st = t.N) => { if (y < by - 1 && v) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
     kv(e.title, e.val + (e.cur && e.cur !== e.val ? ' → ' + e.cur : ''), e.sev >= 2 && !e.ack ? t.RB : t.B);
     kv('LIMIT', e.thr, t.D);
-    const d = new Date(e.t0 * 1000);
-    kv('TRIPPED', pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + ' ' + hhmmss(e.t0) + (e.esc ? ' · ↑ ' + hhmm(e.esc) : ''));
-    kv(e.tend ? 'CLOSED' : 'ACTIVE', e.tend ? hhmmss(e.tend) + ' · ' + durHM(e.tend - e.t0) + (e.note ? ' · ' + e.note : '') : 'FOR ' + durHM(now() - e.t0), e.tend ? t.N : t.B);
-    if (doc && y < by - 2) {
-      y++;
-      for (const l of wrap(doc[0].toUpperCase(), ir.w)) { if (y >= by - 1) break; scr.put(ir.x, y++, l, t.D); }
-      doc[1].forEach((st, k) => { if (y >= by - 1) return; const ls = wrap(st.toUpperCase(), ir.w - 4); scr.put(ir.x, y, (k + 1) + ' ▸', t.B); scr.put(ir.x + 4, y++, ls[0], t.N); for (const l of ls.slice(1)) if (y < by - 1) scr.put(ir.x + 4, y++, l, t.N); });
-    } else if (e.act && y < by - 1) scr.put(ir.x, y++, clip('▸ ' + e.act, ir.w), t.N);
+    const d = new Date(e.t0 * 1000), day = pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + ' ';
+    kv('TRIPPED', e.tend ? day + hhmm(e.t0) + ' → ' + hhmm(e.tend) + ' · ' + durHM(e.tend - e.t0) + (e.note ? ' · ' + e.note : '') : day + hhmmss(e.t0) + ' · FOR ' + durHM(now() - e.t0), e.tend ? t.D : t.N);
+    const steps = doc ? doc[1].map(st => wrap(st.toUpperCase(), ir.w - 8)) : (e.act ? [wrap(e.act, ir.w - 8)] : []);
+    const nSteps = steps.reduce((n, l) => n + l.length, 0), why = doc ? wrap(doc[0].toUpperCase(), ir.w - 4) : [];
+    const bh = Math.min(2 + 1 + nSteps + (why.length ? 1 + why.length : 0), by - y);
+    if (!steps.length || bh < 4) return;
+    W.box(scr, ir.x, y, ir.w, bh, t.L);
+    scr.put(ir.x + 2, y, ' INSTRUCTIONS ', t.B);
+    let yy = y + 1; const yb = y + bh - 1, ix = ir.x + 2;
+    scr.put(ix, yy++, 'WHAT TO DO', t.B);
+    steps.forEach((ls, k) => { if (yy >= yb) return; scr.put(ix, yy, (k + 1) + ' ▸', t.B); scr.put(ix + 4, yy++, ls[0], t.N); for (const l of ls.slice(1)) if (yy < yb) scr.put(ix + 4, yy++, l, t.N); });
+    if (why.length && yy + 1 < yb) {
+      scr.put(ix, yy++, 'CAUSE', t.B);
+      why.forEach((l, k) => { if (yy >= yb) return; const last = yy === yb - 1 && k < why.length - 1; scr.put(ix, yy++, last ? clip(l + ' …', ir.w - 4) : l, t.D); });
+    }
   } };
 
 // ------------------------------------------------------------------ S03 FEED
@@ -2970,7 +2977,7 @@ class App {
         ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['S19 · M08', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
         ['ACTIONS', 'SAME GRAMMAR ON EVERY FORMAT'], ['*n', 'ACTION n OF THIS FORMAT'], ['ACK 2', 'ACTION + ARGUMENT'],
         ['FAIL ACK ALL', 'FORMAT + ACTION + ARG'], ['S29 3', 'FORMAT + ACTION NUMBER'], ['', 'ELSEWHERE: IF UNIQUE'], ['', ''],
-        ['COMMON', ''], ['ACK [n|ALL]', 'ACKNOWLEDGE FAULTS'], ['CLEAR [n|ALL]', "ERASE ACK'D CLOSED FAULTS"], ['SEL [n|+|-]', 'SELECT ITEM'],
+        ['COMMON', ''], ['ACK [n|ALL]', 'ACKNOWLEDGE FAULTS'], ['CLEAR [n|ALL]', "ERASE ACK'D ENDED FAULTS"], ['SEL [n|+|-]', 'SELECT ITEM'],
         ['LAMP', 'LAMP TEST'], ['REFRESH', 'RELOAD FEED OF THE GROUP'], ['SIM AUTO|ON|OFF', 'SIMULATION'], ['WAKE · HDG', '[ON|OFF] TOGGLES'],
         ['TIMER m:ss', 'COUNTDOWN'], ['ZOOM +|-|%', 'SCALE'], ['HELP [FORMAT]', 'ACTIONS OF A FORMAT']] };
       return;
