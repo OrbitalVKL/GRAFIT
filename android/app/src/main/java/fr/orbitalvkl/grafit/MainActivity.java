@@ -12,6 +12,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.View;
+import android.widget.FrameLayout;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
@@ -61,9 +62,14 @@ public class MainActivity extends Activity {
         super.onCreate(state);
         web = new WebView(this);
         web.setBackgroundColor(0xFF0A0C0E);
-        setContentView(web);
-        // bords de l'écran (Android 15+) : la page reste dans la zone sûre, barres système sur fond Grafit
-        web.setOnApplyWindowInsetsListener((v, ins) -> {
+        // bords de l'écran (Android 15+, affichage bord à bord imposé) : la WebView ignore son propre
+        // remplissage, elle est donc posée dans un cadre qui, lui, laisse la place de la barre d'état, de la
+        // découpe de caméra et de la barre de navigation.
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(0xFF0A0C0E);
+        root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        setContentView(root);
+        root.setOnApplyWindowInsetsListener((v, ins) -> {
             Insets b = ins.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             v.setPadding(b.left, b.top, b.right, b.bottom);
             return WindowInsets.CONSUMED;

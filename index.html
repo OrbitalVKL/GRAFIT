@@ -25,6 +25,7 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); o
 body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 /* marge basse : les coins arrondis de l'écran (Pixel) ne sont pas couverts par les zones sûres */
 #wrap { position: fixed; top: env(safe-area-inset-top, 0px); bottom: max(env(safe-area-inset-bottom, 0px), 26px); left: 16px; right: 16px; }
+.apk #wrap { top: 0; bottom: 8px; left: 12px; right: 12px; }
 #scr { display: block; touch-action: none; }
 #cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
 noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
@@ -887,7 +888,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.6.1', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.6.2', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -949,6 +950,7 @@ const SRC_NAME = Object.fromEntries(SOURCES.map(([k, n]) => [k, n]));
 
 // passerelle de l'APK (Grafit APK : WebView sur les fichiers embarqués, pont limité à l'origine locale)
 const APK = /GrafitAPK/.test(navigator.userAgent);
+if (APK) document.documentElement.classList.add('apk');
 function nativeCmd(o) { try { if (window.GrafitAndroid) { window.GrafitAndroid.postMessage(JSON.stringify(o)); return true; } } catch (e) { /* */ } return false; }
 const THERM_NAMES = ['NONE', 'LIGHT', 'MODERATE', 'SEVERE', 'CRITICAL', 'EMERGENCY', 'SHUTDOWN'];
 // pas : compteur depuis le démarrage du téléphone ; les pas entre la dernière lecture d'hier et la première
@@ -1885,8 +1887,8 @@ function failCmdClear(app, arg) {
 }
 PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 'FAILPAGE', 'FAULTS', 'FAULT', 'DEFAUTS'], fps: 4, padKeys: false,
   keys: [['1', 'ACK', (app, arg) => failCmdAck(app, arg), ['ACK'], 'ACK [n|ALL|NAME]'],
-    ['2', '◂ SEL', () => PAGES.S02.cycle(-1), ['SEL-']],
-    ['3', 'SEL ▸', (app, arg) => PAGES.S02.select(app, arg), ['SEL', 'SEL+'], 'SEL [n|+|-]'],
+    ['2', '▲ SEL', () => PAGES.S02.cycle(-1), ['SEL-', 'UP']],
+    ['3', '▼ SEL', (app, arg) => PAGES.S02.select(app, arg), ['SEL', 'SEL+', 'DOWN'], 'SEL [n|+|-]'],
     ['4', 'ACK ALL', app => failCmdAck(app, 'ALL'), ['ACKALL']],
     ['5', 'CLEAR', (app, arg) => failCmdClear(app, arg), ['CLEAR', 'CLR'], 'CLEAR [n|ALL]']],
   idx() { const i = FAIL.list.findIndex(e => e.id === FAIL.sel); return i < 0 ? 0 : i; },
@@ -1899,10 +1901,11 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
   draw(scr, r, app) {
     const fs = failStats(), L = FAIL.list, blink = app.blink();
     const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' ACTIVE · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
-    let y = ir.y; const by = ir.b - 2, bw = Math.floor(ir.w / 5);
+    let y = ir.y; const by = ir.b - 2, bw = Math.floor(ir.w / 3);
     const ack1 = L.length && !L[this.idx()].ack, anyAck = fs.unack > 0, anyClr = L.some(e => e.ack && e.tend);
-    [['ACK', '*1', 1, !ack1], ['ACK ALL', '*4', 4, !anyAck], ['CLEAR', '*5', 5, !anyClr], ['◂ SEL', '*2', 2, L.length < 2], ['SEL ▸', '*3', 3, L.length < 2]]
-      .forEach(([lab, k, n, dead], i) => button(scr, ir.x + i * bw, by, i === 4 ? ir.r - (ir.x + 4 * bw) : bw - 1, 2, lab, k, () => app.action(String(n)), { small: true, dead, red: n === 1 && ack1 && L[this.idx()].sev === 3 && !L[this.idx()].tend && blink }));
+    // touches d'action en bas ; la sélection (▲ ▼) est à droite de la liste, dans le sens de la liste
+    [['ACK', '*1', 1, !ack1], ['ACK ALL', '*4', 4, !anyAck], ['CLEAR', '*5', 5, !anyClr]]
+      .forEach(([lab, k, n, dead], i) => button(scr, ir.x + i * bw, by, i === 2 ? ir.r - (ir.x + 2 * bw) : bw - 1, 2, lab, k, () => app.action(String(n)), { small: true, dead, red: n === 1 && ack1 && L[this.idx()].sev === 3 && !L[this.idx()].tend && blink }));
     if (!L.length) {
       noData(scr, ir.x, y++, ir.w, 'NO FAULT RECORDED');
       y++;
@@ -1912,23 +1915,27 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
     }
     const si = this.idx(); FAIL.sel = L[si].id;
     // liste : n · ▶ non acquitté · sévérité · heure · message · état
-    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3))));
+    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3)))), LH = Math.max(4, nRows), lw = ir.w - 7, lr = ir.x + lw;
     const top = Math.max(0, Math.min(L.length - nRows, si - Math.floor(nRows / 2)));
     sub(scr, ir.x, y++, ir.w, 'LOG', (top > 0 ? '▲ ' : '') + (si + 1) + '/' + L.length + (top + nRows < L.length ? ' ▼' : ''));
+    const y0 = y, hu = Math.floor(LH / 2);
+    button(scr, ir.r - 6, y0, 6, hu, '▲', '*2', () => app.action('2'), { small: true, dead: L.length < 2 });
+    button(scr, ir.r - 6, y0 + hu, 6, LH - hu, '▼', '*3', () => app.action('3'), { small: true, dead: L.length < 2 });
     for (let i = top; i < top + nRows; i++) {
       const e = L[i], sel = i === si, red = e.sev >= 2 && !e.ack;
       const live = !e.tend, crit = e.sev === 3 && live && !e.ack;
-      if (sel) scr.fill(ir.x, y, ir.w, 1, ' ', t.INVN);
+      if (sel) scr.fill(ir.x, y, lw, 1, ' ', t.INVN);
       const base = sel ? t.INVN : null;
       scr.put(ir.x, y, rjustS(i + 1, 2), base || t.F);
       scr.put(ir.x + 3, y, e.ack ? ' ' : '▶', base || (red ? t.RB : t.D));
       scr.put(ir.x + 5, y, FSEV[e.sev], sel ? t.INV : (crit && blink ? t.ALERT : (red ? t.RB : (e.sev === 1 ? t.F : t.D))));
       scr.put(ir.x + 10, y, hhmm(e.t0), base || t.F);
       const stt = live ? 'ACTIVE' : 'ENDED';
-      scr.put(ir.x + 16, y, clip(e.msg, ir.w - 24), base || (live ? (red ? t.R : t.N) : t.D));
-      W.rjust(scr, ir.r, y, stt, sel ? t.INV : (live ? t.B : t.F));
+      scr.put(ir.x + 16, y, clip(e.msg, lw - 24), base || (live ? (red ? t.R : t.N) : t.D));
+      W.rjust(scr, lr, y, stt, sel ? t.INV : (live ? t.B : t.F));
       y++;
     }
+    y = y0 + LH;
     // détail : le défaut (données), puis un cadre INSTRUCTIONS (conduite à tenir, puis cause) bien séparé
     const e = L[si], doc = FAIL_DOC[e.key];
     y++;
