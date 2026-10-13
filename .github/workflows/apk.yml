@@ -1,0 +1,78 @@
+# Grafit Mobile APK : compile la coquille Android avec la page du site (index.html) et la publie en release.
+# Signature : clé gardée dans les secrets du dépôt (jamais dans le code). Aucune donnée personnelle ici.
+name: apk
+on:
+  push:
+    branches: [main]
+    paths: ['index.html', 'android/**', '.github/workflows/apk.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: apk
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: SDK Android
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+      - name: Page embarquée
+        run: |
+          mkdir -p android/app/src/main/assets/www
+          cp index.html manifest.webmanifest icon-192.png icon-512.png android/app/src/main/assets/www/
+          VER=$(grep -o "VERSION: '[0-9.]*'" index.html | head -1 | grep -o "[0-9][0-9.]*")
+          echo "VER=$VER" >> "$GITHUB_ENV"
+      - name: Clé de signature
+        id: ks
+        env:
+          P: ${{ secrets.GRAFIT_SIGNING_PASSPHRASE }}
+        run: |
+          # Clé chiffrée dans le dépôt (android/signing.p12.enc, AES-256, PBKDF2 600 000 tours) ; seule la phrase
+          # de passe, choisie par le propriétaire, est un secret GitHub. Sans elle : APK de test non publié.
+          if [ -z "$P" ]; then echo "signed=false" >> "$GITHUB_OUTPUT"; echo "::warning::Secret GRAFIT_SIGNING_PASSPHRASE absent : APK de test seulement"; exit 0; fi
+          if [ ! -f android/signing.p12.enc ]; then
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.jks" -storetype PKCS12 -alias grafit -keyalg RSA -keysize 3072 \
+              -validity 12000 -storepass "$P" -keypass "$P" -dname "CN=Grafit Mobile, O=Orbital VKL, C=FR"
+            openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -in "$RUNNER_TEMP/release.jks" -out android/signing.p12.enc -pass env:P
+            git config user.name "grafit-bot"; git config user.email "grafit-bot@users.noreply.github.com"
+            git add android/signing.p12.enc
+            git commit -m "Clé de signature APK chiffrée [skip ci]"
+            git pull --rebase origin main && git push origin HEAD:main
+          else
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in android/signing.p12.enc -out "$RUNNER_TEMP/release.jks" -pass env:P
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - name: Compilation (signée)
+        if: steps.ks.outputs.signed == 'true'
+        working-directory: android
+        env:
+          KS_FILE: ${{ runner.temp }}/release.jks
+          KS_PASS: ${{ secrets.GRAFIT_SIGNING_PASSPHRASE }}
+          KEY_ALIAS: grafit
+          KEY_PASS: ${{ secrets.GRAFIT_SIGNING_PASSPHRASE }}
+        run: gradle --no-daemon -PgrafitVersion="$VER" assembleRelease && rm -f "$RUNNER_TEMP/release.jks"
+      - name: Compilation (test, non publiée)
+        if: steps.ks.outputs.signed != 'true'
+        working-directory: android
+        run: gradle --no-daemon -PgrafitVersion="$VER" assembleDebug
+      - name: Release
+        if: steps.ks.outputs.signed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk grafit.apk
+          TAG="apk-v$VER"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" grafit.apk --clobber
+          else
+            gh release create "$TAG" grafit.apk --title "Grafit Mobile $VER" --notes "APK Grafit Mobile $VER. Installer grafit.apk sur le téléphone ; les mises à jour s'installent par-dessus."
+          fi

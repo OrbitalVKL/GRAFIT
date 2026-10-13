@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.5.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.6.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -910,7 +910,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
@@ -932,6 +932,7 @@ const SOURCES = [
   ['baro', 'BARO', 'BAROMETER · APK'], ['btemp', 'BATT TEMP', 'BATTERY THERMISTOR · APK'], ['light', 'LIGHT', 'AMBIENT LIGHT · APK'],
   ['amb', 'AMBIENT T', 'AMBIENT TEMP · APK'], ['stemp', 'SKIN T', 'THERMAL · APK'], ['wx', 'WEATHER', 'OPEN-METEO'], ['tle', 'ISS TLE', 'CELESTRAK'],
   ['satcat', 'SAT CAT', 'CELESTRAK GROUPS'], ['gnssraw', 'GNSS RAW', 'GNSS STATUS · APK'], ['cell', 'CELL', 'CELL INFO · APK'],
+  ['steps', 'STEPS', 'STEP COUNTER · APK'], ['therm', 'THERMAL', 'THERMAL STATUS · APK'],
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
@@ -946,9 +947,34 @@ function feedLive(k, v) {
 }
 const SRC_NAME = Object.fromEntries(SOURCES.map(([k, n]) => [k, n]));
 
-// passerelle de l'APK
+// passerelle de l'APK (Grafit APK : WebView sur les fichiers embarqués, pont limité à l'origine locale)
+const APK = /GrafitAPK/.test(navigator.userAgent);
+function nativeCmd(o) { try { if (window.GrafitAndroid) { window.GrafitAndroid.postMessage(JSON.stringify(o)); return true; } } catch (e) { /* */ } return false; }
+const THERM_NAMES = ['NONE', 'LIGHT', 'MODERATE', 'SEVERE', 'CRITICAL', 'EMERGENCY', 'SHUTDOWN'];
+// pas : compteur depuis le démarrage du téléphone ; les pas entre la dernière lecture d'hier et la première
+// d'aujourd'hui comptent pour aujourd'hui (la nuit, on marche peu). Historique 14 jours.
+const STEPS = { day: '', today: 0, last: null, hist: {} };
+try { Object.assign(STEPS, JSON.parse(localStorage.getItem('grafit.steps') || '{}')); } catch (e) { /* */ }
+function stepsFeed(c) {
+  const d = new Date(), day = d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
+  if (STEPS.day !== day) { STEPS.day = day; STEPS.today = 0; }
+  if (STEPS.last != null) STEPS.today += c >= STEPS.last ? c - STEPS.last : c;      // c < last : téléphone redémarré
+  STEPS.last = c; STEPS.hist[day] = STEPS.today;
+  const keys = Object.keys(STEPS.hist).sort(); while (keys.length > 14) delete STEPS.hist[keys.shift()];
+  try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
+  feedLive('steps', { today: STEPS.today, total: c });
+}
 window.addEventListener('grafit-native', e => {
   const d = e.detail || {};
+  if (d.steps != null) stepsFeed(+d.steps);
+  if (d.thermal) {
+    const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
+    feedLive('therm', { status: st, headroom: d.thermal.headroom != null ? +d.thermal.headroom : null });
+    if (prev != null && st !== prev) log('TMP', 'PHONE THERMAL ' + THERM_NAMES[st], st >= 3);
+    if (st >= 3) failOpen('THERM', st >= 4 ? 3 : 2, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[st], { title: 'ANDROID THERMAL STATUS', thr: 'CAUT SEVERE · CRIT CRITICAL', val: THERM_NAMES[st], act: 'STOP HEAVY APPS · UNPLUG · SHADE' });
+    else if (failOpenOf('THERM')) failClose('THERM', THERM_NAMES[st]);
+  }
+  if (d.firstUnlock) { const fu = d.firstUnlock > 1e11 ? d.firstUnlock / 1000 : +d.firstUnlock; if (typeof dayUnlock === 'function') dayUnlock(fu, d.lastLock ? d.lastLock / 1000 : null); }
   if (d.baro != null) feedLive('baro', { hpa: +d.baro });
   if (d.battTemp != null) feedLive('btemp', { c: +d.battTemp });
   if (d.light != null) feedLive('light', { lux: +d.light });
@@ -1214,7 +1240,7 @@ function simTick() {
   }
   if (SET.sim === 'ON') ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'].forEach(k => { if (SRC[k].mode !== 'sim') { SRC[k].mode = 'sim'; if (k === 'baro') seedSimTrend(); } });
   if (SRC.tle.mode === 'wait' && t - SRC.tle.armed > 15) SRC.tle.mode = 'sim';   // TLE embarqué (cache de S18)
-  for (const k of ['amb', 'stemp', 'gnssraw', 'cell']) if (SRC[k].mode === 'wait' && t - SRC[k].armed > 4) SRC[k].mode = 'na';   // APK seulement
+  for (const k of ['amb', 'stemp', 'gnssraw', 'cell', 'steps', 'therm']) if (SRC[k].mode === 'wait' && t - SRC[k].armed > 4) SRC[k].mode = 'na';   // APK seulement
 }
 const live = k => SRC[k].mode === 'live' || SRC[k].mode === 'sim';
 const tag = k => ({ live: 'LIVE', sim: 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[SRC[k].mode];
@@ -1404,6 +1430,8 @@ const FAIL_DOC = {
     ['Keep the phone in the shade', 'Hydrate · avoid exertion at midday']],
   'FCU.src': ['No pressure source: no barometer (APK), no weather feed. ДАВ and ДЕП blink fast and cannot watch the trend.',
     ['Restore the network for the weather feed', 'Install the APK for the phone barometer']],
+  THERM: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
+    ['Close navigation / camera / games', 'Unplug the charger · remove the case', 'Move to the shade · let it cool']],
   WX: ['Weather feed unreachable: forecast, rain warning and QNH from the weather service stop updating.',
     ['Check the network (4.1 NETWORK)', 'Retry: command WX REFRESH', 'Older data stays shown until it ages out']],
 };
@@ -1468,6 +1496,7 @@ function haptic(p) { if (SET.haptics && navigator.vibrate) { try { navigator.vib
 let WAKE = null;
 async function wakeSet(on) {
   SET.wake = on; saveSettings();
+  if (nativeCmd({ cmd: 'keepOn', on })) return;
   try {
     if (on && navigator.wakeLock) { WAKE = await navigator.wakeLock.request('screen'); WAKE.addEventListener('release', () => { WAKE = null; }); }
     else if (!on && WAKE) { await WAKE.release(); WAKE = null; }
@@ -2402,10 +2431,10 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     ['2', 'SCREEN', (app, arg) => { wakeSet(onOff(arg, SET.wake)); app && app.say('SCREEN KEEP-ON ' + (SET.wake ? 'ON' : 'OFF')); }, ['SCREEN', 'KEEPON', 'WAKELOCK'], 'SCREEN [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
     ['5', 'FEEDS', app => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); app && app.say('ALL FEEDS · REFRESH REQUESTED'); }, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
-    ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']]],
+    ['8', 'ARM', () => { armSensorsGesture(); nativeCmd({ cmd: 'perms' }); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']]],
   cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
   draw(scr, r, app) {
-    const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + ' MOBILE', t.TD);
+    const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
     let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
     const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['SCREEN ON', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
       ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
@@ -2558,6 +2587,8 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
     const cp = CPUP.state;
     kv('CPU THERMAL LOAD', cp ? cp.toUpperCase() : ('PressureObserver' in window ? 'WAITING' : 'N/A IN THIS BROWSER'), cp === 'serious' || cp === 'critical' ? t.RB : (cp ? t.B : t.F));
     kv('PHONE PROBES', live('btemp') ? 'BATTERY ' + tag('btemp') : 'BATTERY · SKIN: APK ONLY', t.D, live('btemp') ? t.N : t.F);
+    const thv = SRC.therm.v;
+    kv('ANDROID THERMAL', live('therm') ? THERM_NAMES[thv.status] + (thv.headroom != null && thv.headroom >= 0 ? ' · HEADROOM ' + Math.round(thv.headroom * 100) + ' %' : '') : 'APK ONLY', live('therm') && thv.status >= 3 ? t.RB : (live('therm') ? t.N : t.F));
     if (ir.b - y >= 7 && live('wx') && w.ht) {
       y++;
       const span = Math.min(w.ht.length, ir.w - 8), i0 = Math.max(0, Math.min(w.ht.length - span, w.ni - Math.floor(span * 0.6)));
@@ -2591,7 +2622,7 @@ async function loadCells(lat, lon, force = false) {
     const k = (la + dy) + '_' + (lo + dx);
     if (CELLS.tiles[k] && !force) { ok++; continue; }
     try {
-      const r = await fetch('cells/' + k + '.json', { cache: 'no-cache' });
+      const r = await fetch((location.hostname.endsWith('github.io') || location.hostname === 'localhost' ? '' : 'https://orbitalvkl.github.io/GRAFIT/') + 'cells/' + k + '.json', { cache: 'no-cache' });
       if (r.status === 404) { CELLS.tiles[k] = []; miss++; continue; }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
@@ -2709,8 +2740,10 @@ PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
 // ---------------------------------------------------------------------------------------- réveil · agenda
 // RÉVEIL : point de départ du MET (bandeau) et de M09 DAY. Automatique : première activité de Grafit après
 // une coupure de 4 h ou plus, entre 03:00 et 14:00 ; corrigeable (WAKE 7:15, WAKE NOW). La dernière activité
-// avant la coupure sert d'heure de coucher approchée. L'APK pourra fournir le premier déverrouillage.
-const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [] };     // wake : epoch s ; hist : [{d, wake, bed}]
+// avant la coupure sert d'heure de coucher approchée. Dans l'APK (accès aux statistiques d'usage accordé), le
+// premier déverrouillage du jour et le dernier verrouillage de la veille remplacent ces approximations.
+const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '' };
+const BRIEF = { pending: false };     // wake : epoch s ; hist : [{d, wake, bed}]
 function dayLoad() {
   try { const j = JSON.parse(localStorage.getItem('grafit.day') || 'null'); if (j) Object.assign(DAYREC, j); } catch (e) { /* */ }
 }
@@ -2724,6 +2757,7 @@ function daySetWake(ts, src) {
   if (!h && DAYREC.hist.length > 1 && prevBed) DAYREC.hist[DAYREC.hist.length - 2].bed = prevBed;   // coucher de la veille
   DAYREC.hist = DAYREC.hist.slice(-14);
   daySave(); log('DAY', 'WAKE ' + hhmm(ts) + ' · ' + src);
+  if (src !== 'MANUAL' && DAYREC.briefD !== d) BRIEF.pending = true;     // briefing au premier réveil du jour
 }
 // appelée au lancement, au retour au premier plan et chaque minute au premier plan
 function dayTick(resume = false) {
@@ -2731,6 +2765,14 @@ function dayTick(resume = false) {
   if (resume && DAYREC.lastSeen && gap >= 4 * 3600 && hr >= 3 && hr < 14 && !(DAYREC.wake && ymdOf(DAYREC.wake) === ymdOf(t) && DAYREC.src === 'MANUAL'))
     daySetWake(t, 'AUTO');
   if (document.visibilityState !== 'hidden') { DAYREC.lastSeen = t; daySave(); }
+}
+function dayUnlock(fu, bed) {                                         // APK : premier déverrouillage du jour
+  const d = new Date(fu * 1000), today = ymdOf(now());
+  if (ymdOf(fu) !== today || d.getHours() < 3 || d.getHours() >= 14) return;
+  const cur = DAYREC.wake && ymdOf(DAYREC.wake) === today ? DAYREC : null;
+  if (cur && DAYREC.src === 'MANUAL') return;
+  if (!cur || Math.abs(DAYREC.wake - fu) > 60) { if (bed) DAYREC.lastSeen = Math.min(DAYREC.lastSeen || bed, bed); daySetWake(fu, 'UNLOCK'); }
+  const h = DAYREC.hist.find(x => x.d === today); if (h && bed && bed < fu) { h.bed = bed; daySave(); }
 }
 const awakeSecs = () => DAYREC.wake && now() - DAYREC.wake < 30 * 3600 ? now() - DAYREC.wake : null;
 function cmdWake(app, arg) {
@@ -2745,98 +2787,9 @@ function cmdWake(app, arg) {
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') dayTick(true); else { DAYREC.lastSeen = now(); daySave(); } });
 
-// ---------------------------------------------------------------------------------------- iCalendar
-// Port de grafit/ical.py (lui-même port de lib/ical.lua) : DTSTART/DTEND/DURATION, SUMMARY, LOCATION,
-// STATUS:CANCELLED, EXDATE, RECURRENCE-ID, RRULE DAILY/WEEKLY/MONTHLY/YEARLY (INTERVAL, COUNT, UNTIL, BYDAY,
-// BYMONTHDAY, BYMONTH). TZID traité comme heure locale du téléphone. Temps en secondes epoch.
-const ICAL = (() => {
-  const DAYS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
-  const T = (y, mo, d, h = 12, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime() / 1000;
-  const D = t => { const x = new Date(t * 1000); return { y: x.getFullYear(), mo: x.getMonth() + 1, d: x.getDate(), h: x.getHours(), mi: x.getMinutes(), s: x.getSeconds(), wd: x.getDay() }; };
-  function ptime(v, params = '') {
-    const m = /^(\d{4})(\d{2})(\d{2})/.exec(v); if (!m) return [null, false];
-    const hms = /T(\d{2})(\d{2})(\d{2})/.exec(v);
-    const allDay = !hms || (params.includes('VALUE=DATE') && !params.includes('DATE-TIME'));
-    if (hms && v.endsWith('Z')) return [Date.UTC(+m[1], +m[2] - 1, +m[3], +hms[1], +hms[2], +hms[3]) / 1000, allDay];
-    return [T(+m[1], +m[2], +m[3], hms ? +hms[1] : 0, hms ? +hms[2] : 0, hms ? +hms[3] : 0), allDay];
-  }
-  const unesc = s => s.replace(/\\[nN]/g, ' ').replace(/\\([,;\\])/g, '$1');
-  function pdur(v) {
-    const g = re => { const m = re.exec(v); return m ? +m[1] : 0; };
-    return (v[0] === '-' ? -1 : 1) * (((g(/(\d+)W/) * 7 + g(/(\d+)D/)) * 24 + g(/T.*?(\d+)H/)) * 3600 + g(/T.*?(\d+)M/) * 60 + g(/T.*?(\d+)S/));
-  }
-  function parse(text) {
-    text = text.replace(/\r?\n[ \t]/g, '');
-    const out = []; let ev = null; let depth = 0;
-    for (const line of text.split(/\r?\n/)) {
-      if (line === 'BEGIN:VEVENT') { ev = { start: null, stop: null, allDay: false, dur: null, title: null, loc: '', uid: null, status: null, rrule: null, recur: null, ex: new Set() }; depth = 0; continue; }
-      if (line === 'END:VEVENT') { if (ev && ev.start != null && ev.status !== 'CANCELLED') out.push(ev); ev = null; continue; }
-      if (!ev) continue;
-      if (line.startsWith('BEGIN:')) { depth++; continue; }              // VALARM : on ignore son SUMMARY
-      if (line.startsWith('END:')) { depth--; continue; }
-      if (depth) continue;
-      const p = /^([A-Za-z0-9-]+)([^:]*):(.*)$/.exec(line); if (!p) continue;
-      const [, name, params, value] = p;
-      if (name === 'DTSTART') [ev.start, ev.allDay] = ptime(value, params);
-      else if (name === 'DTEND') ev.stop = ptime(value, params)[0];
-      else if (name === 'DURATION') ev.dur = pdur(value);
-      else if (name === 'SUMMARY') ev.title = unesc(value);
-      else if (name === 'LOCATION') ev.loc = unesc(value);
-      else if (name === 'UID') ev.uid = value;
-      else if (name === 'STATUS') ev.status = value;
-      else if (name === 'RRULE') ev.rrule = value;
-      else if (name === 'RECURRENCE-ID') ev.recur = ptime(value, params)[0];
-      else if (name === 'EXDATE') for (const v of value.split(',')) { const t = ptime(v, params)[0]; if (t != null) ev.ex.add(t); }
-    }
-    for (const e of out) {
-      if (e.title == null) e.title = '(NO TITLE)';
-      if (e.stop == null) e.stop = e.start + (e.dur != null ? e.dur : (e.allDay ? 86400 : 0));
-    }
-    return out;
-  }
-  function expand(ev, a, b) {
-    const r = {}; ev.rrule.split(';').forEach(kv => { const [k, v] = kv.split('='); if (k && v) r[k] = v; });
-    const iv = +r.INTERVAL || 1, count = r.COUNT ? +r.COUNT : null, until = r.UNTIL ? ptime(r.UNTIL)[0] : null;
-    const start = ev.start, len = ev.stop - ev.start, B = D(start), out = []; let n = 0, it = 0;
-    const emit = t => { if (until != null && t > until) return false; if (count != null && n >= count) return false;
-      if (t >= start) { n++; if (t + len >= a && t <= b && !ev.ex.has(t)) out.push(t); } return true; };
-    const at = (y, mo, d) => T(y, mo, d, B.h, B.mi, B.s);
-    if (r.FREQ === 'DAILY') { for (let k = 0; it++ < 3000; k++) { const t = at(B.y, B.mo, B.d + k * iv); if (t > b || !emit(t)) break; } }
-    else if (r.FREQ === 'WEEKLY') {
-      const wd = (r.BYDAY ? r.BYDAY.match(/[A-Z]{2}/g).map(x => DAYS[x]).filter(x => x != null) : [B.wd]).sort((x, y) => (x + 6) % 7 - (y + 6) % 7);
-      const monday = B.d - (B.wd + 6) % 7;
-      outer: for (let k = 0; it++ < 3000; k++) for (const w of wd) { const t = at(B.y, B.mo, monday + k * 7 * iv + (w + 6) % 7); if (t > b || !emit(t)) break outer; }
-    } else if (r.FREQ === 'MONTHLY') {
-      outer: for (let k = 0; it++ < 3000; k++) {
-        const fm = new Date(B.y, B.mo - 1 + k * iv, 1, 12), y = fm.getFullYear(), mo = fm.getMonth() + 1, nd = new Date(y, mo, 0).getDate();
-        let days = [];
-        if (r.BYDAY) for (const [, o, dn] of r.BYDAY.matchAll(/([+-]?\d*)([A-Z]{2})/g)) {
-          const lst = []; for (let d = 1; d <= nd; d++) if (new Date(y, mo - 1, d, 12).getDay() === DAYS[dn]) lst.push(d);
-          const oi = +o || 0; if (!oi) days.push(...lst); else if (oi > 0 && oi <= lst.length) days.push(lst[oi - 1]); else if (oi < 0 && lst.length + oi >= 0) days.push(lst[lst.length + oi]);
-        } else for (const s of (r.BYMONTHDAY || String(B.d)).match(/-?\d+/g)) { let d = +s; if (d < 0) d = nd + 1 + d; days.push(d); }
-        days.sort((x, y2) => x - y2);
-        for (const d of days) { if (d < 1 || d > nd) continue; const t = at(y, mo, d); if (t > b || !emit(t)) break outer; }
-      }
-    } else if (r.FREQ === 'YEARLY') {
-      for (let k = 0; it++ < 3000; k++) { const t = at(B.y + k * iv, r.BYMONTH ? +r.BYMONTH : B.mo, B.d); if (D(t).d !== B.d) continue; if (t > b || !emit(t)) break; }
-    }
-    return out;
-  }
-  function occurrences(events, a, b) {
-    const over = new Set(events.filter(e => e.recur != null && e.uid).map(e => e.uid + '@' + e.recur)), occ = [];
-    for (const e of events) {
-      const len = e.stop - e.start;
-      if (e.rrule && e.recur == null) { for (const t of expand(e, a, b)) if (!(e.uid && over.has(e.uid + '@' + t))) occ.push({ start: t, stop: t + len, title: e.title, loc: e.loc, allDay: e.allDay, uid: e.uid }); }
-      else if (e.stop >= a && e.start <= b) occ.push({ start: e.start, stop: e.stop, title: e.title, loc: e.loc, allDay: e.allDay, uid: e.uid });
-    }
-    return occ.sort((x, y) => x.start - y.start);
-  }
-  return { parse, occurrences, T, D };
-})();
-
 // ---------------------------------------------------------------------------------------- agenda
-// Sources : FILE (import .ics), APK (agenda Android via grafit-native), SIM (démonstration). Seules les
-// occurrences d'une fenêtre [−7 j, +120 j] sont gardées sur le téléphone ; le fichier lui-même ne l'est pas.
+// Source : l'agenda Android, lu par l'APK (CalendarContract.Instances, sur le téléphone, sans réseau) et
+// renvoyé à chaque changement ; SIM pour la démonstration. Fenêtre gardée : [−7 j, +120 j].
 const AGENDA = { occ: [], src: 'NONE', t: 0, name: '', reminded: new Set() };
 const AG_WIN = [-7 * 86400, 120 * 86400];
 function agendaSave() { try { localStorage.setItem('grafit.agenda', JSON.stringify({ occ: AGENDA.occ, src: AGENDA.src, t: AGENDA.t, name: AGENDA.name })); } catch (e) { /* */ } }
@@ -2846,17 +2799,6 @@ function agendaSet(occ, src, name = '') {
   AGENDA.occ = occ.filter(o => o.stop >= a && o.start <= b).map(o => ({ start: o.start, stop: o.stop, title: o.title, loc: o.loc || '', allDay: !!o.allDay, uid: o.uid || '' }));
   AGENDA.src = src; AGENDA.t = now(); AGENDA.name = name;
   if (src !== 'SIM') agendaSave();
-}
-function agendaImportText(text, name) {
-  if (!/BEGIN:VCALENDAR/.test(text.slice(0, 2000))) { log('CAL', 'IMPORT · NOT AN ICALENDAR FILE', true); return 0; }
-  const evs = ICAL.parse(text), occ = ICAL.occurrences(evs, now() + AG_WIN[0], now() + AG_WIN[1]);
-  agendaSet(occ, 'FILE', name); log('CAL', 'IMPORT ' + (name || '.ICS') + ' · ' + AGENDA.occ.length + ' EVENTS IN 4 MONTHS');
-  return AGENDA.occ.length;
-}
-function agendaImport(app) {
-  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.ics,text/calendar';
-  inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; f.text().then(tx => { const n = agendaImportText(tx, f.name.toUpperCase()); app && app.say(n ? 'CAL · ' + n + ' EVENTS IMPORTED' : 'CAL · NOT AN .ICS FILE', !n); }); };
-  inp.click();
 }
 // APK : detail.agenda = [{start, stop (epoch s ou ms), title, loc, allDay}] (CalendarContract.Instances)
 window.addEventListener('grafit-native', e => {
@@ -2895,10 +2837,8 @@ const inTxt = s => s < 3600 ? Math.ceil(s / 60) + ' MIN' : (s < 86400 ? durHM(s)
 
 // ------------------------------------------------------------------ S25 AGENDA (même code que sur le PC)
 PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CALENDAR', 'CAL', 'EVENTS'], fps: 1, off: 0,
-  keys: [['1', 'IMPORT', app => agendaImport(app), ['IMPORT', 'ICS'], 'IMPORT (.ICS FILE)'],
-    ['2', '◂ MONTH', () => { PAGES.S25.off--; }, ['MONTH-']], ['3', 'MONTH ▸', (app, arg) => { PAGES.S25.off = arg === '0' ? 0 : PAGES.S25.off + 1; }, ['MONTH', 'MONTH+'], 'MONTH [0]'],
-    ['4', 'GOOGLE', () => window.open('https://calendar.google.com', '_blank'), ['GOOGLE', 'GCAL']],
-    ['5', 'FORGET', app => { AGENDA.occ = []; AGENDA.src = 'NONE'; try { localStorage.removeItem('grafit.agenda'); } catch (e) { /* */ } app.say('CAL · AGENDA REMOVED FROM THE PHONE'); }, ['FORGET']]],
+  keys: [['1', '◂ MONTH', () => { PAGES.S25.off--; }, ['MONTH-']], ['2', 'MONTH ▸', (app, arg) => { PAGES.S25.off = arg === '0' ? 0 : PAGES.S25.off + 1; }, ['MONTH', 'MONTH+'], 'MONTH [0]'],
+    ['3', 'GOOGLE', () => window.open('https://calendar.google.com', '_blank'), ['GOOGLE', 'GCAL']]],
   draw(scr, r) {
     const src = AGENDA.src === 'NONE' ? 'NO SOURCE' : AGENDA.src + (AGENDA.src === 'SIM' ? '' : ' · ' + hhmm(AGENDA.t));
     const ir = W.panel(scr, r, this.code, this.name, src, AGENDA.src === 'SIM' ? t.T : (AGENDA.src === 'NONE' ? t.TF : t.TD));
@@ -2911,7 +2851,7 @@ PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
     const m0 = new Date(nd.getFullYear(), nd.getMonth() + this.off, 1), mo = m0.getMonth(), first = (m0.getDay() + 6) % 7, ndays = new Date(m0.getFullYear(), mo + 1, 0).getDate();
     const rows = Math.ceil((first + ndays) / 7), cw = Math.max(4, Math.floor(ir.w / 7)), gx = ir.x + Math.floor((ir.w - cw * 7) / 2);
     y++;
-    sub(scr, ir.x, y++, ir.w, ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'][mo] + ' ' + m0.getFullYear(), this.off ? '[*3 0] TODAY' : '', t.F);
+    sub(scr, ir.x, y++, ir.w, ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'][mo] + ' ' + m0.getFullYear(), this.off ? '[*2 0] TODAY' : '', t.F);
     ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach((d, i) => scr.put(gx + i * cw + Math.floor(cw / 2), y, d, i === 6 ? t.RB : t.D)); y++;
     const marked = new Set();
     for (const o of AGENDA.occ) { for (let s = o.start; s < Math.max(o.stop, o.start + 1); s += 86400) marked.add(ymdOf(s)); }
@@ -2928,7 +2868,7 @@ PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
     const up = agendaUpcoming(ir.b - y - 1), nx = agendaNext();
     sub(scr, ir.x, y++, ir.w, 'NEXT EVENTS', nx ? 'IN ' + inTxt(nx.start - now()) : '', nx && nx.start - now() < 900 ? t.RB : t.D);
     if (!up.length) {
-      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? '[*1] IMPORT AN .ICS FILE (GOOGLE CALENDAR:' : '', AGENDA.src === 'NONE' ? 'SETTINGS › EXPORT) · APK: PHONE CALENDAR' : '']
+      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? (APK ? 'ALLOW CALENDAR ACCESS: 7.1 [*8] ARM' : 'PHONE CALENDAR: GRAFIT APK ONLY') : '']
         .forEach(l => { if (l && y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F); });
       return;
     }
@@ -2942,7 +2882,8 @@ PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
 
 // ------------------------------------------------------------------ M09 DAY : temps éveillé, journée
 PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
-  keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]']],
+  keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]'], ['2', 'BRIEF', app => showBrief(app), ['BRIEF', 'BRIEFING']],
+    ['3', 'UNLOCK', app => { if (!nativeCmd({ cmd: 'usage' })) app.say('UNLOCK TIME: GRAFIT APK ONLY', true); }, ['UNLOCK', 'USAGE'], 'UNLOCK (ALLOW USAGE ACCESS)']],
   draw(scr, r) {
     const aw = awakeSecs(), ir = W.panel(scr, r, this.code, this.name, DAYREC.wake ? 'WAKE ' + hhmm(DAYREC.wake) + ' · ' + DAYREC.src : 'NO WAKE TIME', DAYREC.wake ? t.TD : t.TF);
     let y = ir.y; const [hw, x2] = twoUp(ir);
@@ -2958,6 +2899,7 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
       if (bed) kv('NIGHT (PHONE IDLE)', hhmm(bed) + ' → ' + hhmm(DAYREC.wake) + ' · ' + durHM(DAYREC.wake - bed));
       kv('16 H AWAKE AT', hhmm(DAYREC.wake + 16 * 3600), aw != null && aw >= 16 * 3600 ? t.RB : t.N);
     }
+    kv('STEPS TODAY', live('steps') ? SRC.steps.v.today.toLocaleString('fr-FR') : (STEPS.today ? STEPS.today + ' · LAST ' + STEPS.day.slice(6) : 'APK ONLY'), live('steps') ? t.B : t.F);
     kv('NEXT', nx ? clip(nx.title.toUpperCase(), 20) + ' · IN ' + inTxt(nx.start - now()) : (AGENDA.src === 'NONE' ? 'NO AGENDA · 6.3' : 'NONE'));
     y++;
     // ligne de la journée : réveil → +18 h, maintenant, événements, coucher du soleil
@@ -2985,16 +2927,52 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
     // 7 derniers réveils
     const hs = DAYREC.hist.slice(-7);
     if (hs.length && y + 2 <= ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'LAST WAKES', 'WAKE · NIGHT', t.D);
+      sub(scr, ir.x, y++, ir.w, 'LAST WAKES', 'A AUTO · U UNLOCK · M MANUAL', t.F);
       for (const h of hs.slice().reverse()) {
         if (y >= ir.b) break;
         const d = new Date(h.wake * 1000);
         scr.put(ir.x, y, DOW3[d.getDay()] + ' ' + pad2(d.getDate()), h.d === ymdOf(now()) ? t.B : t.D);
-        scr.put(ir.x + 8, y, hhmm(h.wake), t.N); scr.put(ir.x + 14, y, h.src === 'AUTO' ? 'A' : 'M', t.F);
+        scr.put(ir.x + 8, y, hhmm(h.wake), t.N); scr.put(ir.x + 14, y, h.src[0], t.F);
+        const sp = STEPS.hist[h.d]; if (sp != null) scr.put(ir.x + 16, y, rjustS(sp, 6) + ' STEPS', t.D);
         W.rjust(scr, ir.r, y++, h.bed ? 'NIGHT ' + durHM(h.wake - h.bed) : '', t.D);
       }
     }
   } };
+
+// ---------------------------------------------------------------------------------------- briefing du matin
+// Au premier réveil du jour (automatique ou déverrouillage), puis à la demande : BRIEF ou 6.4 [*2].
+function briefLines() {
+  const L = [], w = SRC.wx.v, T = now(), h = DAYREC.hist.find(x => x.d === ymdOf(T));
+  L.push(['WOKE UP', DAYREC.wake ? hhmm(DAYREC.wake) + ' · ' + DAYREC.src + (h && h.bed ? ' · NIGHT ' + durHM(DAYREC.wake - h.bed) : '') : 'NOT SET · WAKE 7:15']);
+  L.push(['', ''], ['WEATHER', '']);
+  if (live('wx')) {
+    const d0 = w.days && w.days[0];
+    L.push(['NOW', w.temp.toFixed(1) + ' °C · ' + (WMO[w.code] || '') + (d0 ? ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C' : '')]);
+    L.push(['RAIN', rainText(rainOutlook(w))]);
+    L.push(['WIND', Math.round(w.wind) + ' km/h ' + card(w.dir) + ' · GUSTS ' + Math.round(w.gust)]);
+  } else L.push(['—', 'NO WEATHER FEED']);
+  const pr = pressure(); if (pr) L.push(['PRESSURE', pr.p.toFixed(1) + ' hPa · ДЕП ' + PT.NAMES[TREND.level]]);
+  try { const hh = here(), si = A.sunInfo(T, hh.lat, hh.lon); if (si.rise && si.set) L.push(['SUN', 'RISE ' + hhmm(si.rise) + ' · SET ' + hhmm(si.set)]); } catch (e) { /* */ }
+  L.push(['', ''], ['TODAY', '']);
+  const end = new Date(); end.setHours(23, 59, 59, 0);
+  const ev = AGENDA.occ.filter(o => o.stop > T && o.start < end.getTime() / 1000);
+  if (!ev.length) L.push(['—', AGENDA.src === 'NONE' ? 'NO AGENDA SOURCE' : 'NO EVENT TODAY']);
+  ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
+  if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · 6.3']);
+  L.push(['', ''], ['STATUS', '']);
+  const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
+  L.push(['FAULTS', fs.open + ' ACTIVE · ' + (fs.ucrit + fs.ucaut) + ' UNACK' + (fa ? ' · ' + fa.msg : '')]);
+  if (live('batt')) { const b = SRC.batt.v; L.push(['BATTERY', Math.round(b.level * 100) + ' %' + (b.charging ? ' · CHARGING' : ' · ' + durHM(b.tEmpty) + ' LEFT')]); }
+  if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
+  return L;
+}
+function showBrief(app) {
+  const d = new Date();
+  app.helpOv = { t: now(), ttl: 180, code: 'BRF', title: 'BRIEFING · ' + DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1), rt: 'ESC CLOSE', lines: briefLines };
+  DAYREC.briefD = ymdOf(now()); daySave();
+  const ro = live('wx') ? rainOutlook(SRC.wx.v) : null, nx = agendaNext();
+  log('BRF', 'BRIEFING · ' + (live('wx') ? SRC.wx.v.temp.toFixed(0) + ' °C · ' + rainText(ro) : 'NO WEATHER') + (nx ? ' · ' + hhmm(nx.start) + ' ' + nx.title.toUpperCase() : ''));
+}
 
 // ---------------------------------------------------------------------------------------- rendu (canvas)
 // Grille de cellules fixe : le texte passe par la police, les cadres, blocs et points braille sont dessinés
@@ -3287,9 +3265,9 @@ class App {
     this.helpOv = { t: now(), title: 'HELP · ' + p.code + ' ' + p.name, rt: ad, lines };
   }
   drawHelp(scr, r) {
-    const o = this.helpOv, ir = W.panel(scr, r, 'HLP', o.title, o.rt, t.TD);
-    let y = ir.y; const kw = Math.min(22, Math.max(...o.lines.filter(l => l[1]).map(l => slen(l[0]))) + 2);
-    for (const [k, d] of o.lines) {
+    const o = this.helpOv, ir = W.panel(scr, r, o.code || 'HLP', o.title, o.rt, t.TD), lines = typeof o.lines === 'function' ? o.lines() : o.lines;
+    let y = ir.y; const kw = Math.min(o.code ? 11 : 22, Math.max(...lines.filter(l => l[1]).map(l => slen(l[0]))) + 2);
+    for (const [k, d] of lines) {
       if (y >= ir.b - 1) break;
       if (!k && !d) { y++; continue; }
       if (k && (!d || ['ACTIONS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
@@ -3348,7 +3326,8 @@ class App {
       r = new Rect(0, 3, Wd, y0 - 3); this.drawConsole(scr, 0, y0, Wd);
     }
     const page = this.page;
-    if (this.helpOv && now() - this.helpOv.t > 45) this.helpOv = null;
+    if (BRIEF.pending) { BRIEF.pending = false; showBrief(this); }
+    if (this.helpOv && now() - this.helpOv.t > (this.helpOv.ttl || 45)) this.helpOv = null;
     try { if (this.helpOv) this.drawHelp(scr, r); else page.draw(scr, r, this); }
     catch (err) { const ir = W.panel(scr, r, page.code, page.name, 'FAULT', t.TR, true); scr.put(ir.x, ir.y + 1, clip('FORMAT FAULT · ' + err.message, ir.w), t.R); console.error(err); }
     this.drawCmd(scr, H - 1, Wd, blink);
@@ -3486,6 +3465,7 @@ CMD_IN.addEventListener('keydown', e => {
 CMD_IN.addEventListener('blur', () => { if (APP.cmd === '') APP.cmd = null; });
 
 function toggleFull() {
+  if (APK) { SET.immersive = !SET.immersive; saveSettings(); nativeCmd({ cmd: 'immersive', on: SET.immersive }); return; }
   try { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => APP.say('FULLSCREEN REFUSED', true)); }
   catch (e) { APP.say('FULLSCREEN UNAVAILABLE', true); }
 }
@@ -3540,6 +3520,7 @@ let DAYT = 0;
 
 function boot() {
   loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); dayTick(true);
+  if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); }
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
   R.measure(); relayout();
@@ -3559,7 +3540,7 @@ boot();
 
 </script>
 <script>
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+if ('serviceWorker' in navigator && !/GrafitAPK/.test(navigator.userAgent) && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
 </script>
