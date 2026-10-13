@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.2.1', BUILD: '20261012', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.3.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -896,7 +896,8 @@ const CFG = {
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
     GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, SensorsFrozen: 10, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
-  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
+  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,precipitation_probability,precipitation,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max&past_days=1&forecast_days=7&timezone=auto',
+  WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
   TLE_URL: 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
 };
 const now = () => Date.now() / 1000;
@@ -1049,24 +1050,92 @@ async function getText(url) {
   } finally { NETQ.active--; NETQ.lastEnd = now(); }
 }
 let TLE = A.parseTle(CFG.TLE), TLE_SRC = 'CACHED';
-const WX = { t: 0, tryT: 0, failed: false };
+const WX = { t: 0, tryT: 0, failed: false, rainT: 0, rainOn: false };
 async function fetchWx() {
   WX.tryT = now();
   const { lat, lon } = here();
+  const url = u => u.replace('%LAT%', lat.toFixed(3)).replace('%LON%', lon.toFixed(3));
   try {
-    const j = JSON.parse(await getText(CFG.WX_URL.replace('%LAT%', lat.toFixed(3)).replace('%LON%', lon.toFixed(3))));
-    const c = j.current, h = j.hourly;
+    let txt;
+    try { txt = await getText(url(CFG.WX_URL)); }
+    catch (e) { if (String(e.message).startsWith('HTTP 4')) txt = await getText(url(CFG.WX_URL_LITE)); else throw e; }
+    const j = JSON.parse(txt);
+    const c = j.current, h = j.hourly, m = j.minutely_15, dl = j.daily;
+    const off = (j.utc_offset_seconds || 0) * 1000, abs = s => Date.parse(s.length === 10 ? s + 'T00:00Z' : s + 'Z') - off;
     const nowIso = c.time.slice(0, 13);
     let ni = h.time.findIndex(x => x.slice(0, 13) === nowIso); if (ni < 0) ni = 24;
+    let days = null;
+    if (dl && dl.time) {
+      let d0 = dl.time.indexOf(c.time.slice(0, 10)); if (d0 < 0) d0 = 0;
+      days = dl.time.slice(d0).map((d, k) => { const i = d0 + k; return { date: d, code: dl.weather_code[i], tmax: dl.temperature_2m_max[i], tmin: dl.temperature_2m_min[i],
+        psum: dl.precipitation_sum[i], pop: dl.precipitation_probability_max[i], ph: dl.precipitation_hours[i], wmax: dl.wind_speed_10m_max[i] }; });
+    }
     feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, dew: c.dew_point_2m, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
-      dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni, at: now() });
+      dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni,
+      hms: h.time.map(abs), hpr: h.precipitation || null, hcode: h.weather_code || null,
+      mt: m && m.time ? m.time.map(abs) : null, mp: m ? m.precipitation : null, days, at: now() });
     if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
     WX.failed = false; WX.t = now();
     if (c.pressure_msl < CFG.FCU.DavMin) log('WX', 'QNH ' + c.pressure_msl.toFixed(1) + ' hPa < ' + CFG.FCU.DavMin);
+    rainWatch(true);
   } catch (e) {
     if (!WX.failed) log('WX', 'WEATHER FEED UNREACHABLE', true);
     WX.failed = true;
   }
+}
+
+// Pluie à venir : quarts d'heure sur 6 h (valeur = cumul des 15 min précédentes), puis heures sur 24 h.
+const RAIN_MM15 = 0.1, RAIN_MMH = 0.2, RAIN_POP = 50;
+const rainInt = r => r < 2.5 ? 'LIGHT' : (r < 7.6 ? 'MODERATE' : 'HEAVY');
+const hm = ms => { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+function rainOutlook(w, T = Date.now()) {
+  if (!w) return null;
+  let i15 = -1;
+  if (w.mt && w.mp) {
+    i15 = w.mt.findIndex(x => x > T);
+    if (i15 >= 0) {
+      const wet = k => k < w.mt.length && w.mp[k] != null && w.mp[k] >= RAIN_MM15;
+      if (wet(i15)) {
+        let k = i15, peak = 0, sum = 0; while (wet(k) && k < i15 + 48) { peak = Math.max(peak, w.mp[k] * 4); sum += w.mp[k]; k++; }
+        return { state: 'now', rate: w.mp[i15] * 4, peak, sum, stop: wet(k) ? null : w.mt[k] - 9e5, i15 };
+      }
+      for (let k = i15 + 1; k < Math.min(w.mt.length, i15 + 24); k++) if (wet(k)) {
+        let e = k, peak = 0, sum = 0; while (wet(e) && e < k + 48) { peak = Math.max(peak, w.mp[e] * 4); sum += w.mp[e]; e++; }
+        const at = w.mt[k] - 9e5;
+        return { state: 'soon', at, mins: Math.max(0, Math.round((at - T) / 60000)), peak, sum, dur: (e - k) * 15, i15 };
+      }
+    }
+  }
+  if (w.hms && w.hpr) {
+    const i = w.hms.findIndex(x => x > T);
+    if (i >= 0) {
+      for (let k = i; k < Math.min(w.hms.length, i + 24); k++)
+        if ((w.hpr[k] || 0) >= RAIN_MMH || (w.hpop && w.hpop[k] >= RAIN_POP)) return { state: 'later', at: w.hms[k] - 36e5, pop: w.hpop ? w.hpop[k] : null, mm: w.hpr[k] || 0, i15 };
+      return { state: 'dry', i15 };
+    }
+  }
+  return i15 >= 0 ? { state: 'dry6', i15 } : null;
+}
+function rainText(o) {
+  if (!o) return 'NO FORECAST';
+  switch (o.state) {
+    case 'now': return 'RAINING · ' + rainInt(o.rate) + ' · ' + (o.stop ? 'STOPS ~' + hm(o.stop) : '> 12 H');
+    case 'soon': return rainInt(o.peak) + ' FROM ' + hm(o.at) + ' · ~' + (o.dur >= 120 ? Math.round(o.dur / 60) + ' H' : o.dur + ' MIN');
+    case 'later': return (o.pop != null && o.pop >= 60 ? 'LIKELY' : 'POSSIBLE') + ' ~' + hm(o.at) + (o.pop != null ? ' · ' + o.pop + ' %' : '');
+    case 'dry6': return 'DRY NEXT 6 H';
+    default: return 'DRY NEXT 24 H';
+  }
+}
+// Annonce au journal (et vibration brève) quand la pluie commence ou arrive dans la demi-heure
+function rainWatch(force = false) {
+  const T = now();
+  if (!force && T - WX.rainT < 60) return;
+  WX.rainT = T;
+  if (SRC.wx.mode !== 'live') { WX.rainOn = false; return; }
+  const o = rainOutlook(SRC.wx.v);
+  const on = !!o && (o.state === 'now' || (o.state === 'soon' && o.mins <= 30));
+  if (on && !WX.rainOn) { log('WX', o.state === 'now' ? 'RAIN · ' + rainInt(o.rate) + ' · ' + o.rate.toFixed(1) + ' mm/h' : 'RAIN IN ' + o.mins + ' MIN · ' + rainInt(o.peak), true); haptic([60, 80, 60]); }
+  WX.rainOn = on;
 }
 async function fetchTle() {
   try { const tl = A.parseTle(await getText(CFG.TLE_URL)); if (tl) { TLE = tl; TLE_SRC = 'CELESTRAK'; feedLive('tle', { epoch: tl.epoch }); log('ISS', 'TLE UPDATED · CELESTRAK'); } }
@@ -1095,12 +1164,17 @@ function simValue(k, t) {
     case 'wx': {
       const hp = [], ht = [], hpop = [], htime = [];
       const base = new Date(); base.setMinutes(0, 0, 0); base.setHours(base.getHours() - 24);
-      for (let i = 0; i < 72; i++) {
+      for (let i = 0; i < 192; i++) {
         const d = new Date(base.getTime() + i * 3600000);
         htime.push(d.toISOString()); hp.push(+(1016.4 - i * 0.22 + 0.6 * Math.sin(i / 5)).toFixed(1));
-        ht.push(+(14 + 5 * Math.sin((d.getHours() - 9) / 24 * 2 * Math.PI)).toFixed(1)); hpop.push(Math.max(0, Math.min(100, Math.round(20 + i * 1.1 + 15 * Math.sin(i / 3)))));
+        ht.push(+(14 + 5 * Math.sin((d.getHours() - 9) / 24 * 2 * Math.PI)).toFixed(1)); hpop.push(Math.max(0, Math.min(100, Math.round(30 + 40 * Math.sin(i / 6) + 10 * Math.sin(i / 2)))));
       }
-      return { temp: 17.6, feel: 16.9, dew: 12.4, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, at: t };
+      const hms = htime.map(x => Date.parse(x)), hpr = hpop.map((p, i) => i > 30 && i < 34 ? 0.8 + 0.3 * (i - 30) : (p > 55 ? +((p - 55) / 30).toFixed(1) : 0));
+      const r0 = SIM.t0 * 1000 + 40 * 60000, q0 = Math.floor(Date.now() / 9e5) * 9e5, mt = [], mp = [];
+      for (let k = -4; k < 40; k++) { const e = q0 + (k + 1) * 9e5; mt.push(e); const x = (e - r0) / 60000; mp.push(x > 0 && x <= 75 ? +(0.15 + 0.6 * Math.sin(Math.PI * x / 75)).toFixed(1) : 0); }
+      const days = []; const dc = [61, 3, 80, 2, 0, 63, 1];
+      for (let k = 0; k < 7; k++) { const d = new Date(Date.now() + k * 864e5); days.push({ date: d.toISOString().slice(0, 10), code: dc[k], tmax: 17 + 3 * Math.sin(k), tmin: 9 + 2 * Math.cos(k), psum: [3.4, 0.2, 6.1, 0, 0, 8.8, 0][k], pop: [80, 20, 70, 10, 0, 90, 5][k], ph: [3, 0, 4, 0, 0, 7, 0][k], wmax: 20 + 8 * k % 15 }); }
+      return { temp: 17.6, feel: 16.9, dew: 12.4, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, hms, hpr, mt, mp, days, at: t };
     }
     default: return null;
   }
@@ -1442,6 +1516,9 @@ const LAND = [[[-168, 66], [-165, 60], [-162, 55], [-155, 58], [-150, 61], [-140
 const WMO = { 0: 'CLEAR', 1: 'MAINLY CLEAR', 2: 'PARTLY CLOUDY', 3: 'OVERCAST', 45: 'FOG', 48: 'RIME FOG', 51: 'LIGHT DRIZZLE', 53: 'DRIZZLE', 55: 'DENSE DRIZZLE',
   61: 'LIGHT RAIN', 63: 'RAIN', 65: 'HEAVY RAIN', 66: 'FREEZING RAIN', 67: 'FREEZING RAIN', 71: 'LIGHT SNOW', 73: 'SNOW', 75: 'HEAVY SNOW', 77: 'SNOW GRAINS',
   80: 'SHOWERS', 81: 'SHOWERS', 82: 'VIOLENT SHOWERS', 85: 'SNOW SHOWERS', 86: 'SNOW SHOWERS', 95: 'THUNDERSTORM', 96: 'THUNDERSTORM · HAIL', 99: 'THUNDERSTORM · HAIL' };
+const WMO_S = c => c == null ? '—' : c === 0 ? 'CLEAR' : c === 1 ? 'FAIR' : c === 2 ? 'PT CLOUD' : c === 3 ? 'OVERCAST' : c <= 48 ? 'FOG' : c <= 57 ? 'DRIZZLE'
+  : c <= 67 ? 'RAIN' : c <= 77 ? 'SNOW' : c <= 82 ? 'SHOWERS' : c <= 86 ? 'SNOW SHW' : 'STORM';
+const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const srcStyle = k => SRC[k].mode === 'live' ? t.TD : (SRC[k].mode === 'sim' ? t.T : t.TF);
 const noData = (scr, x, y, w, text) => scr.put(x, y, clip(text, w), t.F);
 function sub(scr, x, y, w, title, rt = '', rts = t.D) { W.section(scr, x, y, w, title, rt, rts); }
@@ -1474,6 +1551,7 @@ PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tag('geo')); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · ДЕП ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, pr && pr.p < CFG.FCU.DavMin ? t.R : t.N);
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'TEMP', 'OUT ' + (live('wx') ? SRC.wx.v.temp.toFixed(1) + ' °C' : '—') + ' · PHONE ' + (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : 'APK'));
+    if (y < lim) { const ro = live('wx') ? rainOutlook(SRC.wx.v) : null; W.kv(scr, ir.x, y++, ir.w, 'RAIN', live('wx') ? rainText(ro) : tag('wx'), t.D, ro && (ro.state === 'now' || (ro.state === 'soon' && ro.mins <= 30)) ? t.B : t.N); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
     y++;
     if (y + 5 <= lim) {
@@ -1934,6 +2012,7 @@ PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
     const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
     kv('CONDITION', WMO[w.code] || 'CODE ' + w.code);
     kv('PRESSURE MSL', w.p.toFixed(1) + ' hPa', w.p < CFG.FCU.DavMin ? t.R : t.N);
+    kv('RAIN', rainText(rainOutlook(w)));
     kv('HUMIDITY', Math.round(w.rh) + ' %');
     kv('WIND · GUSTS', Math.round(w.wind) + ' · ' + Math.round(w.gust) + ' km/h ' + card(w.dir));
     kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : CFG.HOME.name);
@@ -1945,6 +2024,111 @@ PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
       sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', '◂ PAST · FORECAST ▸');
       W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: lo, vmax: hiV, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
         styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: [[CFG.FCU.DavMin, 0, 'ДАВ', 'lo']] });
+    }
+  } };
+
+// ------------------------------------------------------------------ M08 FORECAST : pluie à venir, 24 h, 7 jours
+// Barres de pluie (axe gauche, mm), probabilité en pointillés (axe droit, 0–100 %) ; barres ajustées à la largeur.
+function rainChart(scr, r, mm, o = {}) {
+  const n = mm.length, ph = r.h - 2, pop = o.pop || null;
+  if (!n || ph < 2) return;
+  const top = Math.max(...mm.map(v => v || 0), 0), vmax = o.vmax || ([1, 2, 5, 10, 20, 50].find(v => v >= top * 1.1) || Math.ceil(top));
+  const fmt = v => String(+v.toFixed(1)), ticks = [0, vmax / 2, vmax], labs = ticks.map(fmt), gw = Math.max(...labs.map(slen));
+  const ax = r.x + gw, rw = pop ? 5 : 1, pw = r.r - ax - 1 - rw;
+  if (pw < 8) return;
+  const yRow = v => 0.5 + (vmax - v) / vmax * ph, rowOf = v => Math.max(0, Math.min(ph, Math.round(yRow(v) - 0.5)));
+  for (let i = 0; i < ph; i++) scr.put(ax, r.y + i, '│', t.L);
+  ticks.forEach((v, k) => { const rw2 = rowOf(v); scr.put(r.x, r.y + rw2, rjustS(labs[k], gw), t.D); if (rw2 < ph) scr.put(ax, r.y + rw2, '┤', t.L); });
+  scr.put(ax, r.y + ph, '└' + '─'.repeat(pw), t.L);
+  if (pop) [[100, '100%'], [50, '50'], [0, '0']].forEach(([v, lab]) => scr.put(ax + 2 + pw, r.y + Math.max(0, Math.min(ph, Math.round(0.5 + (100 - v) / 100 * ph - 0.5))), lab, t.F));
+  const colX = k => ax + 1 + Math.floor((k + 0.5) * pw / n);
+  (o.xlab || []).forEach((lab, k) => { if (lab == null) return; const cx = colX(k); scr.put(cx, r.y + ph, '┴', t.L);
+    const lx = Math.max(ax + 1, Math.min(ax + pw - slen(lab) + 1, cx - Math.floor(slen(lab) / 2))); scr.put(lx, r.y + ph + 1, lab, t.F); });
+  const cols = mm.map((v, k) => STYLES[o.styles ? o.styles[k] : t.N].fg);
+  scr.vector(ax + 1, r.y, pw, ph + 1, (c, b) => {
+    const d = b.d, Y = v => b.y + yRow(v) * b.ch, yb = Y(0), sw = b.w / n, gp = Math.max(1, Math.round(sw * 0.18));
+    c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3); c.beginPath();
+    ticks.forEach(v => { if (v) { const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x, yy); c.lineTo(b.x + b.w, yy); } }); c.stroke(); dash(c, d, 0);
+    mm.forEach((v, k) => {
+      if (!v) return;
+      const yt = Y(Math.min(vmax, v)), x0 = Math.round(b.x + k * sw + gp / 2), ww = Math.max(1, Math.round(sw - gp));
+      const gr = c.createLinearGradient(0, yt, 0, yb); gr.addColorStop(0, cols[k]); gr.addColorStop(1, cols[k].replace('rgb(', 'rgba(').replace(')', ',0.45)'));
+      c.fillStyle = gr; c.fillRect(x0, Math.round(yt), ww, Math.max(1, Math.round(yb - yt)));
+    });
+    if (pop) {
+      const P = v => b.y + (0.5 + (100 - v) / 100 * ph) * b.ch, pts = pop.map((v, k) => v == null ? null : [b.x + (k + 0.5) * sw, P(v)]).filter(Boolean);
+      c.beginPath(); W.mono(c, pts); c.strokeStyle = COL.D; c.lineWidth = 1.2 * d; dash(c, d, 3, 2); c.stroke(); dash(c, d, 0);
+      pts.forEach(([px, py]) => { c.beginPath(); c.arc(px, py, 1.4 * d, 0, 2 * Math.PI); c.fillStyle = COL.D; c.fill(); });
+    }
+  });
+}
+const FC = { mode: null, cur: '24H' };                  // graphique : 6 H au quart d'heure ou 24 H à l'heure (*2)
+PAGES.M08 = { code: 'M08', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
+  keys: [['1', 'REFRESH', () => fetchWx()], ['2', '6H/24H', () => { FC.mode = FC.cur === '6H' ? '24H' : '6H'; }]],
+  draw(scr, r) {
+    const w = SRC.wx.v;
+    const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
+    let y = ir.y;
+    if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO FORECAST · NEEDS NETWORK'); return; }
+    if (!w.mt && !w.hpr && !w.days) { noData(scr, ir.x, y, ir.w, 'FORECAST NOT IN FEED · [*1] REFRESH'); return; }
+    const T = Date.now(), ro = rainOutlook(w, T) || { state: 'dry' }, [hw, x2] = twoUp(ir);
+    // pluie : quand, et combien sur 24 h
+    let lab = 'RAIN', val = 'dry', unit = ro.state === 'dry6' ? '6 H' : '24 H', al = false;
+    if (ro.state === 'now') { lab = 'RAINING'; val = ro.rate.toFixed(1); unit = 'mm/h'; al = ro.rate >= 7.6; }
+    else if (ro.state === 'soon') { if (ro.mins < 100) { lab = 'RAIN IN'; val = String(ro.mins); unit = 'MIN'; } else { lab = 'RAIN AT'; val = hm(ro.at); unit = ''; } }
+    else if (ro.state === 'later') { lab = 'RAIN' + (ro.pop != null ? ' ' + ro.pop + ' %' : '') + ' AT'; val = hm(ro.at); unit = ''; }
+    W.readout(scr, ir.x, y, hw, lab, val, unit, t.N, al, true);
+    const hi = w.hms ? w.hms.findIndex(x => x > T) : -1, h24 = hi >= 0 && w.hpr ? w.hpr.slice(hi, hi + 24) : [];
+    const tot = h24.reduce((a, v) => a + (v || 0), 0);
+    W.readout(scr, x2, y, ir.r - x2, 'NEXT 24 H', h24.length ? tot.toFixed(1) : '', 'mm', t.N, false, true);
+    y += 6;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    kv('OUTLOOK', rainText(ro), ro.state === 'now' || ro.state === 'soon' ? t.B : t.N);
+    const d0 = w.days && w.days[0];
+    if (d0) kv('TODAY', WMO_S(d0.code) + ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C · ' + d0.pop + ' % · ' + d0.psum.toFixed(1) + ' mm');
+    y++;
+    const has6 = !!(w.mt && w.mp && ro.i15 >= 0), has24 = h24.length > 0;
+    FC.cur = FC.mode === '6H' && has6 ? '6H' : (FC.mode === '24H' && has24 ? '24H' : (has6 && (ro.state === 'now' || ro.state === 'soon' || !has24) ? '6H' : '24H'));
+    // 6 h au quart d'heure
+    if (FC.cur === '6H' && has6 && ir.b - y >= 7) {
+      const i = ro.i15, mm = w.mp.slice(i, i + 24).map(v => (v || 0) * 4), xl = [];
+      mm.forEach((_, k) => { const st = new Date(w.mt[i + k] - 9e5); if (st.getMinutes() === 0) xl[k] = pad2(st.getHours()); });
+      const pk = Math.max(...mm);
+      sub(scr, ir.x, y++, ir.w, 'NEXT 6 H · mm/h', (pk > 0 ? 'PEAK ' + pk.toFixed(1) : 'NO RAIN') + ' · [*2] 24 H', pk > 0 ? t.N : t.D);
+      rainChart(scr, new Rect(ir.x, y, ir.w, 6), mm, { xlab: xl, vmax: pk > 0 ? null : 1 });
+      y += 7;
+    }
+    // 24 h à l'heure, probabilité en pointillés
+    else if (has24 && ir.b - y >= 7) {
+      const pop = w.hpop ? w.hpop.slice(hi, hi + 24) : null, xl = [];
+      h24.forEach((_, k) => { const hr = (new Date(w.hms[hi + k]).getHours() + 23) % 24; if (hr % 3 === 0) xl[k] = pad2(hr); });
+      sub(scr, ir.x, y++, ir.w, 'NEXT 24 H · mm', '┅ PROB % · [*2] 6 H', t.D);
+      rainChart(scr, new Rect(ir.x, y, ir.w, 6), h24, { pop, xlab: xl, styles: h24.map((_, k) => pop && pop[k] >= 60 ? t.N : (pop && pop[k] >= 30 ? t.D : t.F)) });
+      y += 7;
+    }
+    // 7 jours
+    const days = (w.days || []).slice(0, 7);
+    if (days.length && ir.b - y >= 3) {
+      sub(scr, ir.x, y++, ir.w, (days.length) + ' DAYS', 'PROB · mm · °C');
+      const lo = Math.min(...days.map(d => d.tmin)), hiT = Math.max(...days.map(d => d.tmax)), bx = ir.x + 28, bwid = ir.w - 28 - 8;
+      days.forEach((d, k) => {
+        if (y >= ir.b) return;
+        const dt = new Date(d.date + 'T12:00Z'), wet = d.pop >= 50 || d.psum >= 1;
+        scr.put(ir.x, y, k === 0 ? 'TODAY' : DOW[dt.getUTCDay()] + ' ' + d.date.slice(8), k === 0 ? t.B : t.N);
+        scr.put(ir.x + 7, y, WMO_S(d.code), wet ? t.N : t.D);
+        scr.put(ir.x + 16, y, rjustS(d.pop + '%', 4), wet ? t.B : t.D);
+        scr.put(ir.x + 21, y, rjustS(d.psum >= 0.05 ? d.psum.toFixed(1) : '·', 5), d.psum >= 1 ? t.N : t.F);
+        if (bwid >= 4) {
+          scr.put(bx, y, rjustS(Math.round(d.tmin) + '°', 3), t.D); W.rjust(scr, ir.r, y, Math.round(d.tmax) + '°', t.N);
+          const f0 = (d.tmin - lo) / Math.max(1, hiT - lo), f1 = (d.tmax - lo) / Math.max(1, hiT - lo);
+          scr.vector(bx + 4, y, bwid, 1, (c, b) => {
+            const yy = b.y + b.ch * 0.5, lw = Math.max(2, b.ch * 0.22);
+            c.lineCap = 'round'; c.lineWidth = lw; c.strokeStyle = COL.K; c.beginPath(); c.moveTo(b.x + lw, yy); c.lineTo(b.x + b.w - lw, yy); c.stroke();
+            const span = b.w - 2 * lw; c.strokeStyle = COL.N; c.beginPath(); c.moveTo(b.x + lw + f0 * span, yy); c.lineTo(b.x + lw + Math.max(f1 * span, f0 * span + 1), yy); c.stroke(); c.lineCap = 'butt';
+          });
+        }
+        y++;
+      });
     }
   } };
 
@@ -2152,7 +2336,7 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
 // groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
-  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
+  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'M08', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
 ];
 
 // ---------------------------------------------------------------------------------------- antennes-relais (ANFR)
@@ -2723,7 +2907,8 @@ function slowTick() {                                   // 1 Hz : alarmes, FCU, 
   if (live('net') && SRC.net.v.online) HIST.rtt.push(SRC.net.v.rtt);
   if (live('geo')) HIST.acc.push(SRC.geo.v.acc);
   const T = now();
-  if (T - WX.tryT > (WX.failed ? 300 : 1800) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
+  if (T - WX.tryT > (WX.failed ? 300 : 900) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
+  rainWatch();
 }
 
 function boot() {
