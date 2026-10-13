@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.3.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.4.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -1075,11 +1075,13 @@ async function fetchWx() {
       hms: h.time.map(abs), hpr: h.precipitation || null, hcode: h.weather_code || null,
       mt: m && m.time ? m.time.map(abs) : null, mp: m ? m.precipitation : null, days, at: now() });
     if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
+    failClose('WX');
     WX.failed = false; WX.t = now();
     if (c.pressure_msl < CFG.FCU.DavMin) log('WX', 'QNH ' + c.pressure_msl.toFixed(1) + ' hPa < ' + CFG.FCU.DavMin);
     rainWatch(true);
   } catch (e) {
     if (!WX.failed) log('WX', 'WEATHER FEED UNREACHABLE', true);
+    failOpen('WX', 1, 'WX', 'WEATHER FEED UNREACHABLE', { title: 'OPEN-METEO FEED', thr: 'HTTP / NETWORK', act: FAIL_DOC.WX[1][0], val: String(e.message || 'ERROR').toUpperCase() });
     WX.failed = true;
   }
 }
@@ -1312,7 +1314,7 @@ function alarmsTick() {
   const t = now();
   for (const a of ANN) {
     const r = a.fn(a.lvl);
-    if (!r) { a.val = '—'; a.pend = null; if (a.lvl) { a.lvl = 0; } continue; }
+    if (!r) { a.val = '—'; a.pend = null; if (a.lvl) { a.lvl = 0; failClose(a.key); } continue; }
     const [raw, val] = r; a.val = val;
     if (raw > a.lvl) {
       if (a.pend !== raw) { a.pend = raw; a.since = t; }
@@ -1321,9 +1323,13 @@ function alarmsTick() {
   }
   ALS.caut = ANN.filter(a => a.lvl === 1).length; ALS.crit = ANN.filter(a => a.lvl === 2).length;
   ALS.fcu = fcu();
+  for (const a of ANN) if (a.lvl) failCur(a.key, a.val);
+  failFcuTick(ALS.fcu);
 }
 function setLevel(a, n) {
   const old = a.lvl; a.lvl = n;
+  if (n > 0) failOpen(a.key, n + 1, a.tag, a.lab + ' ' + SEV[n], { title: a.title, val: a.val, thr: a.lim, act: a.act });
+  else failClose(a.key, a.val);
   if (n > old) { log(a.tag, a.lab + ' ' + SEV[n] + ' · ' + a.val, true); haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
   else if (n === 0) log(a.tag, a.lab + ' NOMINAL · ' + a.val);
   else log(a.tag, a.lab + ' CRIT → CAUT · ' + a.val, true);
@@ -1350,10 +1356,10 @@ const FCU_INFO = {
   t1: ['INTERNAL TEMP · BATTERY', 'FIXED: > 50 °C (APK)', 'FAST BLINK: SENSOR SILENT'],
   t2: ['EXTERNAL TEMP', 'FIXED: > 35 °C', 'AMBIENT SENSOR, ELSE WEATHER'],
 };
-function annState(lvl, val, blink, lt) {
+function annState(lvl, val, blink, lt, key) {
   if (lt && lt.ann) return lt.ann === 1 ? 'caut' : 'crit';
   if (val === '—') return 'na';
-  if (lvl >= 2) return blink ? 'crit' : 'critoff';
+  if (lvl >= 2) return blink || (key && !failUnack(key, 3)) ? 'crit' : 'critoff';      // acquitté : rouge fixe
   return lvl === 1 ? 'caut' : 'nom';
 }
 function fcuState(key, st, lt) {
@@ -1362,6 +1368,99 @@ function fcuState(key, st, lt) {
   if (st === 'w') return 'on';
   if (st === 'r' || (st === 'rf' && fast) || (st === 'rs' && slow)) return 'crit';
   return st === 'na' ? 'na' : 'nom';
+}
+
+// ---------------------------------------------------------------------------------------- FAIL PAGE (S02)
+// Journal des défauts, comme le faillog du skin S02 sur le PC : une entrée par défaut, ouverte à la montée
+// (annonciateur confirmé, voyant rouge du FCU, flux coupé), fermée au retour à la normale. Sévérité 1 INFO,
+// 2 CAUT, 3 CRIT ; une aggravation relance l'entrée (non acquittée). ACK : unitaire ou global ; CLEAR :
+// efface les défauts acquittés et refermés (un défaut encore actif ne s'efface pas). Persisté sur le téléphone.
+const FSEV = ['', 'INFO', 'CAUT', 'CRIT'];
+const FAIL = { list: [], seq: 0, sel: 0 };
+const FAIL_DOC = {
+  BATT: ['Charge under the caution limit while unplugged. Below the critical limit the phone may shut down without warning and the sensors stop.',
+    ['Plug the charger or a power bank', 'Turn on battery saver', 'Lower brightness · close GNSS / camera apps']],
+  BTEMP: ['Battery thermistor above its limit (APK only). Heat ages the cell; Android throttles charging, then the CPU.',
+    ['Unplug the charger', 'Remove the case · move out of the sun', 'Stop navigation / camera / games until it cools']],
+  GLOAD: ['Peak acceleration over the limit: shock, fall or impact. The level is latched ' + AL.GLatchSecs + ' s after the peak so a short hit is not missed.',
+    ['Check the phone for damage (screen, camera)', 'If unexpected: secure the mount / pocket', 'Acknowledge once checked']],
+  NET: ['Round-trip time over the limit (CAUT) or no network at all (CRIT). Weather, TLE, satellites and towers feeds stall.',
+    ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see 4.3 TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
+  GNSS: ['Position accuracy worse than the limit (CAUT) or no fix for ' + AL.GnssLostSecs + ' s (CRIT). NAV formats freeze on the last position.',
+    ['Go outdoors, clear view of the sky', 'Enable precise location for this app', 'See 5.3 SATS: satellites used and DOP']],
+  NOISE: ['Microphone level above the limit for ' + AL.NoiseSecs + ' s. Relative to full scale: not a calibrated dB(A) meter.',
+    ['Move away from the source or wear protection', 'Disarm the mic in 4.4 AUDIO if not needed']],
+  COMPASS: ['Heading is relative: the browser gives no magnetic north reference. KURS, SKY and TOWERS bearings may be offset.',
+    ['Figure-8 calibration away from metal', 'Use HDG UP off for a north-up display']],
+  SENSORS: ['Motion sensor stream silent for more than ' + AL.SensorsFrozen + ' s while live: browser throttled the page or permission was revoked.',
+    ['Bring Grafit to the foreground', 'Re-arm sensors: 7.1 ARM (or command ARM)', 'Reopen the app if it persists']],
+  'FCU.dav': ['QNH under 1013.25 hPa: lower than standard pressure. Information lamp of the virtual FCU, not a fault.',
+    ['Watch 2.3 BARO for a falling trend (ДЕП)']],
+  'FCU.dep': ['Pressure falling fast over 3 h (ДЕП fw 0.4.1): WATCH ≥ 0.7 hPa/h and ≥ 1.0 hPa, ALERT ≥ 1.3 hPa/h and ≥ 2.0 hPa. Often ahead of a front or a storm.',
+    ['Check 6.2 FORECAST for rain and wind', 'Secure outdoor gear · plan shelter', 'See 2.3 BARO for the drop and the rate']],
+  'FCU.t1': ['Internal (battery) temperature above 50 °C on the FCU lamp ТЕМП1.',
+    ['Same as BATT TEMP: unplug, remove the case, shade']],
+  'FCU.t2': ['External temperature above 35 °C (ambient sensor, else weather): heat stress for the phone and for you.',
+    ['Keep the phone in the shade', 'Hydrate · avoid exertion at midday']],
+  'FCU.src': ['No pressure source: no barometer (APK), no weather feed. ДАВ and ДЕП blink fast and cannot watch the trend.',
+    ['Restore the network for the weather feed', 'Install the APK for the phone barometer']],
+  WX: ['Weather feed unreachable: forecast, rain warning and QNH from the weather service stop updating.',
+    ['Check the network (4.1 NETWORK)', 'Retry: command WX REFRESH', 'Older data stays shown until it ages out']],
+};
+function failSave() { try { localStorage.setItem('grafit.fail', JSON.stringify({ seq: FAIL.seq, list: FAIL.list.slice(0, 60) })); } catch (e) { /* */ } }
+function failRestore() {
+  try {
+    const j = JSON.parse(localStorage.getItem('grafit.fail') || 'null'); if (!j) return;
+    FAIL.seq = j.seq || 0; FAIL.list = j.list || [];
+    const t = now(); FAIL.list.forEach(e => { if (!e.tend) { e.tend = t; e.note = 'SESSION END'; } });  // l'état réel est réévalué au démarrage
+  } catch (e) { /* */ }
+}
+const failOpenOf = key => FAIL.list.find(e => e.key === key && !e.tend);
+function failOpen(key, sev, tag, msg, o = {}) {
+  const e = failOpenOf(key), t = now();
+  if (e) {
+    if (sev > e.sev) { e.sev = sev; e.msg = msg; e.ack = false; e.ackT = 0; e.esc = t; e.val = o.val != null ? o.val : e.val; failSave(); }
+    return e;
+  }
+  const n = { id: ++FAIL.seq, t0: t, sev, tag, key, msg, title: o.title || msg, val: o.val || '', cur: o.val || '', thr: o.thr || '', act: o.act || '', tend: 0, ack: false, ackT: 0 };
+  FAIL.list.unshift(n);
+  // plafond : on oublie d'abord les plus anciens défauts acquittés et refermés
+  while (FAIL.list.length > 60) { const k = FAIL.list.map(x => !!(x.ack && x.tend)).lastIndexOf(true); FAIL.list.splice(k >= 0 ? k : FAIL.list.length - 1, 1); }
+  failSave(); return n;
+}
+function failClose(key, val) { const e = failOpenOf(key); if (e) { e.tend = now(); if (val != null) e.cur = val; failSave(); } }
+function failCur(key, val) { const e = failOpenOf(key); if (e) e.cur = val; }
+const failUnack = (key, minSev = 2) => FAIL.list.some(e => (key == null || e.key === key) && !e.ack && e.sev >= minSev);
+function failStats() {
+  let open = 0, unack = 0, ucrit = 0, ucaut = 0;
+  for (const e of FAIL.list) { if (!e.tend) open++; if (!e.ack) { unack++; if (e.sev === 3) ucrit++; else if (e.sev === 2) ucaut++; } }
+  return { n: FAIL.list.length, open, unack, ucrit, ucaut };
+}
+function failAck(e) { if (!e || e.ack) return 0; e.ack = true; e.ackT = now(); return 1; }
+function failAckAll() { const n = FAIL.list.reduce((a, e) => a + failAck(e), 0); if (n) { log('ACK', 'ACK ALL · ' + n + ' FAULT' + (n > 1 ? 'S' : '')); failSave(); } return n; }
+function failClear(only) {                                     // efface les défauts acquittés ET refermés
+  const keep = [], gone = [];
+  for (const e of FAIL.list) ((only ? only.includes(e) : true) && e.ack && e.tend ? gone : keep).push(e);
+  FAIL.list = keep; if (gone.length) { log('ACK', 'CLEARED ' + gone.length + ' FAULT' + (gone.length > 1 ? 'S' : '')); failSave(); }
+  return gone.length;
+}
+// voyants rouges du FCU -> défauts
+const FCU_FAIL = {
+  dep: { rs: [2, 'ДЕП WATCH · PRESSURE FALLING', 'DEPRESSION TREND', '≥ 0.7 hPa/h & ≥ 1.0 hPa'], rf: [3, 'ДЕП ALERT · PRESSURE FALLING FAST', 'DEPRESSION TREND', '≥ 1.3 hPa/h & ≥ 2.0 hPa'] },
+  t1: { r: [3, 'ТЕМП1 · INTERNAL OVERTEMP', 'INTERNAL TEMP · BATTERY', '> ' + CFG.FCU.T1Max + ' °C'] },
+  t2: { r: [2, 'ТЕМП2 · EXTERNAL HEAT', 'EXTERNAL TEMP', '> ' + CFG.FCU.T2Max + ' °C'] },
+};
+let FCU_PREV = {};
+function failFcuTick(f) {
+  for (const k of Object.keys(FCU_FAIL)) {
+    const st = f[k], def = FCU_FAIL[k][st], key = 'FCU.' + k, val = k === 't1' ? (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : '') : (k === 't2' ? (f.ext != null ? f.ext.toFixed(1) + ' °C' : '') : (f.p != null ? f.p.toFixed(1) + ' hPa' : ''));
+    if (def && (k !== 'dep' || f.p != null)) { failOpen(key, def[0], 'FCU', def[1], { title: def[2], thr: def[3], val, act: (FAIL_DOC[key] || ['', ['']])[1][0] }); failCur(key, val); }
+    else if (failOpenOf(key)) failClose(key, val);
+  }
+  const noSrc = f.dav === 'rf';
+  if (noSrc) failOpen('FCU.src', 1, 'FCU', 'NO PRESSURE SOURCE', { title: 'ДАВ · ДЕП', thr: 'BARO (APK) OR WEATHER', act: FAIL_DOC['FCU.src'][1][0] });
+  else if (failOpenOf('FCU.src')) failClose('FCU.src');
+  FCU_PREV = { ...f };
 }
 
 // ---------------------------------------------------------------------------------------- retours
@@ -1530,6 +1629,13 @@ function locator(lat, lon) {                                 // grand carré Mai
 function twoUp(r, gap = 1) { const w = Math.floor((r.w - gap) / 2); return [w, r.x + w + gap]; }
 
 const PAGES = {};
+// Actions partagées : une même action sur plusieurs formats a la même fonction (pas d'ambiguïté en commande).
+// Entrée d'action : [touche, libellé, fn(app, arg, mot), mots de commande, syntaxe] ; cmds : commandes sans touche.
+const onOff = (arg, cur) => arg === 'ON' ? true : (arg === 'OFF' ? false : !cur);
+const hdgUp = (app, arg) => { SET.skyRot = onOff(arg, SET.skyRot); saveSettings(); app && app.say('HDG UP ' + (SET.skyRot ? 'ON' : 'OFF')); };
+const refreshWx = app => { fetchWx(); app && app.say('WEATHER · REFRESH REQUESTED'); };
+const refreshSats = app => { fetchSatCat(true); app && app.say('SAT CATALOG · REFRESH REQUESTED'); };
+const K_HDG = ['HDG UP', hdgUp, ['HDGUP', 'HDG'], 'HDG [ON|OFF]'];
 // ------------------------------------------------------------------ S00 OVERVIEW
 PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
   draw(scr, r, app) {
@@ -1555,9 +1661,10 @@ PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
     y++;
     if (y + 5 <= lim) {
-      sub(scr, ir.x, y++, ir.w, 'S01 ALARMS', ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (ALS.caut || ALS.crit) ? t.RB : t.D);
+      const fs = failStats();
+      sub(scr, ir.x, y++, ir.w, 'S01 ALARMS', ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT' + (fs.ucrit + fs.ucaut ? ' · ' + (fs.ucrit + fs.ucaut) + ' UNACK' : ''), (ALS.caut || ALS.crit || fs.ucrit || fs.ucaut) ? t.RB : t.D);
       const cw = Math.floor((ir.w - 5) / 4), lt = app.lamp(), blink = app.blink();
-      y += W.tileGrid(scr, ir.x, y, 4, cw, ANN.map(a => [a.lab, annState(a.lvl, a.val, blink, lt)]));
+      y += W.tileGrid(scr, ir.x, y, 4, cw, ANN.map(a => [a.lab, annState(a.lvl, a.val, blink, lt, a.key)]));
     }
     if (y + 4 <= lim) {
       sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
@@ -1647,16 +1754,29 @@ PAGES.M03 = { code: 'M03', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
   } };
 
 // ------------------------------------------------------------------ S01 ALARMS
-PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'ANN', 'FCU', 'LAMP'], fps: 6, sel: 'BATT',
-  keys: [['1', 'LAMP TEST', app => app.lampTest()], ['2', '◂ ITEM', () => PAGES.S01.cycle(-1)], ['3', 'ITEM ▸', () => PAGES.S01.cycle(1)]],
+PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'ANN', 'ANNUNCIATORS', 'FCU'], fps: 6, sel: 'BATT',
+  keys: [['1', 'LAMP TEST', app => app.lampTest(), ['LAMPTEST', 'LAMP', 'TEST', 'LT']],
+    ['2', '◂ SEL', () => PAGES.S01.cycle(-1), ['SEL-']],
+    ['3', 'SEL ▸', (app, arg) => PAGES.S01.select(app, arg), ['SEL', 'SEL+'], 'SEL [n|+|-|NAME]'],
+    ['4', 'FAULT', app => { const e = failOpenOf(PAGES.S01.fkey()) || FAIL.list.find(x => x.key === PAGES.S01.fkey()); if (e) FAIL.sel = e.id; app.go('S02'); }, ['FAULT', 'FAIL']]],
   order() { return ANN.map(a => a.key).concat([].concat(...FCU_ROWS).map(([k]) => k)); },
+  fkey() { return ANN.some(a => a.key === this.sel) ? this.sel : 'FCU.' + this.sel; },
   cycle(dd) { const o = this.order(), i = o.indexOf(this.sel); this.sel = o[(i + dd + o.length) % o.length]; },
+  select(app, arg) {
+    const o = this.order();
+    if (!arg || arg === '+') return this.cycle(1);
+    if (arg === '-') return this.cycle(-1);
+    if (/^\d+$/.test(arg)) { if (o[+arg - 1]) { this.sel = o[+arg - 1]; return; } return app.say('SEL · ITEMS 1-' + o.length, true); }
+    const lab = ANN.find(a => a.key === arg || a.lab.replace(/[^A-Z0-9]/g, '') === arg.replace(/[^A-Z0-9]/g, '')) || null;
+    const fk = [].concat(...FCU_ROWS).find(([k, l]) => k.toUpperCase() === arg || l === arg);
+    if (lab) this.sel = lab.key; else if (fk) this.sel = fk[0]; else app.say('SEL · NO ITEM ' + arg, true);
+  },
   draw(scr, r, app) {
     const lt = app.lamp(), blink = app.blink(), mk = k => k === this.sel ? '› ' : '';
     const ir = W.panel(scr, r, this.code, this.name, lt ? 'LAMP TEST' : ALS.caut + ' CAUT · ' + ALS.crit + ' CRIT', (lt || ALS.caut || ALS.crit) ? t.TR : t.TD);
     let y = ir.y;
     const cw = Math.floor((ir.w - 3) / 2);
-    y += W.tileGrid(scr, ir.x, y, 2, cw, ANN.map(a => [mk(a.key) + a.lab + '  ' + a.val, annState(a.lvl, a.val, blink, lt)]));
+    y += W.tileGrid(scr, ir.x, y, 2, cw, ANN.map(a => [mk(a.key) + a.lab + '  ' + a.val, annState(a.lvl, a.val, blink, lt, a.key)]));
     if (y + 6 <= ir.b) {
       y++;
       sub(scr, ir.x, y++, ir.w, 'FCU · VIRTUAL', 'fw ' + CFG.FCU.fw);
@@ -1679,7 +1799,110 @@ PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'AN
         if (y < ir.b) scr.put(ir.x, y++, clip(l1, ir.w), t.N);
         if (y < ir.b) scr.put(ir.x, y++, clip(l2, ir.w), t.D);
       }
+      const fe = FAIL.list.find(x => x.key === this.fkey());
+      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'CLOSED' : 'OPEN') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · *4 → 3.2', ir.w), fe.ack ? t.D : t.RB);
     }
+  } };
+
+// ------------------------------------------------------------------ S02 FAIL PAGE : défauts, instructions, acquittement
+function wrap(text, w) {
+  const out = []; let line = '';
+  for (const word of String(text).split(/\s+/)) {
+    if (!word) continue;
+    if (line && slen(line) + 1 + slen(word) > w) { out.push(line); line = word; } else line = line ? line + ' ' + word : word;
+  }
+  if (line) out.push(line); return out;
+}
+// Sélection des défauts visés par une commande : rien = le défaut choisi, n = rang affiché, ALL, ou nom (BATT, DEP, GNSS…)
+function failPick(arg) {
+  const L = FAIL.list;
+  if (!arg) { const e = L.find(x => x.id === FAIL.sel) || L[0]; return e ? [e] : []; }
+  if (arg === 'ALL') return L.slice();
+  if (/^\d+$/.test(arg)) return L[+arg - 1] ? [L[+arg - 1]] : [];
+  const a = arg.replace(/[^A-Z0-9]/g, '');
+  return L.filter(e => e.key.replace(/^FCU\./, '').toUpperCase() === a || e.tag === a || e.key.toUpperCase() === arg || e.msg.replace(/[^A-Z0-9]/g, '').startsWith(a));
+}
+function failCmdAck(app, arg) {
+  const es = failPick(arg);
+  if (!FAIL.list.length) return app.say('ACK · NO FAULT RECORDED');
+  if (!es.length) return app.say('ACK · NO FAULT ' + arg + ' · SEE 3.2', true);
+  const n = es.reduce((k, e) => k + failAck(e), 0);
+  if (n) { failSave(); log('ACK', (arg === 'ALL' ? 'ACK ALL · ' : 'ACK · ') + (es.length === 1 ? es[0].msg : n + ' FAULTS')); haptic(15); }
+  app.say(n ? 'ACK · ' + n + ' FAULT' + (n > 1 ? 'S' : '') + ' ACKNOWLEDGED' : 'ACK · ALREADY ACKNOWLEDGED');
+}
+function failCmdClear(app, arg) {
+  if (!FAIL.list.length) return app.say('CLEAR · NO FAULT RECORDED');
+  let es;
+  if (arg === 'ALL') { es = FAIL.list.filter(e => e.tend); es.forEach(failAck); }   // CLEAR ALL : acquitte et efface tout ce qui est refermé
+  else if (arg) es = failPick(arg);
+  else es = FAIL.list.slice();
+  if (!es.length) return app.say('CLEAR · NO FAULT ' + arg, true);
+  const active = es.filter(e => !e.tend).length, unack = es.filter(e => e.tend && !e.ack).length, n = failClear(es);
+  app.say(n ? 'CLEARED ' + n + (active ? ' · ' + active + ' ACTIVE KEPT' : '') + (unack ? ' · ' + unack + ' UNACK KEPT' : '')
+    : (active ? 'CLEAR · FAULT STILL ACTIVE · FIX IT FIRST' : 'CLEAR · ACK FIRST (ACK ' + (arg || '') + ')'.replace(' )', ')')), !n);
+}
+PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 'FAILPAGE', 'FAULTS', 'FAULT', 'DEFAUTS'], fps: 4, padKeys: false,
+  keys: [['1', 'ACK', (app, arg) => failCmdAck(app, arg), ['ACK'], 'ACK [n|ALL|NAME]'],
+    ['2', '◂ SEL', () => PAGES.S02.cycle(-1), ['SEL-']],
+    ['3', 'SEL ▸', (app, arg) => PAGES.S02.select(app, arg), ['SEL', 'SEL+'], 'SEL [n|+|-]'],
+    ['4', 'ACK ALL', app => failCmdAck(app, 'ALL'), ['ACKALL']],
+    ['5', 'CLEAR', (app, arg) => failCmdClear(app, arg), ['CLEAR', 'CLR'], 'CLEAR [n|ALL]']],
+  idx() { const i = FAIL.list.findIndex(e => e.id === FAIL.sel); return i < 0 ? 0 : i; },
+  cycle(dd) { const L = FAIL.list; if (!L.length) return; FAIL.sel = L[(this.idx() + dd + L.length) % L.length].id; },
+  select(app, arg) {
+    if (!arg || arg === '+') return this.cycle(1);
+    if (arg === '-') return this.cycle(-1);
+    const es = failPick(arg); if (es.length) FAIL.sel = es[0].id; else app.say('SEL · NO FAULT ' + arg, true);
+  },
+  draw(scr, r, app) {
+    const fs = failStats(), L = FAIL.list, blink = app.blink();
+    const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' OPEN · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
+    let y = ir.y; const by = ir.b - 2, bw = Math.floor(ir.w / 5);
+    const ack1 = L.length && !L[this.idx()].ack, anyAck = fs.unack > 0, anyClr = L.some(e => e.ack && e.tend);
+    [['ACK', '*1', 1, !ack1], ['ACK ALL', '*4', 4, !anyAck], ['CLEAR', '*5', 5, !anyClr], ['◂ SEL', '*2', 2, L.length < 2], ['SEL ▸', '*3', 3, L.length < 2]]
+      .forEach(([lab, k, n, dead], i) => button(scr, ir.x + i * bw, by, i === 4 ? ir.r - (ir.x + 4 * bw) : bw - 1, 2, lab, k, () => app.action(String(n)), { small: true, dead, red: n === 1 && ack1 && L[this.idx()].sev === 3 && !L[this.idx()].tend && blink }));
+    if (!L.length) {
+      noData(scr, ir.x, y++, ir.w, 'NO FAULT RECORDED');
+      y++;
+      ['A FAULT OPENS WHEN AN ANNUNCIATOR (3.1) TRIPS,', 'A RED FCU LAMP LIGHTS OR A FEED IS LOST.', '', 'ACK    SILENCES THE BLINK · STAYS LISTED', 'CLEAR  REMOVES ACK\'D + CLOSED FAULTS', '', 'COMMANDS: ACK [n|ALL] · CLEAR [n|ALL] · SEL n']
+        .forEach(l => { if (y < by - 1) scr.put(ir.x, y++, clip(l, ir.w), t.D); });
+      return;
+    }
+    const si = this.idx(); FAIL.sel = L[si].id;
+    // liste : n · ▶ non acquitté · sévérité · heure · message · état
+    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3))));
+    const top = Math.max(0, Math.min(L.length - nRows, si - Math.floor(nRows / 2)));
+    sub(scr, ir.x, y++, ir.w, 'LOG', (top > 0 ? '▲ ' : '') + (si + 1) + '/' + L.length + (top + nRows < L.length ? ' ▼' : ''));
+    for (let i = top; i < top + nRows; i++) {
+      const e = L[i], sel = i === si, red = e.sev >= 2 && !e.ack;
+      const live = !e.tend, crit = e.sev === 3 && live && !e.ack;
+      if (sel) scr.fill(ir.x, y, ir.w, 1, ' ', t.INVN);
+      const base = sel ? t.INVN : null;
+      scr.put(ir.x, y, rjustS(i + 1, 2), base || t.F);
+      scr.put(ir.x + 3, y, e.ack ? ' ' : '▶', base || (red ? t.RB : t.D));
+      scr.put(ir.x + 5, y, FSEV[e.sev], sel ? t.INV : (crit && blink ? t.ALERT : (red ? t.RB : (e.sev === 1 ? t.F : t.D))));
+      scr.put(ir.x + 10, y, hhmm(e.t0), base || t.F);
+      const stt = live ? 'OPEN' : 'CLSD';
+      scr.put(ir.x + 16, y, clip(e.msg, ir.w - 22), base || (live ? (red ? t.R : t.N) : t.D));
+      W.rjust(scr, ir.r, y, stt, sel ? t.INV : (live ? t.B : t.F));
+      y++;
+    }
+    // détail : explication et conduite à tenir
+    const e = L[si], doc = FAIL_DOC[e.key];
+    y++;
+    if (y >= by - 1) return;
+    sub(scr, ir.x, y++, ir.w, '#' + (si + 1) + ' ' + FSEV[e.sev] + ' · ' + e.tag, (e.tend ? 'CLOSED' : 'OPEN') + ' · ' + (e.ack ? 'ACK ' + hhmm(e.ackT) : 'UNACK'), e.ack ? t.D : t.RB);
+    const kv = (k, v, st = t.N) => { if (y < by - 1 && v) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    kv(e.title, e.val + (e.cur && e.cur !== e.val ? ' → ' + e.cur : ''), e.sev >= 2 && !e.ack ? t.RB : t.B);
+    kv('LIMIT', e.thr, t.D);
+    const d = new Date(e.t0 * 1000);
+    kv('TRIPPED', pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + ' ' + hhmmss(e.t0) + (e.esc ? ' · ↑ ' + hhmm(e.esc) : ''));
+    kv(e.tend ? 'CLOSED' : 'ACTIVE', e.tend ? hhmmss(e.tend) + ' · ' + durHM(e.tend - e.t0) + (e.note ? ' · ' + e.note : '') : 'FOR ' + durHM(now() - e.t0), e.tend ? t.N : t.B);
+    if (doc && y < by - 2) {
+      y++;
+      for (const l of wrap(doc[0].toUpperCase(), ir.w)) { if (y >= by - 1) break; scr.put(ir.x, y++, l, t.D); }
+      doc[1].forEach((st, k) => { if (y >= by - 1) return; const ls = wrap(st.toUpperCase(), ir.w - 4); scr.put(ir.x, y, (k + 1) + ' ▸', t.B); scr.put(ir.x + 4, y++, ls[0], t.N); for (const l of ls.slice(1)) if (y < by - 1) scr.put(ir.x + 4, y++, l, t.N); });
+    } else if (e.act && y < by - 1) scr.put(ir.x, y++, clip('▸ ' + e.act, ir.w), t.N);
   } };
 
 // ------------------------------------------------------------------ S03 FEED
@@ -1721,7 +1944,7 @@ PAGES.S12 = { code: 'S12', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', '
 
 // ------------------------------------------------------------------ S08 AUDIO
 PAGES.S08 = { code: 'S08', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
-  keys: [['1', 'ARM MIC', () => micArm(SRC.mic.mode === 'off')]],
+  keys: [['1', 'ARM MIC', (app, arg) => micArm(onOff(arg, SRC.mic.mode === 'off')), ['MIC', 'ARMMIC'], 'MIC [ON|OFF]']],
   draw(scr, r) {
     this.keys[0][1] = SRC.mic.mode === 'off' ? 'ARM MIC' : 'DISARM MIC';
     const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
@@ -1820,7 +2043,7 @@ PAGES.S18 = { code: 'S18', name: 'TRACK', ru: 'ТРАСС', words: ['TRACK', 'IS
 
 // ------------------------------------------------------------------ S23 SKY
 PAGES.S23 = { code: 'S23', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 'PLANETS'], fps: 6, passT: 0, pass: null,
-  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }]],
+  keys: [['1', ...K_HDG]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
     const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0;
@@ -1884,6 +2107,7 @@ PAGES.S23 = { code: 'S23', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 
 // ------------------------------------------------------------------ S24 KURS · ATT
 PAGES.S24 = { code: 'S24', name: 'KURS · ATT', ru: 'КУРС', words: ['KURS', 'ATT', 'ATTITUDE', 'DOCKING'], fps: 20, tgt: 'AUTO',
   keys: [['1', 'AUTO', () => { PAGES.S24.tgt = 'AUTO'; }], ['2', 'ISS', () => { PAGES.S24.tgt = 'ISS'; }], ['3', 'MOON', () => { PAGES.S24.tgt = 'MOON'; }], ['4', 'SUN', () => { PAGES.S24.tgt = 'SUN'; }]],
+  cmds: [[['TGT', 'TARGET'], (app, arg) => { if (['AUTO', 'ISS', 'MOON', 'SUN'].includes(arg)) { PAGES.S24.tgt = arg; app.go('S24'); } else app.say('TGT AUTO|ISS|MOON|SUN', true); }, 'TGT AUTO|ISS|MOON|SUN']],
   target(T, h) {
     const cand = [];
     if (TLE) { const [az, el] = A.issLook(TLE, T, h.lat, h.lon); cand.push({ name: 'ISS', az, el }); }
@@ -1999,7 +2223,7 @@ PAGES.M04 = { code: 'M04', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
 
 // ------------------------------------------------------------------ S19 WEATHER
 PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO'], fps: 1,
-  keys: [['1', 'REFRESH', () => fetchWx()]],
+  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
     const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
@@ -2064,7 +2288,7 @@ function rainChart(scr, r, mm, o = {}) {
 }
 const FC = { mode: null, cur: '24H' };                  // graphique : 6 H au quart d'heure ou 24 H à l'heure (*2)
 PAGES.M08 = { code: 'M08', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
-  keys: [['1', 'REFRESH', () => fetchWx()], ['2', '6H/24H', () => { FC.mode = FC.cur === '6H' ? '24H' : '6H'; }]],
+  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']], ['2', '6H/24H', (app, arg, w) => { FC.mode = w === '6H' || w === '24H' ? w : (FC.cur === '6H' ? '24H' : '6H'); }, ['6H24H', '6H', '24H'], '6H · 24H']],
   draw(scr, r) {
     const w = SRC.wx.v;
     const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
@@ -2142,9 +2366,11 @@ function chrTick() {
 }
 const mmss = (s, tenth = false) => { s = Math.max(0, s); const m = Math.floor(s / 60), r = s - m * 60; return pad2(m) + ':' + pad2(Math.floor(r)) + (tenth ? '.' + Math.floor(r * 10 % 10) : ''); };
 PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['CHRONO', 'TIMER', 'STOPWATCH'], fps: 10,
-  keys: [['1', 'START', () => { if (CHR.run) { CHR.acc += now() - CHR.t0; CHR.run = false; } else { CHR.t0 = now(); CHR.run = true; } }],
+  keys: [['1', 'START', (app, arg, w) => { const run = w === 'START' ? true : (w === 'STOP' ? false : !CHR.run); if (CHR.run && !run) { CHR.acc += now() - CHR.t0; CHR.run = false; } else if (!CHR.run && run) { CHR.t0 = now(); CHR.run = true; } }, ['SW', 'START', 'STOP'], 'START · STOP'],
     ['2', 'LAP', () => { if (CHR.run) CHR.laps.unshift(chrEl()); }], ['3', 'RESET', () => { CHR.run = false; CHR.acc = 0; CHR.laps = []; }],
-    ['4', "5'", () => tmrSet(300)], ['5', "15'", () => tmrSet(900)], ['6', "30'", () => tmrSet(1800)], ['7', 'GO', () => tmrGo()]],
+    ['4', "5'", () => tmrSet(300), ['5MIN']], ['5', "15'", () => tmrSet(900), ['15MIN']], ['6', "30'", () => tmrSet(1800), ['30MIN']],
+    ['7', 'GO', (app, arg, w) => { if ((w === 'GO' && !CHR.tmrRun) || (w === 'HOLD' && CHR.tmrRun) || !w) tmrGo(); }, ['GO', 'HOLD'], 'GO · HOLD']],
+  cmds: [[['TIMER', 'TMR'], (app, arg) => { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (!mm) { app.go('S29'); return; } tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); app.go('S29'); app.say('TIMER ' + arg + ' RUNNING'); }, 'TIMER m[:ss]']],
   draw(scr, r) {
     this.keys[0][1] = CHR.run ? 'STOP' : 'START'; this.keys[6][1] = CHR.tmrRun ? 'HOLD' : 'GO';
     const ir = W.panel(scr, r, this.code, this.name, 'СЕКУНДОМЕР', t.TD);
@@ -2165,9 +2391,12 @@ PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
 
 // ------------------------------------------------------------------ S28 QUICK SET
 PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
-  keys: [['1', 'SIM', () => { SET.sim = { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); }],
-    ['2', 'WAKE', () => wakeSet(!SET.wake)], ['3', 'FULL', () => toggleFull()], ['4', 'HAPTIC', () => { SET.haptics = !SET.haptics; saveSettings(); }],
-    ['5', 'FEEDS', () => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); }], ['6', 'ZOOM−', () => zoom(-1)], ['7', 'ZOOM+', () => zoom(1)], ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }]],
+  keys: [['1', 'SIM', (app, arg) => { SET.sim = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); app && app.say('SIM MODE ' + SET.sim); }, ['SIM'], 'SIM [AUTO|ON|OFF]'],
+    ['2', 'WAKE', (app, arg) => wakeSet(onOff(arg, SET.wake)), ['WAKE'], 'WAKE [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
+    ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
+    ['5', 'FEEDS', app => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); app && app.say('ALL FEEDS · REFRESH REQUESTED'); }, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
+    ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']]],
+  cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + ' MOBILE', t.TD);
     let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
@@ -2226,7 +2455,7 @@ const NETNAME = Object.fromEntries(SATNETS.map(([k, n]) => [k, n]));
 
 // ------------------------------------------------------------------ M05 SATS : satellites de positionnement en vue
 PAGES.M05 = { code: 'M05', name: 'SATS', ru: 'СПУТН', words: ['SATS', 'SATELLITES', 'GNSS SKY', 'GPS SKY', 'DOP'], fps: 2,
-  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'REFRESH', () => fetchSatCat(true)]],
+  keys: [['1', ...K_HDG], ['2', 'REFRESH', refreshSats, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
     const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0, MASK = 10;
@@ -2264,7 +2493,7 @@ PAGES.M05 = { code: 'M05', name: 'SATS', ru: 'СПУТН', words: ['SATS', 'SATE
 
 // ------------------------------------------------------------------ M06 RELAYS : relais de communication en vue
 PAGES.M06 = { code: 'M06', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RELAY', 'COMSAT', 'IRIDIUM', 'AMATEUR', 'CELL'], fps: 2,
-  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'REFRESH', () => fetchSatCat(true)]],
+  keys: [['1', ...K_HDG], ['2', 'REFRESH', refreshSats, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
     const T = now(), h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0;
@@ -2335,7 +2564,7 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
 
 // groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
 const GROUPS = [
-  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S03']],
+  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S02', 'S03']],
   ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'M08', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
 ];
 
@@ -2409,7 +2638,7 @@ function towersNear(lat, lon, radius = 3000) {
 
 // ------------------------------------------------------------------ M07 TOWERS : antennes-relais autour du téléphone
 PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', 'TOWER', 'CELL', 'ANTENNA', 'GSM', 'ANFR'], fps: 4, range: 1,
-  keys: [['1', 'HDG UP', () => { SET.skyRot = !SET.skyRot; saveSettings(); }], ['2', 'RANGE', () => { PAGES.M07.range = (PAGES.M07.range + 1) % 3; }], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }]],
+  keys: [['1', ...K_HDG], ['2', 'RANGE', (app, arg) => { const k = { 1: 0, 2: 1, 5: 2 }[parseInt(arg, 10)]; PAGES.M07.range = k != null ? k : (PAGES.M07.range + 1) % 3; app && app.say('RANGE ' + [1, 2, 5][PAGES.M07.range] + ' km'); }, ['RANGE'], 'RANGE [1|2|5]'], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }, ['RELOAD', 'REFRESH']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
     const h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0, RANGE = [1000, 2000, 5000][this.range];
@@ -2640,6 +2869,7 @@ class App {
     const n = GROUPS[this.gi][3].length;
     this.pi[this.gi] = pi == null ? 0 : ((pi % n) + n) % n;          // changement de groupe : retour au format .1
     if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) this.prev = cur;
+    this.helpOv = null;
   }
   step(dd) { this.show(this.gi, this.pi[this.gi] + dd); }          // sous-section suivante / précédente du groupe
   go(code, sel) { const hit = this.find(code); if (hit) { this.show(...hit); if (sel && this.page.sel !== undefined) this.page.sel = sel; } }
@@ -2664,24 +2894,117 @@ class App {
     }
     return null;
   }
-  say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; }
+  say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; this.msgN = (this.msgN || 0) + 1; }
+  // ---------------------------------------------------------- commandes : une seule grammaire pour tous les formats
+  //   <FORMAT>                  2.3 · S19 · M08 · WEATHER                    navigation
+  //   *n                        action n du format affiché (comme * puis n au pavé)
+  //   <ACTION> [ARG]            ACK 2 · SIM ON · HDG OFF                     format affiché, sinon groupe, sinon Grafit
+  //   <FORMAT> <ACTION|n> [ARG] FAIL ACK ALL · WX REFRESH · S29 3            action d'un autre format, qui s'affiche
+  //   HELP [FORMAT|ALL]
+  // Une action d'un autre format s'exécute si elle est unique (ou si toutes ses occurrences font la même chose).
+  static norm(x) { return String(x).toUpperCase().replace(/−/g, '-').replace(/[^A-Z0-9+\-]/g, ''); }
+  acts(p) {
+    return (p.keys || []).map(k => ({ p, k: k[0], lab: k[1], fn: k[2], words: (k[3] || [k[1]]).map(App.norm), syn: k[4] || null }))
+      .concat((p.cmds || []).map(c => ({ p, k: null, lab: c[0][0], fn: c[1], words: c[0].map(App.norm), syn: c[2] || null })));
+  }
+  matchAct(p, toks) {                                   // plus long préfixe de mots d'abord : ACK ALL avant ACK + ALL
+    const acts = this.acts(p);
+    for (let i = toks.length; i >= 1; i--) {
+      const w = App.norm(toks.slice(0, i).join(''));
+      const a = w && acts.find(x => x.words.includes(w));
+      if (a) return { a, arg: toks.slice(i).join(' '), word: w };
+    }
+    return null;
+  }
+  actByKey(p, k, rest) { const a = this.acts(p).find(x => x.k === k); return a ? { a, arg: rest.join(' '), word: '' } : null; }
+  findExact(word) {                                     // adresse, code ou nom / mot-clé exact (pas de début de mot)
+    const wd = String(word).toUpperCase();
+    const m = wd.match(/^(\d)\.(\d{1,2})$/);
+    if (m) { const g = +m[1] - 1, f = +m[2] - 1; return GROUPS[g] && GROUPS[g][3][f] ? [g, f] : null; }
+    for (let gi = 0; gi < GROUPS.length; gi++) for (let pi = 0; pi < GROUPS[gi][3].length; pi++) {
+      const code = GROUPS[gi][3][pi], p = PAGES[code];
+      if (code === wd || [p.name.replace(' · ', ' ').replace(/ /g, '')].concat(p.words.map(x => x.replace(/ /g, ''))).includes(wd)) return [gi, pi];
+    }
+    return null;
+  }
+  run(m) {
+    const n0 = this.msgN || 0;
+    try { m.a.fn(this, m.arg, m.word); } catch (e) { console.error(e); return this.say('COMMAND FAULT · ' + e.message, true); }
+    if ((this.msgN || 0) === n0) this.say(m.a.p.code + ' · ' + m.a.lab + (m.arg ? ' ' + m.arg : ''));
+  }
   execute(line) {
     line = line.trim(); if (!line) return;
-    const [verb, ...rest] = line.split(/\s+/), v = verb.toUpperCase(), arg = rest.join(' ').toUpperCase();
-    if (['HELP', '?', 'H'].includes(v)) return this.say('1-7 GROUP · ◀ ▶ + − FORMAT · . n FORMAT · * n ACTION · 0 RCL · / LAMP · SIM AUTO|ON|OFF · TIMER 7:30');
-    if (['LAMP', 'TEST', 'LT'].includes(v)) return this.lampTest();
-    if (v === 'SIM' && ['AUTO', 'ON', 'OFF'].includes(arg)) { SET.sim = arg; saveSettings(); simReset(); return this.say('SIM MODE ' + arg); }
-    if (v === 'TIMER' || v === 'TMR') { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (mm) { tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); this.go('S29'); return this.say('TIMER ' + arg + ' RUNNING'); } }
-    if (v === 'MIC') { micArm(SRC.mic.mode === 'off'); return; }
-    if (v === 'WAKE') { wakeSet(!SET.wake); return; }
-    const hit = this.find(line); if (hit) return this.show(...hit);
-    this.say('UNKNOWN COMMAND · ' + line.toUpperCase() + ' · TYPE HELP', true);
+    this.helpOv = null;
+    const toks = line.toUpperCase().split(/\s+/), v = toks[0];
+    if (['HELP', '?', 'H'].includes(v)) return this.help(toks.slice(1).join(' '));
+    const st = v.match(/^\*(\d)$/);
+    if (st) { if (!this.action(st[1], toks.slice(1).join(' '))) this.say('NO ACTION *' + st[1] + ' ON ' + this.page.code + ' ' + this.page.name, true); return; }
+    let m = this.matchAct(this.page, toks), qual = null;                     // 1. format affiché
+    if (m) return this.run(m);
+    if (toks.length > 1) {                                                   // 2. <FORMAT> <ACTION|n> [ARG]
+      const hit = this.findExact(v);
+      if (hit) {
+        const p = PAGES[GROUPS[hit[0]][3][hit[1]]], rest = toks.slice(1), dm = rest[0].match(/^\*?(\d)$/);
+        m = dm ? this.actByKey(p, dm[1], rest.slice(1)) : this.matchAct(p, rest);
+        if (m) { this.show(...hit); return this.run(m); }
+        m = this.matchAct(p, toks);                                          // TIMER 7:30 : le nom du format est aussi une commande
+        if (m) return this.run(m);
+        qual = p.code + ' ' + p.name + ' · NO ACTION ' + rest.join(' ') + ' · HELP ' + p.code;
+      }
+    }
+    if (toks.length === 1) { const hit = this.findExact(v); if (hit) return this.show(...hit); }   // 3. nom exact de format
+    const cands = [];                                                        // 4. action d'un autre format
+    for (const g of GROUPS) for (const code of g[3]) { if (PAGES[code] === this.page) continue; const c = this.matchAct(PAGES[code], toks); if (c) cands.push(c); }
+    if (cands.length) {
+      const grp = cands.filter(c => GROUPS[this.gi][3].includes(c.a.p.code)), pool = grp.length ? grp : cands;
+      if (new Set(pool.map(c => c.a.fn)).size === 1) return this.run(pool[0]);
+      return this.say(pool[0].word + ' · ON ' + pool.map(c => c.a.p.code).join(' ') + ' · TYPE <FORMAT> ' + v, true);
+    }
+    const hit = this.find(line); if (hit) return this.show(...hit);         // 5. adresse, code, début de nom
+    this.say(qual || 'UNKNOWN COMMAND · ' + line.toUpperCase() + ' · TYPE HELP', true);
+  }
+  // aide : surimpression à la place du format (ESC, une touche de navigation ou une commande la ferme)
+  help(arg) {
+    if (arg === 'ALL' || arg === 'COMMANDS') {
+      this.helpOv = { t: now(), title: 'COMMANDS', rt: 'ALL FORMATS', lines: [
+        ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['S19 · M08', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
+        ['ACTIONS', 'SAME GRAMMAR ON EVERY FORMAT'], ['*n', 'ACTION n OF THIS FORMAT'], ['ACK 2', 'ACTION + ARGUMENT'],
+        ['FAIL ACK ALL', 'FORMAT + ACTION + ARG'], ['S29 3', 'FORMAT + ACTION NUMBER'], ['', 'ELSEWHERE: IF UNIQUE'], ['', ''],
+        ['COMMON', ''], ['ACK [n|ALL]', 'ACKNOWLEDGE FAULTS'], ['CLEAR [n|ALL]', "ERASE ACK'D CLOSED FAULTS"], ['SEL [n|+|-]', 'SELECT ITEM'],
+        ['LAMP', 'LAMP TEST'], ['REFRESH', 'RELOAD FEED OF THE GROUP'], ['SIM AUTO|ON|OFF', 'SIMULATION'], ['WAKE · HDG', '[ON|OFF] TOGGLES'],
+        ['TIMER m:ss', 'COUNTDOWN'], ['ZOOM +|-|%', 'SCALE'], ['HELP [FORMAT]', 'ACTIONS OF A FORMAT']] };
+      return;
+    }
+    let p = this.page;
+    if (arg) { const hit = this.findExact(arg.replace(/\s+/g, '')) || this.find(arg); if (!hit) return this.say('HELP · NO FORMAT ' + arg, true); p = PAGES[GROUPS[hit[0]][3][hit[1]]]; }
+    const lines = [];
+    const acts = this.acts(p);
+    if (!acts.length) lines.push(['—', 'NO ACTION ON THIS FORMAT']);
+    for (const a of acts) {
+      lines.push([(a.k ? '*' + a.k + ' ' : '   ') + (a.syn || (a.words[0] === App.norm(a.lab) ? a.lab : a.words[0])), a.lab]);
+      const al = a.words.slice(1).filter(w => !(a.syn || '').toUpperCase().includes(w));
+      if (al.length) lines.push(['', '= ' + al.join(' · ')]);
+    }
+    const at = GROUPS.findIndex(g => g[3].includes(p.code)), ad = (at + 1) + '.' + (GROUPS[at][3].indexOf(p.code) + 1);
+    lines.push(['', ''], ['GO TO', ad + ' · ' + p.code + ' · ' + p.words[0]], ['FROM ELSEWHERE', p.code + ' <ACTION> [ARG]'], ['HELP ALL', 'FULL GRAMMAR']);
+    this.helpOv = { t: now(), title: 'HELP · ' + p.code + ' ' + p.name, rt: ad, lines };
+  }
+  drawHelp(scr, r) {
+    const o = this.helpOv, ir = W.panel(scr, r, 'HLP', o.title, o.rt, t.TD);
+    let y = ir.y; const kw = Math.min(22, Math.max(...o.lines.filter(l => l[1]).map(l => slen(l[0]))) + 2);
+    for (const [k, d] of o.lines) {
+      if (y >= ir.b - 1) break;
+      if (!k && !d) { y++; continue; }
+      if (k && (!d || ['ACTIONS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
+      scr.put(ir.x, y, clip(k, kw - 1), t.B); scr.put(ir.x + kw, y++, clip(d, ir.w - kw), d.startsWith('=') ? t.F : t.D);
+    }
+    scr.put(ir.x, ir.b - 1, clip('ESC CLOSE · ↵ COMMAND', ir.w), t.F);
   }
   // ---------------------------------------------------------- pavé numérique (pupitre)
   onPad(p) {
     const pend = now() < this.padT ? this.pad : null; this.pad = null;
     if (p === 'ENTER') return openCmd();
-    if (p === 'ESC') { this.armed = null; this.msg = ''; if (this.cmd !== null) { this.cmd = null; CMD_IN.blur(); } return; }
+    if (p === 'ESC') { this.armed = null; this.msg = ''; this.helpOv = null; if (this.cmd !== null) { this.cmd = null; CMD_IN.blur(); } return; }
     if (/^\d$/.test(p)) {
       let n = +p; const pages = GROUPS[this.gi][3];
       if (pend === '.') { n = n || 10; if (n <= pages.length) this.show(this.gi, n - 1); else this.say('NO FORMAT ' + (this.gi + 1) + '.' + n + ' · GROUP ' + (this.gi + 1) + ' HAS ' + pages.length, true); }
@@ -2693,7 +3016,7 @@ class App {
     else if (p === '+' || p === '-') this.step(p === '+' ? 1 : -1);
     else if (p === '/') this.lampTest();
   }
-  action(k) { const a = (this.page.keys || []).find(x => x[0] === k); if (!a) return false; a[2](this); return true; }
+  action(k, arg = '') { const a = (this.page.keys || []).find(x => x[0] === k); if (!a) return false; this.helpOv = null; a[2](this, arg, ''); return true; }
   onKey(e) {
     if (!this.ready) { if (now() - this.splash >= 2.2) this.start(); return; }
     const k = e.key, code = e.code || '';
@@ -2728,7 +3051,8 @@ class App {
       r = new Rect(0, 3, Wd, y0 - 3); this.drawConsole(scr, 0, y0, Wd);
     }
     const page = this.page;
-    try { page.draw(scr, r, this); }
+    if (this.helpOv && now() - this.helpOv.t > 45) this.helpOv = null;
+    try { if (this.helpOv) this.drawHelp(scr, r); else page.draw(scr, r, this); }
     catch (err) { const ir = W.panel(scr, r, page.code, page.name, 'FAULT', t.TR, true); scr.put(ir.x, ir.y + 1, clip('FORMAT FAULT · ' + err.message, ir.w), t.R); console.error(err); }
     this.drawCmd(scr, H - 1, Wd, blink);
   }
@@ -2767,7 +3091,7 @@ class App {
   // bandeau : logo Orbital VKL, ГРАФИТ, heure, ВКЛ ● ; MET, état des alarmes, SIM (affichage seulement)
   drawBand(scr, Wd, blink) {
     scr.fill(0, 0, Wd, 2, ' ', t.T);
-    const crit = ALS.crit > 0;
+    const fs = failStats(), crit = ALS.crit > 0 && fs.ucrit > 0;
     scr.vector(0, 0, 5, 2, (c, b) => {
       const size = Math.min(b.h, b.w) * 0.94;
       drawLogo(c, b.x + b.w / 2, b.y + b.h / 2, size, b.d, { fill: crit && !blink ? COL.R : COL.RR });
@@ -2783,8 +3107,9 @@ class App {
     let xr = Wd - 1;
     if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); xr -= 1; }
     let st, txt;
-    if (ALS.crit) { txt = ' MASTER CAUTION · ' + ALS.crit + ' CRIT '; st = blink ? t.ALERT : t.TR; }
+    if (ALS.crit) { txt = ' MASTER CAUTION · ' + ALS.crit + ' CRIT '; st = blink && fs.ucrit ? t.ALERT : t.TR; }
     else if (ALS.caut) { txt = ' CAUTION · ' + ALS.caut + ' '; st = t.TR; }
+    else if (fs.ucrit || fs.ucaut) { const n = fs.ucrit + fs.ucaut; txt = ' ' + n + ' UNACK · 3.2 '; st = t.TR; }
     else { txt = 'NOMINAL '; st = t.TF; }
     W.rjust(scr, xr, 1, txt, st);
     scr.put(0, 2, '─'.repeat(Wd), t.L);
@@ -2842,6 +3167,7 @@ class App {
     if (pend === '*') { x += scr.put(x, y, 'ДЕЙСТВИЕ · ' + this.page.code + ' ', t.B); scr.put(x, y, blink ? '█' : ' ', t.N); return; }
     if (now() - this.msgT < 6 && this.msg) { scr.put(x, y, clip(this.msg, Wd - x - 1), this.msgWarn ? t.RB : t.N); return; }
     const keys = this.page.keys || [];
+    if (this.page.padKeys === false) { scr.put(x, y, clip('↵ ' + keys.map(k => (k[4] || k[1])).join(' · ') + ' · HELP', Wd - x - 1), t.D); return; }
     if (!keys.length) { scr.put(x, y, clip('↵ COMMAND · TYPE HELP', Wd - x - 1), t.D); return; }
     for (const [k, labl, fn] of keys) {                // actions du format : petites touches
       const w = slen(labl) + 5; if (x + w > Wd) break;
@@ -2912,7 +3238,7 @@ function slowTick() {                                   // 1 Hz : alarmes, FCU, 
 }
 
 function boot() {
-  loadSettings(); restoreTrend();
+  loadSettings(); restoreTrend(); failRestore();
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
   R.measure(); relayout();
