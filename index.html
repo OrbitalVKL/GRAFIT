@@ -888,7 +888,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.6.3', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.7.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -960,7 +960,7 @@ try { Object.assign(STEPS, JSON.parse(localStorage.getItem('grafit.steps') || '{
 function stepsFeed(c) {
   const d = new Date(), day = d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
   if (STEPS.day !== day) { STEPS.day = day; STEPS.today = 0; }
-  if (STEPS.last != null) STEPS.today += c >= STEPS.last ? c - STEPS.last : c;      // c < last : téléphone redémarré
+  if (STEPS.last != null) STEPS.today += c >= STEPS.last ? c - STEPS.last : (c < STEPS.last / 2 ? c : 0);   // forte baisse : téléphone redémarré
   STEPS.last = c; STEPS.hist[day] = STEPS.today;
   const keys = Object.keys(STEPS.hist).sort(); while (keys.length > 14) delete STEPS.hist[keys.shift()];
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
@@ -1679,6 +1679,8 @@ const hdgUp = (app, arg) => { SET.skyRot = onOff(arg, SET.skyRot); saveSettings(
 const refreshWx = app => { fetchWx(); app && app.say('WEATHER · REFRESH REQUESTED'); };
 const refreshSats = app => { fetchSatCat(true); app && app.say('SAT CATALOG · REFRESH REQUESTED'); };
 const K_HDG = ['HDG UP', hdgUp, ['HDGUP', 'HDG'], 'HDG [ON|OFF]'];
+// Ligne de réglage : touche du pavé (*n), libellé, état. Les formats n'ont aucune touche à l'écran : tout se fait au pavé.
+function actRow(scr, x, y, w, k, label, value, vs = t.N) { scr.put(x, y, k, t.B); W.kv(scr, x + 4, y, w - 4, label, value, t.D, vs); }
 // ------------------------------------------------------------------ S00 OVERVIEW
 PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
   draw(scr, r, app) {
@@ -1800,8 +1802,8 @@ PAGES.M03 = { code: 'M03', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
 // ------------------------------------------------------------------ S01 ALARMS
 PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'ANN', 'ANNUNCIATORS', 'FCU'], fps: 6, sel: 'BATT',
   keys: [['1', 'LAMP TEST', app => app.lampTest(), ['LAMPTEST', 'LAMP', 'TEST', 'LT']],
-    ['2', '◂ SEL', () => PAGES.S01.cycle(-1), ['SEL-']],
-    ['3', 'SEL ▸', (app, arg) => PAGES.S01.select(app, arg), ['SEL', 'SEL+'], 'SEL [n|+|-|NAME]'],
+    ['2', '▲ SEL', () => PAGES.S01.cycle(-1), ['SEL-', 'UP']],
+    ['3', '▼ SEL', (app, arg) => PAGES.S01.select(app, arg), ['SEL', 'SEL+', 'DOWN'], 'SEL [n|+|-|NAME]'],
     ['4', 'FAULT', app => { const e = failOpenOf(PAGES.S01.fkey()) || FAIL.list.find(x => x.key === PAGES.S01.fkey()); if (e) FAIL.sel = e.id; app.go('S02'); }, ['FAULT', 'FAIL']]],
   order() { return ANN.map(a => a.key).concat([].concat(...FCU_ROWS).map(([k]) => k)); },
   fkey() { return ANN.some(a => a.key === this.sel) ? this.sel : 'FCU.' + this.sel; },
@@ -1844,7 +1846,7 @@ PAGES.S01 = { code: 'S01', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'AN
         if (y < ir.b) scr.put(ir.x, y++, clip(l2, ir.w), t.D);
       }
       const fe = FAIL.list.find(x => x.key === this.fkey());
-      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · *4 → 3.2', ir.w), fe.ack ? t.D : t.RB);
+      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · [*4] 3.2', ir.w), fe.ack ? t.D : t.RB);
     }
   } };
 
@@ -1885,7 +1887,7 @@ function failCmdClear(app, arg) {
   app.say(n ? 'CLEARED ' + n + (active ? ' · ' + active + ' ACTIVE KEPT' : '') + (unack ? ' · ' + unack + ' UNACK KEPT' : '')
     : (active ? 'CLEAR · FAULT STILL ACTIVE · FIX IT FIRST' : 'CLEAR · ACK FIRST (ACK ' + (arg || '') + ')'.replace(' )', ')')), !n);
 }
-PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 'FAILPAGE', 'FAULTS', 'FAULT', 'DEFAUTS'], fps: 4, padKeys: false,
+PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 'FAILPAGE', 'FAULTS', 'FAULT', 'DEFAUTS'], fps: 4,
   keys: [['1', 'ACK', (app, arg) => failCmdAck(app, arg), ['ACK'], 'ACK [n|ALL|NAME]'],
     ['2', '▲ SEL', () => PAGES.S02.cycle(-1), ['SEL-', 'UP']],
     ['3', '▼ SEL', (app, arg) => PAGES.S02.select(app, arg), ['SEL', 'SEL+', 'DOWN'], 'SEL [n|+|-]'],
@@ -1901,11 +1903,7 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
   draw(scr, r, app) {
     const fs = failStats(), L = FAIL.list, blink = app.blink();
     const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' ACTIVE · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
-    let y = ir.y; const by = ir.b - 2, bw = Math.floor(ir.w / 3);
-    const ack1 = L.length && !L[this.idx()].ack, anyAck = fs.unack > 0, anyClr = L.some(e => e.ack && e.tend);
-    // touches d'action en bas ; la sélection (▲ ▼) est à droite de la liste, dans le sens de la liste
-    [['ACK', '*1', 1, !ack1], ['ACK ALL', '*4', 4, !anyAck], ['CLEAR', '*5', 5, !anyClr]]
-      .forEach(([lab, k, n, dead], i) => button(scr, ir.x + i * bw, by, i === 2 ? ir.r - (ir.x + 2 * bw) : bw - 1, 2, lab, k, () => app.action(String(n)), { small: true, dead, red: n === 1 && ack1 && L[this.idx()].sev === 3 && !L[this.idx()].tend && blink }));
+    let y = ir.y; const by = ir.b;
     if (!L.length) {
       noData(scr, ir.x, y++, ir.w, 'NO FAULT RECORDED');
       y++;
@@ -1915,12 +1913,10 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
     }
     const si = this.idx(); FAIL.sel = L[si].id;
     // liste : n · ▶ non acquitté · sévérité · heure · message · état
-    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3)))), LH = Math.max(4, nRows), lw = ir.w - 7, lr = ir.x + lw;
+    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3)))), LH = nRows, lw = ir.w, lr = ir.x + lw;
     const top = Math.max(0, Math.min(L.length - nRows, si - Math.floor(nRows / 2)));
     sub(scr, ir.x, y++, ir.w, 'LOG', (top > 0 ? '▲ ' : '') + (si + 1) + '/' + L.length + (top + nRows < L.length ? ' ▼' : ''));
-    const y0 = y, hu = Math.floor(LH / 2);
-    button(scr, ir.r - 6, y0, 6, hu, '▲', '*2', () => app.action('2'), { small: true, dead: L.length < 2 });
-    button(scr, ir.r - 6, y0 + hu, 6, LH - hu, '▼', '*3', () => app.action('3'), { small: true, dead: L.length < 2 });
+    const y0 = y;
     for (let i = top; i < top + nRows; i++) {
       const e = L[i], sel = i === si, red = e.sev >= 2 && !e.ack;
       const live = !e.tend, crit = e.sev === 3 && live && !e.ack;
@@ -1963,13 +1959,13 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
 // ------------------------------------------------------------------ S03 FEED
 PAGES.S03 = { code: 'S03', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2,
   draw(scr, r) {
-    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS');
-    const rows = FEED.slice(-ir.h);
+    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS · NEWEST FIRST');
+    const rows = FEED.slice(-ir.h).reverse();
     rows.forEach(([ts, tg, msg, warn], i) => {
-      const yy = ir.y + ir.h - rows.length + i;
+      const yy = ir.y + i;
       scr.put(ir.x, yy, hhmmss(ts), t.F);
       scr.put(ir.x + 9, yy, ljust(tg, 4), warn ? t.RB : t.B);
-      scr.put(ir.x + 14, yy, clip(msg, ir.w - 14), warn ? t.R : (i === rows.length - 1 ? t.N : t.D));
+      scr.put(ir.x + 14, yy, clip(msg, ir.w - 14), warn ? t.R : (i === 0 ? t.N : t.D));
     });
   } };
 
@@ -2005,8 +2001,9 @@ PAGES.S08 = { code: 'S08', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC'
     const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
     let y = ir.y;
     if (!live('mic')) {
-      button(scr, ir.x, y, ir.w, 4, SRC.mic.mode === 'off' ? 'ARM MIC' : 'WAITING…', SRC.mic.mode === 'off' ? 'MICROPHONE DISARMED' : 'PERMISSION PENDING', () => micArm(true), { dead: SRC.mic.mode !== 'off' });
-      scr.put(ir.x, y + 6, clip('LEVEL ONLY · NOTHING IS RECORDED OR SENT', ir.w), t.F);
+      actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', SRC.mic.mode === 'off' ? 'DISARMED · ARM' : 'PERMISSION PENDING', SRC.mic.mode === 'off' ? t.N : t.B);
+      y++;
+      ['LEVEL ONLY · NOTHING RECORDED OR SENT.', 'OFF UNTIL ARMED · RELEASED WHEN', 'GRAFIT GOES TO THE BACKGROUND.'].forEach(l => scr.put(ir.x, y++, clip(l, ir.w), t.F));
       return;
     }
     const d = SRC.mic.v.db, caut = d >= AL.NoiseCaut;
@@ -2428,7 +2425,7 @@ PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
   cmds: [[['TIMER', 'TMR'], (app, arg) => { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (!mm) { app.go('S29'); return; } tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); app.go('S29'); app.say('TIMER ' + arg + ' RUNNING'); }, 'TIMER m[:ss]']],
   draw(scr, r) {
     this.keys[0][1] = CHR.run ? 'STOP' : 'START'; this.keys[6][1] = CHR.tmrRun ? 'HOLD' : 'GO';
-    const ir = W.panel(scr, r, this.code, this.name, 'СЕКУНДОМЕР', t.TD);
+    const ir = W.panel(scr, r, this.code, this.name, (CHR.run ? 'STOPWATCH RUNNING' : 'STOPWATCH IDLE') + (CHR.tmrRun ? ' · TIMER ▶' : ''), CHR.run || CHR.tmrRun ? t.T : t.TD);
     let y = ir.y;
     W.readout(scr, ir.x, y, ir.w, 'STOPWATCH' + (CHR.run ? ' ▶' : ''), mmss(chrEl(), true), '', CHR.run ? t.B : t.N, false, true);
     y += 6;
@@ -2455,15 +2452,14 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
   cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
-    let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
-    const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['SCREEN ON', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
-      ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false],
-      [!APK ? 'UPDATE · APK ONLY' : (UPD.state === 'downloading' ? 'DOWNLOADING ' + UPD.progress + ' %' : (UPD.state === 'installing' ? 'INSTALLING…' : (UPD.available ? 'INSTALL ' + UPD.latest : (UPD.state === 'checking' ? 'CHECKING…' : 'CHECK UPDATE')))), UPD.available]];
-    items[6][0] = 'ZOOM +';
-    items.forEach(([lab, on], i) => { const c = i % 2, rw = Math.floor(i / 2), bw = Math.floor(ir.w / 2);
-      button(scr, ir.x + c * bw, y + rw * 2, c ? ir.w - bw : bw, 2, lab, '*' + (i + 1), () => this.keys[i][2](app), { on, small: true }); });
-    y += 10;
-    if (APK && y < ir.b) { W.kv(scr, ir.x, y++, ir.w, 'APK ' + (UPD.current || CFG.VERSION), UPD.msg || (UPD.latest ? 'LATEST ' + UPD.latest : 'GITHUB RELEASES'), t.D, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)); }
+    let y = ir.y;
+    const upd = !APK ? 'APK ONLY' : (UPD.state === 'downloading' ? 'DOWNLOADING ' + UPD.progress + ' %' : (UPD.state === 'installing' ? 'INSTALLING…'
+      : (UPD.available ? 'INSTALL ' + UPD.latest : (UPD.state === 'checking' ? 'CHECKING…' : (UPD.state === 'error' ? UPD.msg : 'UP TO DATE · CHECK')))));
+    const rows = [['*1', 'SIMULATION', SET.sim, SET.sim === 'ON' ? t.B : t.N], ['*2', 'SCREEN KEEP-ON', SET.wake ? 'ON' : 'OFF', SET.wake ? t.B : t.N],
+      ['*3', 'FULLSCREEN', (APK ? SET.immersive : !!document.fullscreenElement) ? 'ON' : 'OFF', t.N], ['*4', 'HAPTICS', SET.haptics ? 'ON' : 'OFF', t.N],
+      ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'ZOOM − / +', Math.round(SET.scale * 100) + ' %', t.N],
+      ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', 'APK UPDATE ' + (UPD.current || ''), upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)]];
+    for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
     y++;
     sub(scr, ir.x, y++, ir.w, 'SOURCES', 'LIVE · SIM · N/A');
     const half = Math.ceil(SOURCES.length / 2), cww = Math.floor((ir.w - 2) / 2);
@@ -2596,8 +2592,7 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
       ['FEELS', live('wx') ? w.feel : null, []],
       ['DEW', live('wx') ? w.dew : null, []],
       ['BATT', live('btemp') ? SRC.btemp.v.c : null, [[f(AL.BattTempCaut), ''], [f(AL.BattTempCrit), '']]],
-      ['SKIN', live('stemp') ? SRC.stemp.v.c : (live('amb') ? SRC.amb.v.c : null), []],
-    ];
+    ].concat(live('amb') ? [['AMB', SRC.amb.v.c, []]] : []);
     const th = Math.max(9, Math.min(15, ir.h - 14)), n = tapes.length, step = Math.floor((ir.w - 1) / n);
     tapes.forEach(([lab, v, marks], i) => {
       const x = ir.x + 1 + i * step, alert = v != null && marks.some(m => f(v) >= m[0]);
@@ -2754,7 +2749,7 @@ PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
       kv(OP_SHORT[op] + ' ' + genTxt(s.gen).replace(/G/g, '').replace(/ /g, '·') + 'G', dTxt + ' · ' + Math.round(s.brg) + '° ' + card(s.brg) + (s.sector != null ? ' · SECT ' + s.sector + '°' : ''), s.sector != null ? t.B : t.N);
     }
     const cl = SRC.cell.v;
-    kv('SERVING CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'APK ONLY', t.D, live('cell') ? t.N : t.F);
+    kv('SERVING', live('cell') ? [String(cl.rat || '').replace(/^\dG /, ''), cl.band ? (String(cl.band)[0] === 'n' ? cl.band : 'B' + cl.band) : '', cl.rsrp != null ? cl.rsrp + ' dBm' : '', cl.operator].filter(Boolean).join(' · ') : 'APK ONLY', t.D, live('cell') ? t.N : t.F);
     if (y < ir.b) scr.put(ir.x, y++, clip('SECT = ANTENNA SECTOR FACING YOU (±60°)', ir.w), t.F);
   } };
 
@@ -2908,7 +2903,7 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
   draw(scr, r) {
     const aw = awakeSecs(), ir = W.panel(scr, r, this.code, this.name, DAYREC.wake ? 'WAKE ' + hhmm(DAYREC.wake) + ' · ' + DAYREC.src : 'NO WAKE TIME', DAYREC.wake ? t.TD : t.TF);
     let y = ir.y; const [hw, x2] = twoUp(ir);
-    W.readout(scr, ir.x, y, hw, 'AWAKE', aw != null ? Math.floor(aw / 3600) + ':' + pad2(aw % 3600 / 60) : '', 'h', t.N, aw != null && aw >= 16 * 3600, true);
+    W.readout(scr, ir.x, y, hw, 'AWAKE · H:MM', aw != null ? Math.floor(aw / 3600) + ':' + pad2(aw % 3600 / 60) : '', '', t.N, aw != null && aw >= 16 * 3600, true);
     const nx = agendaNext();
     W.readout(scr, x2, y, ir.r - x2, 'NEXT EVENT', nx ? hhmm(nx.start) : '', '', t.N, false, true);
     y += 6;
@@ -3468,12 +3463,11 @@ class App {
     if (pend === '*') { x += scr.put(x, y, 'ДЕЙСТВИЕ · ' + this.page.code + ' ', t.B); scr.put(x, y, blink ? '█' : ' ', t.N); return; }
     if (now() - this.msgT < 6 && this.msg) { scr.put(x, y, clip(this.msg, Wd - x - 1), this.msgWarn ? t.RB : t.N); return; }
     const keys = this.page.keys || [];
-    if (this.page.padKeys === false) { scr.put(x, y, clip('↵ ' + keys.map(k => (k[4] || k[1])).join(' · ') + ' · HELP', Wd - x - 1), t.D); return; }
     if (!keys.length) { scr.put(x, y, clip('↵ COMMAND · TYPE HELP', Wd - x - 1), t.D); return; }
-    for (const [k, labl, fn] of keys) {                // actions du format : petites touches
-      const w = slen(labl) + 5; if (x + w > Wd) break;
-      button(scr, x, y, w, 1, '*' + k, labl, () => fn(this), { small: true });
-      x += w + 1;
+    // légende des actions du format (au pavé : * puis le chiffre) ; rien n'est cliquable ici
+    for (const [k, labl] of keys) {
+      const w = 3 + slen(labl); if (x + w > Wd - 1) { scr.put(Math.min(x, Wd - 2), y, '…', t.F); break; }
+      scr.put(x, y, '*' + k, t.B); scr.put(x + 3, y, labl, t.D); x += w + 2;
     }
   }
 }
@@ -3506,7 +3500,6 @@ CV.addEventListener('pointerdown', ev => { TOUCH = { x: ev.clientX, y: ev.client
 CV.addEventListener('pointerup', ev => {
   if (!TOUCH) return;
   const dx = ev.clientX - TOUCH.x, dy = ev.clientY - TOUCH.y; TOUCH = null;
-  if (APP.ready && Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) { APP.step(dx < 0 ? 1 : -1); haptic(6); frame(true); return; }
   if (Math.hypot(dx, dy) > 16) return;
   const [x, y] = cellAt(ev);
   for (let i = APP.hits.length - 1; i >= 0; i--) { const h = APP.hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) { h.fn(APP); frame(true); return; } }
@@ -3518,6 +3511,7 @@ window.addEventListener('resize', () => { relayout(); frame(true); });
 let nextFrame = 0;
 function frame(force = false) {
   const tt = now(), fps = APP.lampT0 ? 10 : (APP.page.fps || 2);
+  if (APP.page !== frame.page || APP.helpOv !== frame.ov) { frame.page = APP.page; frame.ov = APP.helpOv; force = true; }   // changement de format : tout de suite
   if (!force && tt < nextFrame) return;
   nextFrame = tt + 1 / fps;
   APP.draw(SCR); R.draw(SCR);
