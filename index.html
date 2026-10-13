@@ -887,7 +887,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.4.2', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.5.0', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
@@ -1658,6 +1658,7 @@ PAGES.S00 = { code: 'S00', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · ДЕП ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, pr && pr.p < CFG.FCU.DavMin ? t.R : t.N);
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'TEMP', 'OUT ' + (live('wx') ? SRC.wx.v.temp.toFixed(1) + ' °C' : '—') + ' · PHONE ' + (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : 'APK'));
     if (y < lim) { const ro = live('wx') ? rainOutlook(SRC.wx.v) : null; W.kv(scr, ir.x, y++, ir.w, 'RAIN', live('wx') ? rainText(ro) : tag('wx'), t.D, ro && (ro.state === 'now' || (ro.state === 'soon' && ro.mins <= 30)) ? t.B : t.N); }
+    if (y < lim) { const nx = agendaNext(), aw = awakeSecs(); W.kv(scr, ir.x, y++, ir.w, 'DAY', (aw != null ? 'AWAKE ' + durHM(aw) : 'WAKE ?') + ' · ' + (nx ? hhmm(nx.start) + ' ' + nx.title.toUpperCase() : 'NO EVENT'), t.D, nx && nx.start - now() < 900 ? t.RB : t.N); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
     y++;
     if (y + 5 <= lim) {
@@ -2398,7 +2399,7 @@ PAGES.S29 = { code: 'S29', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
 // ------------------------------------------------------------------ S28 QUICK SET
 PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
   keys: [['1', 'SIM', (app, arg) => { SET.sim = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); app && app.say('SIM MODE ' + SET.sim); }, ['SIM'], 'SIM [AUTO|ON|OFF]'],
-    ['2', 'WAKE', (app, arg) => wakeSet(onOff(arg, SET.wake)), ['WAKE'], 'WAKE [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
+    ['2', 'SCREEN', (app, arg) => { wakeSet(onOff(arg, SET.wake)); app && app.say('SCREEN KEEP-ON ' + (SET.wake ? 'ON' : 'OFF')); }, ['SCREEN', 'KEEPON', 'WAKELOCK'], 'SCREEN [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
     ['5', 'FEEDS', app => { fetchWx(); fetchTle(); fetchSatCat(true); log('SYS', 'FEEDS REFRESH'); app && app.say('ALL FEEDS · REFRESH REQUESTED'); }, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
     ['8', 'ARM', () => { armSensorsGesture(); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }, ['ARM', 'ARMSENSORS']]],
@@ -2406,7 +2407,7 @@ PAGES.S28 = { code: 'S28', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + ' MOBILE', t.TD);
     let y = ir.y; const cw = Math.floor((ir.w - 3) / 2);
-    const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['WAKE LOCK', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
+    const items = [['SIM ' + SET.sim, SET.sim !== 'OFF'], ['SCREEN ON', !!WAKE], ['FULLSCREEN', !!document.fullscreenElement], ['HAPTICS', SET.haptics],
       ['REFRESH FEEDS', false], ['ZOOM ' + Math.round(SET.scale * 100) + ' %', false], ['', false], ['ARM SENSORS', false]];
     items[6][0] = 'ZOOM +';
     items.forEach(([lab, on], i) => { const c = i % 2, rw = Math.floor(i / 2), bw = Math.floor(ir.w / 2);
@@ -2571,7 +2572,7 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
 // groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S02', 'S03']],
-  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'M08', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
+  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'M08', 'S25', 'M09', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
 ];
 
 // ---------------------------------------------------------------------------------------- antennes-relais (ANFR)
@@ -2703,6 +2704,296 @@ PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
     const cl = SRC.cell.v;
     kv('SERVING CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'APK ONLY', t.D, live('cell') ? t.N : t.F);
     if (y < ir.b) scr.put(ir.x, y++, clip('SECT = ANTENNA SECTOR FACING YOU (±60°)', ir.w), t.F);
+  } };
+
+// ---------------------------------------------------------------------------------------- réveil · agenda
+// RÉVEIL : point de départ du MET (bandeau) et de M09 DAY. Automatique : première activité de Grafit après
+// une coupure de 4 h ou plus, entre 03:00 et 14:00 ; corrigeable (WAKE 7:15, WAKE NOW). La dernière activité
+// avant la coupure sert d'heure de coucher approchée. L'APK pourra fournir le premier déverrouillage.
+const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [] };     // wake : epoch s ; hist : [{d, wake, bed}]
+function dayLoad() {
+  try { const j = JSON.parse(localStorage.getItem('grafit.day') || 'null'); if (j) Object.assign(DAYREC, j); } catch (e) { /* */ }
+}
+function daySave() { try { localStorage.setItem('grafit.day', JSON.stringify(DAYREC)); } catch (e) { /* */ } }
+const ymdOf = ts => { const d = new Date(ts * 1000); return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); };
+function daySetWake(ts, src) {
+  const prevBed = DAYREC.lastSeen && DAYREC.lastSeen < ts ? DAYREC.lastSeen : null;
+  DAYREC.wake = ts; DAYREC.src = src;
+  const d = ymdOf(ts), h = DAYREC.hist.find(x => x.d === d);
+  if (h) { h.wake = ts; h.src = src; } else DAYREC.hist.push({ d, wake: ts, src, bed: prevBed });
+  if (!h && DAYREC.hist.length > 1 && prevBed) DAYREC.hist[DAYREC.hist.length - 2].bed = prevBed;   // coucher de la veille
+  DAYREC.hist = DAYREC.hist.slice(-14);
+  daySave(); log('DAY', 'WAKE ' + hhmm(ts) + ' · ' + src);
+}
+// appelée au lancement, au retour au premier plan et chaque minute au premier plan
+function dayTick(resume = false) {
+  const t = now(), gap = DAYREC.lastSeen ? t - DAYREC.lastSeen : 0, hr = new Date().getHours();
+  if (resume && DAYREC.lastSeen && gap >= 4 * 3600 && hr >= 3 && hr < 14 && !(DAYREC.wake && ymdOf(DAYREC.wake) === ymdOf(t) && DAYREC.src === 'MANUAL'))
+    daySetWake(t, 'AUTO');
+  if (document.visibilityState !== 'hidden') { DAYREC.lastSeen = t; daySave(); }
+}
+const awakeSecs = () => DAYREC.wake && now() - DAYREC.wake < 30 * 3600 ? now() - DAYREC.wake : null;
+function cmdWake(app, arg) {
+  if (!arg || arg === 'NOW') { daySetWake(now(), 'MANUAL'); return app.say('WAKE · NOW ' + hhmm(now())); }
+  const m = arg.match(/^(\d{1,2})[:H.]?(\d{2})?$/);
+  if (m && +m[1] < 24) {
+    const d = new Date(); d.setHours(+m[1], +(m[2] || 0), 0, 0);
+    let ts = d.getTime() / 1000; if (ts > now() + 60) ts -= 86400;           // heure future : la veille
+    daySetWake(ts, 'MANUAL'); return app.say('WAKE · ' + hhmm(ts) + ' · AWAKE ' + durHM(now() - ts));
+  }
+  app.say('WAKE NOW · WAKE 7:15', true);
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') dayTick(true); else { DAYREC.lastSeen = now(); daySave(); } });
+
+// ---------------------------------------------------------------------------------------- iCalendar
+// Port de grafit/ical.py (lui-même port de lib/ical.lua) : DTSTART/DTEND/DURATION, SUMMARY, LOCATION,
+// STATUS:CANCELLED, EXDATE, RECURRENCE-ID, RRULE DAILY/WEEKLY/MONTHLY/YEARLY (INTERVAL, COUNT, UNTIL, BYDAY,
+// BYMONTHDAY, BYMONTH). TZID traité comme heure locale du téléphone. Temps en secondes epoch.
+const ICAL = (() => {
+  const DAYS = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+  const T = (y, mo, d, h = 12, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime() / 1000;
+  const D = t => { const x = new Date(t * 1000); return { y: x.getFullYear(), mo: x.getMonth() + 1, d: x.getDate(), h: x.getHours(), mi: x.getMinutes(), s: x.getSeconds(), wd: x.getDay() }; };
+  function ptime(v, params = '') {
+    const m = /^(\d{4})(\d{2})(\d{2})/.exec(v); if (!m) return [null, false];
+    const hms = /T(\d{2})(\d{2})(\d{2})/.exec(v);
+    const allDay = !hms || (params.includes('VALUE=DATE') && !params.includes('DATE-TIME'));
+    if (hms && v.endsWith('Z')) return [Date.UTC(+m[1], +m[2] - 1, +m[3], +hms[1], +hms[2], +hms[3]) / 1000, allDay];
+    return [T(+m[1], +m[2], +m[3], hms ? +hms[1] : 0, hms ? +hms[2] : 0, hms ? +hms[3] : 0), allDay];
+  }
+  const unesc = s => s.replace(/\\[nN]/g, ' ').replace(/\\([,;\\])/g, '$1');
+  function pdur(v) {
+    const g = re => { const m = re.exec(v); return m ? +m[1] : 0; };
+    return (v[0] === '-' ? -1 : 1) * (((g(/(\d+)W/) * 7 + g(/(\d+)D/)) * 24 + g(/T.*?(\d+)H/)) * 3600 + g(/T.*?(\d+)M/) * 60 + g(/T.*?(\d+)S/));
+  }
+  function parse(text) {
+    text = text.replace(/\r?\n[ \t]/g, '');
+    const out = []; let ev = null; let depth = 0;
+    for (const line of text.split(/\r?\n/)) {
+      if (line === 'BEGIN:VEVENT') { ev = { start: null, stop: null, allDay: false, dur: null, title: null, loc: '', uid: null, status: null, rrule: null, recur: null, ex: new Set() }; depth = 0; continue; }
+      if (line === 'END:VEVENT') { if (ev && ev.start != null && ev.status !== 'CANCELLED') out.push(ev); ev = null; continue; }
+      if (!ev) continue;
+      if (line.startsWith('BEGIN:')) { depth++; continue; }              // VALARM : on ignore son SUMMARY
+      if (line.startsWith('END:')) { depth--; continue; }
+      if (depth) continue;
+      const p = /^([A-Za-z0-9-]+)([^:]*):(.*)$/.exec(line); if (!p) continue;
+      const [, name, params, value] = p;
+      if (name === 'DTSTART') [ev.start, ev.allDay] = ptime(value, params);
+      else if (name === 'DTEND') ev.stop = ptime(value, params)[0];
+      else if (name === 'DURATION') ev.dur = pdur(value);
+      else if (name === 'SUMMARY') ev.title = unesc(value);
+      else if (name === 'LOCATION') ev.loc = unesc(value);
+      else if (name === 'UID') ev.uid = value;
+      else if (name === 'STATUS') ev.status = value;
+      else if (name === 'RRULE') ev.rrule = value;
+      else if (name === 'RECURRENCE-ID') ev.recur = ptime(value, params)[0];
+      else if (name === 'EXDATE') for (const v of value.split(',')) { const t = ptime(v, params)[0]; if (t != null) ev.ex.add(t); }
+    }
+    for (const e of out) {
+      if (e.title == null) e.title = '(NO TITLE)';
+      if (e.stop == null) e.stop = e.start + (e.dur != null ? e.dur : (e.allDay ? 86400 : 0));
+    }
+    return out;
+  }
+  function expand(ev, a, b) {
+    const r = {}; ev.rrule.split(';').forEach(kv => { const [k, v] = kv.split('='); if (k && v) r[k] = v; });
+    const iv = +r.INTERVAL || 1, count = r.COUNT ? +r.COUNT : null, until = r.UNTIL ? ptime(r.UNTIL)[0] : null;
+    const start = ev.start, len = ev.stop - ev.start, B = D(start), out = []; let n = 0, it = 0;
+    const emit = t => { if (until != null && t > until) return false; if (count != null && n >= count) return false;
+      if (t >= start) { n++; if (t + len >= a && t <= b && !ev.ex.has(t)) out.push(t); } return true; };
+    const at = (y, mo, d) => T(y, mo, d, B.h, B.mi, B.s);
+    if (r.FREQ === 'DAILY') { for (let k = 0; it++ < 3000; k++) { const t = at(B.y, B.mo, B.d + k * iv); if (t > b || !emit(t)) break; } }
+    else if (r.FREQ === 'WEEKLY') {
+      const wd = (r.BYDAY ? r.BYDAY.match(/[A-Z]{2}/g).map(x => DAYS[x]).filter(x => x != null) : [B.wd]).sort((x, y) => (x + 6) % 7 - (y + 6) % 7);
+      const monday = B.d - (B.wd + 6) % 7;
+      outer: for (let k = 0; it++ < 3000; k++) for (const w of wd) { const t = at(B.y, B.mo, monday + k * 7 * iv + (w + 6) % 7); if (t > b || !emit(t)) break outer; }
+    } else if (r.FREQ === 'MONTHLY') {
+      outer: for (let k = 0; it++ < 3000; k++) {
+        const fm = new Date(B.y, B.mo - 1 + k * iv, 1, 12), y = fm.getFullYear(), mo = fm.getMonth() + 1, nd = new Date(y, mo, 0).getDate();
+        let days = [];
+        if (r.BYDAY) for (const [, o, dn] of r.BYDAY.matchAll(/([+-]?\d*)([A-Z]{2})/g)) {
+          const lst = []; for (let d = 1; d <= nd; d++) if (new Date(y, mo - 1, d, 12).getDay() === DAYS[dn]) lst.push(d);
+          const oi = +o || 0; if (!oi) days.push(...lst); else if (oi > 0 && oi <= lst.length) days.push(lst[oi - 1]); else if (oi < 0 && lst.length + oi >= 0) days.push(lst[lst.length + oi]);
+        } else for (const s of (r.BYMONTHDAY || String(B.d)).match(/-?\d+/g)) { let d = +s; if (d < 0) d = nd + 1 + d; days.push(d); }
+        days.sort((x, y2) => x - y2);
+        for (const d of days) { if (d < 1 || d > nd) continue; const t = at(y, mo, d); if (t > b || !emit(t)) break outer; }
+      }
+    } else if (r.FREQ === 'YEARLY') {
+      for (let k = 0; it++ < 3000; k++) { const t = at(B.y + k * iv, r.BYMONTH ? +r.BYMONTH : B.mo, B.d); if (D(t).d !== B.d) continue; if (t > b || !emit(t)) break; }
+    }
+    return out;
+  }
+  function occurrences(events, a, b) {
+    const over = new Set(events.filter(e => e.recur != null && e.uid).map(e => e.uid + '@' + e.recur)), occ = [];
+    for (const e of events) {
+      const len = e.stop - e.start;
+      if (e.rrule && e.recur == null) { for (const t of expand(e, a, b)) if (!(e.uid && over.has(e.uid + '@' + t))) occ.push({ start: t, stop: t + len, title: e.title, loc: e.loc, allDay: e.allDay, uid: e.uid }); }
+      else if (e.stop >= a && e.start <= b) occ.push({ start: e.start, stop: e.stop, title: e.title, loc: e.loc, allDay: e.allDay, uid: e.uid });
+    }
+    return occ.sort((x, y) => x.start - y.start);
+  }
+  return { parse, occurrences, T, D };
+})();
+
+// ---------------------------------------------------------------------------------------- agenda
+// Sources : FILE (import .ics), APK (agenda Android via grafit-native), SIM (démonstration). Seules les
+// occurrences d'une fenêtre [−7 j, +120 j] sont gardées sur le téléphone ; le fichier lui-même ne l'est pas.
+const AGENDA = { occ: [], src: 'NONE', t: 0, name: '', reminded: new Set() };
+const AG_WIN = [-7 * 86400, 120 * 86400];
+function agendaSave() { try { localStorage.setItem('grafit.agenda', JSON.stringify({ occ: AGENDA.occ, src: AGENDA.src, t: AGENDA.t, name: AGENDA.name })); } catch (e) { /* */ } }
+function agendaLoad() { try { const j = JSON.parse(localStorage.getItem('grafit.agenda') || 'null'); if (j && j.src !== 'SIM') Object.assign(AGENDA, j); } catch (e) { /* */ } }
+function agendaSet(occ, src, name = '') {
+  const a = now() + AG_WIN[0], b = now() + AG_WIN[1];
+  AGENDA.occ = occ.filter(o => o.stop >= a && o.start <= b).map(o => ({ start: o.start, stop: o.stop, title: o.title, loc: o.loc || '', allDay: !!o.allDay, uid: o.uid || '' }));
+  AGENDA.src = src; AGENDA.t = now(); AGENDA.name = name;
+  if (src !== 'SIM') agendaSave();
+}
+function agendaImportText(text, name) {
+  if (!/BEGIN:VCALENDAR/.test(text.slice(0, 2000))) { log('CAL', 'IMPORT · NOT AN ICALENDAR FILE', true); return 0; }
+  const evs = ICAL.parse(text), occ = ICAL.occurrences(evs, now() + AG_WIN[0], now() + AG_WIN[1]);
+  agendaSet(occ, 'FILE', name); log('CAL', 'IMPORT ' + (name || '.ICS') + ' · ' + AGENDA.occ.length + ' EVENTS IN 4 MONTHS');
+  return AGENDA.occ.length;
+}
+function agendaImport(app) {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.ics,text/calendar';
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (!f) return; f.text().then(tx => { const n = agendaImportText(tx, f.name.toUpperCase()); app && app.say(n ? 'CAL · ' + n + ' EVENTS IMPORTED' : 'CAL · NOT AN .ICS FILE', !n); }); };
+  inp.click();
+}
+// APK : detail.agenda = [{start, stop (epoch s ou ms), title, loc, allDay}] (CalendarContract.Instances)
+window.addEventListener('grafit-native', e => {
+  const a = e.detail && e.detail.agenda; if (!Array.isArray(a)) return;
+  const s = v => v > 1e11 ? Math.round(v / 1000) : v;
+  agendaSet(a.map(o => ({ start: s(o.start), stop: s(o.stop || o.end || o.start), title: o.title || '(NO TITLE)', loc: o.loc || '', allDay: !!o.allDay, uid: o.uid || '' })), 'APK', 'ANDROID');
+});
+function agendaSim() {
+  if (AGENDA.src !== 'NONE' && AGENDA.src !== 'SIM') return;
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0); const D0 = d0.getTime() / 1000, H = 3600;
+  const L = [[D0 + 17 * H, 1, 'ATELIER · NIXIE IN-14'], [D0 + 19.5 * H, 1.5, 'APPEL PROJET PK5-CDAP1'], [D0 + 86400 + 9 * H, 1, 'LIVRAISON PCB'], [D0 + 2 * 86400, 24, 'SALON MAKER', true],
+    [D0 + 3 * 86400 + 14 * H, 2, 'DENTISTE'], [D0 + 6 * 86400 + 10 * H, 3, 'RESTAURATION RADIO']];
+  agendaSet(L.map(([s, h, ti, ad]) => ({ start: s, stop: s + h * H, title: ti, allDay: !!ad })), 'SIM', 'DEMO');
+}
+// rappels 15 min avant (comme due_reminders du PC) + vibration
+function agendaTick() {
+  if (!AGENDA.occ.length && SET.sim !== 'OFF') agendaSim();
+  const t = now();
+  for (const o of AGENDA.occ) {
+    if (o.start > t + 900) break;
+    const id = (o.uid || o.title) + '@' + o.start;
+    if (!o.allDay && o.start > t && !AGENDA.reminded.has(id)) {
+      AGENDA.reminded.add(id); log('CAL', hhmm(o.start) + ' ' + o.title.toUpperCase() + ' · IN ' + Math.ceil((o.start - t) / 60) + ' MIN', true); haptic([40, 60, 40, 60, 40]);
+    }
+  }
+}
+const agendaNext = (t = now()) => AGENDA.occ.find(o => o.start > t && !o.allDay) || null;
+const agendaUpcoming = (n, t = now()) => {
+  const today = ymdOf(t), out = [];
+  for (const o of AGENDA.occ) { if (o.stop > t || (o.allDay && ymdOf(o.start) === today)) out.push(o); if (out.length >= n) break; }
+  return out;
+};
+const DOW3 = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const whenTxt = o => { const d = new Date(o.start * 1000); return DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + ' · ' + (o.allDay ? 'ALL DAY' : hhmm(o.start)); };
+const inTxt = s => s < 3600 ? Math.ceil(s / 60) + ' MIN' : (s < 86400 ? durHM(s) : Math.round(s / 86400) + ' D');
+
+// ------------------------------------------------------------------ S25 AGENDA (même code que sur le PC)
+PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CALENDAR', 'CAL', 'EVENTS'], fps: 1, off: 0,
+  keys: [['1', 'IMPORT', app => agendaImport(app), ['IMPORT', 'ICS'], 'IMPORT (.ICS FILE)'],
+    ['2', '◂ MONTH', () => { PAGES.S25.off--; }, ['MONTH-']], ['3', 'MONTH ▸', (app, arg) => { PAGES.S25.off = arg === '0' ? 0 : PAGES.S25.off + 1; }, ['MONTH', 'MONTH+'], 'MONTH [0]'],
+    ['4', 'GOOGLE', () => window.open('https://calendar.google.com', '_blank'), ['GOOGLE', 'GCAL']],
+    ['5', 'FORGET', app => { AGENDA.occ = []; AGENDA.src = 'NONE'; try { localStorage.removeItem('grafit.agenda'); } catch (e) { /* */ } app.say('CAL · AGENDA REMOVED FROM THE PHONE'); }, ['FORGET']]],
+  draw(scr, r) {
+    const src = AGENDA.src === 'NONE' ? 'NO SOURCE' : AGENDA.src + (AGENDA.src === 'SIM' ? '' : ' · ' + hhmm(AGENDA.t));
+    const ir = W.panel(scr, r, this.code, this.name, src, AGENDA.src === 'SIM' ? t.T : (AGENDA.src === 'NONE' ? t.TF : t.TD));
+    let y = ir.y; const nd = new Date();
+    const wk = (() => { const d = new Date(Date.UTC(nd.getFullYear(), nd.getMonth(), nd.getDate())); const dn = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - dn); return Math.ceil(((d - Date.UTC(d.getUTCFullYear(), 0, 1)) / 864e5 + 1) / 7); })();
+    const doy = Math.floor((new Date(nd.getFullYear(), nd.getMonth(), nd.getDate()) - new Date(nd.getFullYear(), 0, 0)) / 864e5);
+    scr.put(ir.x, y, ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'][nd.getDay()] + ' ' + pad2(nd.getDate()) + '.' + pad2(nd.getMonth() + 1) + '.' + String(nd.getFullYear()).slice(2), t.B);
+    W.rjust(scr, ir.r, y++, 'DAY ' + doy + ' · W' + wk, t.D);
+    // mois : lundi d'abord, dimanches en rouge, jours avec événement marqués ▪
+    const m0 = new Date(nd.getFullYear(), nd.getMonth() + this.off, 1), mo = m0.getMonth(), first = (m0.getDay() + 6) % 7, ndays = new Date(m0.getFullYear(), mo + 1, 0).getDate();
+    const rows = Math.ceil((first + ndays) / 7), cw = Math.max(4, Math.floor(ir.w / 7)), gx = ir.x + Math.floor((ir.w - cw * 7) / 2);
+    y++;
+    sub(scr, ir.x, y++, ir.w, ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'][mo] + ' ' + m0.getFullYear(), this.off ? '[*3 0] TODAY' : '', t.F);
+    ['M', 'T', 'W', 'T', 'F', 'S', 'S'].forEach((d, i) => scr.put(gx + i * cw + Math.floor(cw / 2), y, d, i === 6 ? t.RB : t.D)); y++;
+    const marked = new Set();
+    for (const o of AGENDA.occ) { for (let s = o.start; s < Math.max(o.stop, o.start + 1); s += 86400) marked.add(ymdOf(s)); }
+    const today = ymdOf(now());
+    for (let k = 0; k < ndays; k++) {
+      const cell = first + k, cx = gx + (cell % 7) * cw + Math.floor(cw / 2) - 1, cy = y + Math.floor(cell / 7), key = m0.getFullYear() + pad2(mo + 1) + pad2(k + 1);
+      if (cy >= ir.b) break;
+      scr.put(cx, cy, rjustS(k + 1, 2), key === today ? t.INV : (cell % 7 === 6 ? t.R : t.N));
+      if (marked.has(key)) scr.put(cx + 2, cy, '▪', t.B);
+    }
+    y += rows + 1;
+    // prochains événements
+    if (y + 2 > ir.b) return;
+    const up = agendaUpcoming(ir.b - y - 1), nx = agendaNext();
+    sub(scr, ir.x, y++, ir.w, 'NEXT EVENTS', nx ? 'IN ' + inTxt(nx.start - now()) : '', nx && nx.start - now() < 900 ? t.RB : t.D);
+    if (!up.length) {
+      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? '[*1] IMPORT AN .ICS FILE (GOOGLE CALENDAR:' : '', AGENDA.src === 'NONE' ? 'SETTINGS › EXPORT) · APK: PHONE CALENDAR' : '']
+        .forEach(l => { if (l && y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F); });
+      return;
+    }
+    for (const o of up) {
+      if (y >= ir.b) break;
+      const cur = o.start <= now() && o.stop > now(), soon = !o.allDay && o.start > now() && o.start - now() < 900;
+      scr.put(ir.x, y, whenTxt(o), cur ? t.B : (soon ? t.RB : t.D));
+      scr.put(ir.x + 17, y++, clip(o.title.toUpperCase() + (o.loc ? ' · ' + o.loc.toUpperCase() : ''), ir.w - 17), cur ? t.B : (soon ? t.R : t.N));
+    }
+  } };
+
+// ------------------------------------------------------------------ M09 DAY : temps éveillé, journée
+PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
+  keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]']],
+  draw(scr, r) {
+    const aw = awakeSecs(), ir = W.panel(scr, r, this.code, this.name, DAYREC.wake ? 'WAKE ' + hhmm(DAYREC.wake) + ' · ' + DAYREC.src : 'NO WAKE TIME', DAYREC.wake ? t.TD : t.TF);
+    let y = ir.y; const [hw, x2] = twoUp(ir);
+    W.readout(scr, ir.x, y, hw, 'AWAKE', aw != null ? Math.floor(aw / 3600) + ':' + pad2(aw % 3600 / 60) : '', 'h', t.N, aw != null && aw >= 16 * 3600, true);
+    const nx = agendaNext();
+    W.readout(scr, x2, y, ir.r - x2, 'NEXT EVENT', nx ? hhmm(nx.start) : '', '', t.N, false, true);
+    y += 6;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (!DAYREC.wake) { kv('WAKE TIME', 'WAKE NOW · WAKE 7:15', t.F); }
+    else {
+      const h = DAYREC.hist.find(x => x.d === ymdOf(DAYREC.wake)), bed = h && h.bed;
+      kv('WOKE UP', hhmm(DAYREC.wake) + ' · ' + DAYREC.src);
+      if (bed) kv('NIGHT (PHONE IDLE)', hhmm(bed) + ' → ' + hhmm(DAYREC.wake) + ' · ' + durHM(DAYREC.wake - bed));
+      kv('16 H AWAKE AT', hhmm(DAYREC.wake + 16 * 3600), aw != null && aw >= 16 * 3600 ? t.RB : t.N);
+    }
+    kv('NEXT', nx ? clip(nx.title.toUpperCase(), 20) + ' · IN ' + inTxt(nx.start - now()) : (AGENDA.src === 'NONE' ? 'NO AGENDA · 6.3' : 'NONE'));
+    y++;
+    // ligne de la journée : réveil → +18 h, maintenant, événements, coucher du soleil
+    if (DAYREC.wake && y + 4 <= ir.b) {
+      const a = DAYREC.wake, b = a + 18 * 3600;
+      sub(scr, ir.x, y++, ir.w, 'TODAY', hhmm(a) + ' → ' + hhmm(b), t.D);
+      const ev = AGENDA.occ.filter(o => !o.allDay && o.stop > a && o.start < b);
+      let sunset = null; try { const h = here(), k = Math.floor(now() / 600); if (this.sunK !== k) { this.sunK = k; this.sunset = A.sunInfo(now(), h.lat, h.lon).set; } sunset = this.sunset; } catch (e) { /* */ }
+      const tn = now();
+      scr.vector(ir.x, y, ir.w, 2, (c, bx) => {
+        const X = tt => bx.x + Math.max(0, Math.min(1, (tt - a) / (b - a))) * bx.w, yy = bx.y + bx.ch * 0.6, d = bx.d;
+        c.fillStyle = COL.K; c.fillRect(bx.x, yy - 3 * d, bx.w, 6 * d);
+        c.fillStyle = COL.D; c.fillRect(bx.x, yy - 3 * d, X(tn) - bx.x, 6 * d);
+        for (const o of ev) { c.fillStyle = COL.N; c.fillRect(X(o.start), yy - 7 * d, Math.max(3 * d, X(o.stop) - X(o.start)), 14 * d); }
+        c.fillStyle = COL.RR; c.fillRect(X(a + 16 * 3600) - d, yy - 7 * d, 2 * d, 14 * d);
+        c.fillStyle = COL.N; c.beginPath(); c.moveTo(X(tn), yy + 6 * d); c.lineTo(X(tn) - 4 * d, yy + 12 * d); c.lineTo(X(tn) + 4 * d, yy + 12 * d); c.fill();
+        if (sunset) { c.strokeStyle = COL.D; c.lineWidth = d; dash(c, d, 2, 2); c.beginPath(); c.moveTo(X(sunset), yy - 8 * d); c.lineTo(X(sunset), yy + 8 * d); c.stroke(); dash(c, d, 0); }
+      });
+      y += 2;
+      for (let k = 0; k <= 18; k += 3) { const tt = a + k * 3600, cx = ir.x + Math.round(k / 18 * (ir.w - 1)); const lab = hhmm(tt).slice(0, 2); scr.put(Math.max(ir.x, Math.min(ir.r - 2, cx - 1)), y, lab, t.F); }
+      y++;
+      if (y < ir.b) scr.put(ir.x, y++, clip('▬ EVENTS  ▲ NOW  ' + (sunset ? '┊ SUNSET  ' : '') + '│ 16 H', ir.w), t.F);
+      y++;
+    }
+    // 7 derniers réveils
+    const hs = DAYREC.hist.slice(-7);
+    if (hs.length && y + 2 <= ir.b) {
+      sub(scr, ir.x, y++, ir.w, 'LAST WAKES', 'WAKE · NIGHT', t.D);
+      for (const h of hs.slice().reverse()) {
+        if (y >= ir.b) break;
+        const d = new Date(h.wake * 1000);
+        scr.put(ir.x, y, DOW3[d.getDay()] + ' ' + pad2(d.getDate()), h.d === ymdOf(now()) ? t.B : t.D);
+        scr.put(ir.x + 8, y, hhmm(h.wake), t.N); scr.put(ir.x + 14, y, h.src === 'AUTO' ? 'A' : 'M', t.F);
+        W.rjust(scr, ir.r, y++, h.bed ? 'NIGHT ' + durHM(h.wake - h.bed) : '', t.D);
+      }
+    }
   } };
 
 // ---------------------------------------------------------------------------------------- rendu (canvas)
@@ -3107,8 +3398,9 @@ class App {
     scr.put(x, 0, 'v' + CFG.VERSION + ' · ' + CFG.BUILD, t.TD);
     const right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
     W.rjust(scr, Wd - 2, 0, right, t.T); scr.put(Wd - 2, 0, '●', t.TR);
-    const up = now() - this.t0, d = Math.floor(up / 86400), rest = up % 86400;
-    scr.put(6, 1, 'MET T+' + d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60), t.TD);
+    // MET : temps écoulé depuis le réveil (M09 DAY) ; à défaut, depuis le lancement de Grafit
+    const aw = awakeSecs(), up = Math.floor(aw != null ? aw : now() - this.t0), d = Math.floor(up / 86400), rest = up % 86400;
+    scr.put(6, 1, 'MET T+' + (aw != null ? pad2(up / 3600) + ':' + pad2(up % 3600 / 60) + ':' + pad2(up % 60) : d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60)), t.TD);
     const sim = SOURCES.some(([k]) => SRC[k].mode === 'sim');
     let xr = Wd - 1;
     if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); xr -= 1; }
@@ -3241,10 +3533,13 @@ function slowTick() {                                   // 1 Hz : alarmes, FCU, 
   const T = now();
   if (T - WX.tryT > (WX.failed ? 300 : 900) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
   rainWatch();
+  agendaTick();
+  if (T - DAYT >= 60) { DAYT = T; dayTick(); }
 }
+let DAYT = 0;
 
 function boot() {
-  loadSettings(); restoreTrend(); failRestore();
+  loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); dayTick(true);
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
   R.measure(); relayout();
