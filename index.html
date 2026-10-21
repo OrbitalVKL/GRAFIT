@@ -888,16 +888,16 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.7.1', BUILD: '20261013', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.8.0', BUILD: '20261021', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // FCU virtuel : mêmes seuils que PK8-S16A CLAUDE.md §2 · fw 0.4.1 (Alarms.inc [FCU])
   FCU: { fw: '0.4.1', T1Max: 50, T2Max: 35, DavMin: 1013.25, WxMaxAge: 4500, BlinkFastMs: 1000, BlinkSlowMs: 2500, LampStepMs: 300 },
   // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
   AL: { BattLowCaut: 20, BattLowCrit: 10, HystPct: 3, BattTempCaut: 40, BattTempCrit: 45, HystTemp: 3,
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
-    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, SensorsFrozen: 10, ConfirmSecs: 5 },
+    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
-  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,precipitation_probability,precipitation,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max&past_days=1&forecast_days=7&timezone=auto',
+  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
   WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
   TLE_URL: 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
 };
@@ -911,13 +911,69 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
+// groupes du pavé ; un changement de groupe ramène au format .1. Depuis la 1.8.0 la météo et la journée ont leur
+// groupe (4 WEATHER, 5 DAY) et COMMS, NAV, CMD passent en 6, 7, 8 : les numéros ne suivent plus ceux de Grafit PC.
+// Les adresses citées dans les textes viennent de pageAddr() : elles suivent toute réorganisation.
+const GROUPS = [
+  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S02', 'S03']],
+  ['4', 'WEATHER', 'ПОГОДА', ['M08', 'S19', 'M10']], ['5', 'DAY', 'СУТКИ', ['S25', 'M09', 'S29']],
+  ['6', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['7', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['8', 'CMD', 'КОМ', ['S28']],
+];
+function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
+
 // ---------------------------------------------------------------------------------------- journal de bord (FEED)
-const FEED = [];
-function log(tag, msg, warn = false) { FEED.push([now(), tag, msg, warn]); if (FEED.length > 300) FEED.shift(); }
+// Journal conservé sur l'appareil (2 000 entrées, plusieurs jours) et exportable : LOG EXPORT (3.3 [*1]).
+// Chaque passage au premier plan / en arrière-plan est noté (VIS) pour situer les alarmes dans la journée.
+const FEED = [], LOG_KEY = 'grafit.log', LOG_MAX = 2000;
+try { const j = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); if (Array.isArray(j)) FEED.push(...j.slice(-LOG_MAX)); } catch (e) { /* */ }
+let logDirty = false;
+function logSave() {
+  if (!logDirty) return; logDirty = false;
+  try { localStorage.setItem(LOG_KEY, JSON.stringify(FEED)); } catch (e) { FEED.splice(0, FEED.length >> 1); }   // stockage plein : on allège
+}
+function log(tag, msg, warn = false) {
+  FEED.push([Math.round(now() * 10) / 10, tag, msg, warn ? 1 : 0]); if (FEED.length > LOG_MAX) FEED.shift();
+  logDirty = true; if (warn) logSave();
+}
+setInterval(logSave, 5000);
+// premier plan : sert aussi de délai de grâce aux contrôles de fraîcheur des capteurs (les flux s'arrêtent en arrière-plan)
+const VIS = { fg: Date.now() / 1000, bg: 0 };
+function visChange(fg) {
+  const t = Date.now() / 1000;
+  if (fg) { if (VIS.bg >= VIS.fg) log('VIS', 'FOREGROUND · AWAY ' + durHM(t - VIS.bg)); VIS.fg = t; }
+  else { if (VIS.fg > VIS.bg) log('VIS', 'BACKGROUND · ' + durHM(t - VIS.fg) + ' ON SCREEN'); VIS.bg = t; logSave(); }
+}
+document.addEventListener('visibilitychange', () => visChange(document.visibilityState === 'visible'));
+window.addEventListener('pagehide', () => { logDirty = true; logSave(); });
+const settling = () => document.visibilityState === 'hidden' || now() - VIS.fg < CFG.AL.SensorsGrace;
+function logText() {
+  const L = ['GRAFIT OS MOBILE ' + CFG.VERSION + ' · ' + (APK ? 'APK' : 'WEB') + ' · EXPORTED ' + new Date().toString(), navigator.userAgent, ''];
+  let day = '';
+  for (const [ts, tg, msg, w] of FEED) {
+    const d = new Date(ts * 1000), dd = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    if (dd !== day) { day = dd; L.push('', '== ' + dd); }
+    L.push(hhmmss(ts) + (w ? ' ! ' : '   ') + ljust(tg, 4) + ' ' + msg);
+  }
+  L.push('', '== STATE AT EXPORT · ' + (document.visibilityState === 'hidden' ? 'BACKGROUND' : 'FOREGROUND ' + durHM(now() - VIS.fg)));
+  for (const [k, n] of SOURCES) { const s = SRC[k]; L.push(ljust(n, 10) + ' ' + ljust(s.mode, 4) + (s.liveT ? ' · LAST ' + hhmmss(s.liveT) + ' (' + Math.round(now() - s.liveT) + ' s)' : '')); }
+  L.push('ANN  ' + ANN.map(a => a.key + '=' + SEV[a.lvl]).join(' '));
+  L.push('DAY  ' + JSON.stringify({ wake: DAYREC.wake, src: DAYREC.src, alarms: DAYREC.alarms, usage: DAYREC.usage }));
+  return L.join('\n') + '\n';
+}
+function logExport(app) {
+  const d = new Date(), name = 'grafit-log-' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + '.txt';
+  logDirty = true; logSave();
+  const txt = logText();
+  if (APK && nativeCmd({ cmd: 'saveLog', name, text: txt })) return app && app.say('LOG · WRITING ' + name);
+  try {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain' })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); app && app.say('LOG · ' + name + ' · ' + FEED.length + ' EVENTS');
+  } catch (e) { app && app.say('LOG EXPORT FAILED', true); }
+}
 
 // ---------------------------------------------------------------------------------------- sources
 class Hist {
@@ -977,9 +1033,14 @@ window.addEventListener('grafit-native', e => {
   const d = e.detail || {};
   if (d.update) {
     Object.assign(UPD, d.update);
-    if (UPD.available && UPD.said !== UPD.latest) { UPD.said = UPD.latest; log('SYS', 'APK UPDATE ' + UPD.latest + ' AVAILABLE · 7.1 [*9]'); }
+    if (UPD.available && UPD.said !== UPD.latest) { UPD.said = UPD.latest; log('SYS', 'APK UPDATE ' + UPD.latest + ' AVAILABLE · ' + pageAddr('S28') + ' [*9]'); }
     if (UPD.state === 'error' && UPD.msg) log('SYS', UPD.msg, true);
   }
+  if (d.logSaved) { log('SYS', 'LOG EXPORTED · ' + d.logSaved); APP && APP.say('LOG · ' + d.logSaved); }
+  if (d.logError) { log('SYS', 'LOG EXPORT FAILED · ' + String(d.logError).toUpperCase(), true); APP && APP.say('LOG EXPORT FAILED', true); }
+  if (d.resumed) visChange(true);
+  if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
+  if (d.nextAlarm != null && typeof dayAlarm === 'function') dayAlarm(+d.nextAlarm / 1000);
   if (d.steps != null) stepsFeed(+d.steps);
   if (d.thermal) {
     const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
@@ -988,7 +1049,7 @@ window.addEventListener('grafit-native', e => {
     if (st >= 3) failOpen('THERM', st >= 4 ? 3 : 2, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[st], { title: 'ANDROID THERMAL STATUS', thr: 'CAUT SEVERE · CRIT CRITICAL', val: THERM_NAMES[st], act: 'STOP HEAVY APPS · UNPLUG · SHADE' });
     else if (failOpenOf('THERM')) failClose('THERM', THERM_NAMES[st]);
   }
-  if (d.firstUnlock) { const fu = d.firstUnlock > 1e11 ? d.firstUnlock / 1000 : +d.firstUnlock; if (typeof dayUnlock === 'function') dayUnlock(fu, d.lastLock ? d.lastLock / 1000 : null); }
+  if (d.firstUnlock) { const fu = d.firstUnlock > 1e11 ? d.firstUnlock / 1000 : +d.firstUnlock; if (typeof dayUnlock === 'function') dayUnlock(fu, d.lastLock ? d.lastLock / 1000 : null, +d.glances || 0); }
   if (d.baro != null) feedLive('baro', { hpa: +d.baro });
   if (d.battTemp != null) feedLive('btemp', { c: +d.battTemp });
   if (d.light != null) feedLive('light', { lux: +d.light });
@@ -1108,11 +1169,14 @@ async function fetchWx() {
     if (dl && dl.time) {
       let d0 = dl.time.indexOf(c.time.slice(0, 10)); if (d0 < 0) d0 = 0;
       days = dl.time.slice(d0).map((d, k) => { const i = d0 + k; return { date: d, code: dl.weather_code[i], tmax: dl.temperature_2m_max[i], tmin: dl.temperature_2m_min[i],
-        psum: dl.precipitation_sum[i], pop: dl.precipitation_probability_max[i], ph: dl.precipitation_hours[i], wmax: dl.wind_speed_10m_max[i] }; });
+        psum: dl.precipitation_sum[i], pop: dl.precipitation_probability_max[i], ph: dl.precipitation_hours[i], wmax: dl.wind_speed_10m_max[i],
+        gmax: dl.wind_gusts_10m_max ? dl.wind_gusts_10m_max[i] : null, wdir: dl.wind_direction_10m_dominant ? dl.wind_direction_10m_dominant[i] : null,
+        uv: dl.uv_index_max ? dl.uv_index_max[i] : null, rise: dl.sunrise && dl.sunrise[i] ? abs(dl.sunrise[i]) : null, set: dl.sunset && dl.sunset[i] ? abs(dl.sunset[i]) : null }; });
     }
     feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, dew: c.dew_point_2m, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
       dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni,
-      hms: h.time.map(abs), hpr: h.precipitation || null, hcode: h.weather_code || null,
+      hms: h.time.map(abs), hpr: h.precipitation || null, hcode: h.weather_code || null, happ: h.apparent_temperature || null, hwind: h.wind_speed_10m || null,
+      hgust: h.wind_gusts_10m || null, hdir: h.wind_direction_10m || null, hcloud: h.cloud_cover || null, huv: h.uv_index || null, hvis: h.visibility || null, hday: h.is_day || null,
       mt: m && m.time ? m.time.map(abs) : null, mp: m ? m.precipitation : null, days, at: now() });
     if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
     failClose('WX');
@@ -1216,7 +1280,12 @@ function simValue(k, t) {
       for (let k = -4; k < 40; k++) { const e = q0 + (k + 1) * 9e5; mt.push(e); const x = (e - r0) / 60000; mp.push(x > 0 && x <= 75 ? +(0.15 + 0.6 * Math.sin(Math.PI * x / 75)).toFixed(1) : 0); }
       const days = []; const dc = [61, 3, 80, 2, 0, 63, 1];
       for (let k = 0; k < 7; k++) { const d = new Date(Date.now() + k * 864e5); days.push({ date: d.toISOString().slice(0, 10), code: dc[k], tmax: 17 + 3 * Math.sin(k), tmin: 9 + 2 * Math.cos(k), psum: [3.4, 0.2, 6.1, 0, 0, 8.8, 0][k], pop: [80, 20, 70, 10, 0, 90, 5][k], ph: [3, 0, 4, 0, 0, 7, 0][k], wmax: 20 + 8 * k % 15 }); }
-      return { temp: 17.6, feel: 16.9, dew: 12.4, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, hms, hpr, mt, mp, days, at: t };
+      const hcode = hpop.map((p, i) => hpr[i] >= 1.5 ? 63 : (hpr[i] > 0 ? (i % 7 ? 61 : 80) : (p > 45 ? 3 : (p > 25 ? 2 : (p > 12 ? 1 : 0)))));
+      const hh = i => new Date(hms[i]).getHours(), hday = hms.map((_, i) => hh(i) >= 8 && hh(i) < 19 ? 1 : 0);
+      const happ = ht.map((v, i) => +(v - 1.2 - (i % 5) * 0.2).toFixed(1)), hwind = hms.map((_, i) => Math.round(12 + 8 * Math.sin(i / 7))), hgust = hwind.map((v, i) => Math.round(v * 1.7 + (i % 4)));
+      const hdir = hms.map((_, i) => (220 + i * 3) % 360), hcloud = hpop.map(p => Math.min(100, p + 20)), huv = hms.map((_, i) => hday[i] ? Math.max(0, +(3.2 * Math.sin((hh(i) - 8) / 11 * Math.PI)).toFixed(1)) : 0), hvis = hpr.map(v => v > 0 ? 8000 : 24000);
+      days.forEach((d, k) => { const b = new Date(d.date + 'T00:00'); d.rise = b.getTime() + (8 * 60 + 12 + k) * 60000; d.set = b.getTime() + (18 * 60 + 55 - 2 * k) * 60000; d.uv = 3 - (k % 3); d.gmax = 30 + 6 * (k % 4); d.wdir = 200 + 20 * k; });
+      return { temp: 17.6, feel: 16.9, dew: 12.4, rh: 72, p: simValue('baro', t).hpa, wind: 14, dir: 240, gust: 27, code: 3, day: 1, hp, ht, hpop, htime, ni: 24, hms, hpr, hcode, happ, hwind, hgust, hdir, hcloud, huv, hvis, hday, mt, mp, days, at: t };
     }
     default: return null;
   }
@@ -1340,13 +1409,15 @@ const ANN = [
   { key: 'NET', lab: 'NET LINK', tag: 'NET', title: 'NET LINK', act: 'CHECK WI-FI / MOBILE DATA', lim: `CAUT RTT ≥ ${AL.NetRttCaut} ms · CRIT OFFLINE`,
     fn: c => { if (!live('net')) return navigator.onLine === false ? [2, 'OFFLINE'] : null; const n = SRC.net.v; if (!n.online) return [2, 'OFFLINE']; return [n.rtt != null ? hi(n.rtt, c, AL.NetRttCaut, null, AL.HystRtt) : 0, (n.rtt != null ? n.rtt + ' ms' : 'ONLINE')]; } },
   { key: 'GNSS', lab: 'GNSS', tag: 'NAV', title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `CAUT ACC > ${AL.GnssAccCaut} m · CRIT NO FIX ${AL.GnssLostSecs} s`,
-    fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - g.fixT > AL.GnssLostSecs) return [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
+    fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - Math.max(g.fixT, VIS.fg) > AL.GnssLostSecs) return settling() ? [c, 'RESUMING'] : [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
   { key: 'NOISE', lab: 'NOISE', tag: 'AUD', title: 'MICROPHONE LEVEL', act: 'UNCALIBRATED · RELATIVE TO FULL SCALE', lim: `CAUT ≥ ${AL.NoiseCaut} dBFS ${AL.NoiseSecs} s`, confirm: AL.NoiseSecs,
     fn: c => { if (!live('mic')) return null; const d = SRC.mic.v.db; return [hi(d, c, AL.NoiseCaut, null, 3), d.toFixed(0) + ' dB']; } },
   { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
     fn: () => { if (!live('orient')) return null; return [SRC.orient.v.abs ? 0 : 1, SRC.orient.v.abs ? 'ABS' : 'REL']; } },
-  { key: 'SENSORS', lab: 'SENSORS', tag: 'HW', confirm: 0, title: 'MOTION SENSOR STREAM', act: 'REOPEN GRAFIT · CHECK SENSOR PERMISSION', lim: `CRIT STREAM FROZEN > ${AL.SensorsFrozen} s`,
-    fn: () => { const s = SRC.motion; if (s.mode !== 'live') return s.mode === 'sim' ? [0, 'SIM'] : null; const age = now() - s.liveT; return age > AL.SensorsFrozen ? [2, 'FROZEN ' + Math.round(age) + ' s'] : [0, 'OK']; } },
+  // flux de mouvement : il s'arrête légitimement en arrière-plan / écran éteint. Contrôle suspendu tant que Grafit
+  // n'est pas au premier plan, puis délai de grâce au retour (SensorsGrace) avant de juger le flux figé.
+  { key: 'SENSORS', lab: 'SENSORS', tag: 'HW', confirm: 3, title: 'MOTION SENSOR STREAM', act: 'REOPEN GRAFIT · CHECK SENSOR PERMISSION', lim: `CRIT STREAM FROZEN > ${AL.SensorsFrozen} s IN FOREGROUND`,
+    fn: c => { const s = SRC.motion; if (s.mode !== 'live') return s.mode === 'sim' ? [0, 'SIM'] : null; if (settling()) return [c, 'RESUMING']; const age = now() - Math.max(s.liveT, VIS.fg); return age > AL.SensorsFrozen ? [2, 'FROZEN ' + Math.round(age) + ' s · FG ' + Math.round(now() - VIS.fg) + ' s'] : [0, 'OK']; } },
 ];
 ANN.forEach(a => { a.lvl = 0; a.val = '—'; a.pend = null; a.since = 0; if (a.confirm == null) a.confirm = AL.ConfirmSecs; });
 const ALS = { caut: 0, crit: 0, fcu: {} };
@@ -1381,7 +1452,7 @@ function fcu() {
   const dav = !pr ? 'rf' : (pr.p < F.DavMin ? 'r' : 'off');
   const dep = !pr ? 'rf' : (TREND.level === PT.ALERT ? 'rf' : (TREND.level === PT.WATCH ? 'rs' : 'off'));
   let t1 = 'na', t2 = 'na';
-  if (live('btemp')) t1 = (SRC.btemp.mode === 'live' && now() - SRC.btemp.liveT > 30) ? 'rf' : (SRC.btemp.v.c > F.T1Max ? 'r' : 'off');
+  if (live('btemp')) t1 = (SRC.btemp.mode === 'live' && !settling() && now() - Math.max(SRC.btemp.liveT, VIS.fg) > 30) ? 'rf' : (SRC.btemp.v.c > F.T1Max ? 'r' : 'off');
   const ext = live('amb') ? SRC.amb.v.c : (live('wx') ? SRC.wx.v.temp : null);
   if (ext != null) t2 = ext > F.T2Max ? 'r' : 'off';
   return { hv: 'w', zag, dav, dep, t1, t2, p: pr ? pr.p : null, psrc: pr ? pr.src : 'NO SOURCE', ext };
@@ -1425,19 +1496,19 @@ const FAIL_DOC = {
   GLOAD: ['Peak acceleration over the limit: shock, fall or impact. The level is latched ' + AL.GLatchSecs + ' s after the peak so a short hit is not missed.',
     ['Check the phone for damage (screen, camera)', 'If unexpected: secure the mount / pocket', 'Acknowledge once checked']],
   NET: ['Round-trip time over the limit (CAUT) or no network at all (CRIT). Weather, TLE, satellites and towers feeds stall.',
-    ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see 4.3 TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
+    ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see ' + pageAddr('M07') + ' TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
   GNSS: ['Position accuracy worse than the limit (CAUT) or no fix for ' + AL.GnssLostSecs + ' s (CRIT). NAV formats freeze on the last position.',
-    ['Go outdoors, clear view of the sky', 'Enable precise location for this app', 'See 5.3 SATS: satellites used and DOP']],
+    ['Go outdoors, clear view of the sky', 'Enable precise location for this app', 'See ' + pageAddr('M05') + ' SATS: satellites used and DOP']],
   NOISE: ['Microphone level above the limit for ' + AL.NoiseSecs + ' s. Relative to full scale: not a calibrated dB(A) meter.',
-    ['Move away from the source or wear protection', 'Disarm the mic in 4.4 AUDIO if not needed']],
+    ['Move away from the source or wear protection', 'Disarm the mic in ' + pageAddr('S08') + ' AUDIO if not needed']],
   COMPASS: ['Heading is relative: the browser gives no magnetic north reference. KURS, SKY and TOWERS bearings may be offset.',
     ['Figure-8 calibration away from metal', 'Use HDG UP off for a north-up display']],
   SENSORS: ['Motion sensor stream silent for more than ' + AL.SensorsFrozen + ' s while live: browser throttled the page or permission was revoked.',
-    ['Bring Grafit to the foreground', 'Re-arm sensors: 7.1 ARM (or command ARM)', 'Reopen the app if it persists']],
+    ['Bring Grafit to the foreground', 'Re-arm sensors: ' + pageAddr('S28') + ' ARM (or command ARM)', 'Reopen the app if it persists']],
   'FCU.dav': ['QNH under 1013.25 hPa: lower than standard pressure. Information lamp of the virtual FCU, not a fault.',
     ['Watch 2.3 BARO for a falling trend (ДЕП)']],
   'FCU.dep': ['Pressure falling fast over 3 h (ДЕП fw 0.4.1): WATCH ≥ 0.7 hPa/h and ≥ 1.0 hPa, ALERT ≥ 1.3 hPa/h and ≥ 2.0 hPa. Often ahead of a front or a storm.',
-    ['Check 6.2 FORECAST for rain and wind', 'Secure outdoor gear · plan shelter', 'See 2.3 BARO for the drop and the rate']],
+    ['Check ' + pageAddr('M08') + ' FORECAST for rain and wind', 'Secure outdoor gear · plan shelter', 'See 2.3 BARO for the drop and the rate']],
   'FCU.t1': ['Internal (battery) temperature above 50 °C on the FCU lamp ТЕМП1.',
     ['Same as BATT TEMP: unplug, remove the case, shade']],
   'FCU.t2': ['External temperature above 35 °C (ambient sensor, else weather): heat stress for the phone and for you.',
@@ -1447,7 +1518,7 @@ const FAIL_DOC = {
   THERM: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
     ['Close navigation / camera / games', 'Unplug the charger · remove the case', 'Move to the shade · let it cool']],
   WX: ['Weather feed unreachable: forecast, rain warning and QNH from the weather service stop updating.',
-    ['Check the network (4.1 NETWORK)', 'Retry: command WX REFRESH', 'Older data stays shown until it ages out']],
+    ['Check the network (' + pageAddr('S12') + ' NETWORK)', 'Retry: command WX REFRESH', 'Older data stays shown until it ages out']],
 };
 function failSave() { try { localStorage.setItem('grafit.fail', JSON.stringify({ seq: FAIL.seq, list: FAIL.list.slice(0, 60) })); } catch (e) { /* */ } }
 function failRestore() {
@@ -1957,15 +2028,24 @@ PAGES.S02 = { code: 'S02', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
   } };
 
 // ------------------------------------------------------------------ S03 FEED
-PAGES.S03 = { code: 'S03', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2,
+PAGES.S03 = { code: 'S03', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2, off: 0,
+  keys: [['1', 'EXPORT', app => logExport(app), ['EXPORT', 'SAVE'], 'EXPORT (TXT FILE)'],
+    ['2', 'OLDER', function () { PAGES.S03.off = Math.min(Math.max(0, FEED.length - 5), PAGES.S03.off + (PAGES.S03.ph || 20)); }, ['OLDER', 'BACK']],
+    ['3', 'NEWEST', function () { PAGES.S03.off = 0; }, ['NEWEST', 'LATEST']]],
   draw(scr, r) {
-    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS · NEWEST FIRST');
-    const rows = FEED.slice(-ir.h).reverse();
+    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS · ' + (this.off ? '−' + this.off : 'NEWEST FIRST'));
+    this.ph = ir.h;
+    const rows = FEED.slice(0, FEED.length - this.off).slice(-ir.h).reverse();
+    let yy = ir.y, day = null;
     rows.forEach(([ts, tg, msg, warn], i) => {
-      const yy = ir.y + i;
+      if (yy >= ir.b) return;
+      const d = ymdOf(ts);
+      if (day !== null && d !== day && yy < ir.b) { const dt = new Date(ts * 1000); sub(scr, ir.x, yy++, ir.w, '▼ ' + DOW3[dt.getDay()] + ' ' + pad2(dt.getDate()) + '.' + pad2(dt.getMonth() + 1), '', t.F); }
+      day = d; if (yy >= ir.b) return;
       scr.put(ir.x, yy, hhmmss(ts), t.F);
       scr.put(ir.x + 9, yy, ljust(tg, 4), warn ? t.RB : t.B);
-      scr.put(ir.x + 14, yy, clip(msg, ir.w - 14), warn ? t.R : (i === 0 ? t.N : t.D));
+      scr.put(ir.x + 14, yy, clip(msg, ir.w - 14), warn ? t.R : (i === 0 && !this.off ? t.N : t.D));
+      yy++;
     });
   } };
 
@@ -2274,36 +2354,7 @@ PAGES.M04 = { code: 'M04', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
   } };
 
 // ------------------------------------------------------------------ S19 WEATHER
-PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO'], fps: 1,
-  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
-  draw(scr, r) {
-    const w = SRC.wx.v;
-    const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
-    let y = ir.y;
-    if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO WEATHER DATA · NEEDS NETWORK'); return; }
-    const [hw, x2] = twoUp(ir);
-    W.readout(scr, ir.x, y, hw, 'TEMP', w.temp.toFixed(1), '°C', t.N, w.temp > CFG.FCU.T2Max, true, 3);
-    W.readout(scr, x2, y, hw, 'FEELS', w.feel.toFixed(1), '°C', t.N, false, true, 3);
-    y += 6;
-    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
-    kv('CONDITION', WMO[w.code] || 'CODE ' + w.code);
-    kv('PRESSURE MSL', w.p.toFixed(1) + ' hPa', w.p < CFG.FCU.DavMin ? t.R : t.N);
-    kv('RAIN', rainText(rainOutlook(w)));
-    kv('HUMIDITY', Math.round(w.rh) + ' %');
-    kv('WIND · GUSTS', Math.round(w.wind) + ' · ' + Math.round(w.gust) + ' km/h ' + card(w.dir));
-    kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : CFG.HOME.name);
-    y++;
-    if (ir.b - y >= 8 && w.hp) {
-      const span = Math.min(w.hp.length, Math.floor((ir.w - 10) / 1)), i0 = Math.max(0, Math.min(w.hp.length - span, w.ni - Math.floor(span * 0.6)));
-      const vals = w.hp.slice(i0, i0 + span), lo = Math.floor(Math.min(...vals, CFG.FCU.DavMin) - 2), hiV = Math.ceil(Math.max(...vals, CFG.FCU.DavMin) + 1);
-      const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
-      sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', '◂ PAST · FORECAST ▸');
-      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: lo, vmax: hiV, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
-        styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: [[CFG.FCU.DavMin, 0, 'ДАВ', 'lo']] });
-    }
-  } };
-
-// ------------------------------------------------------------------ M08 FORECAST : pluie à venir, 24 h, 7 jours
+// ------------------------------------------------------------------ graphique de pluie (4.2 WEATHER : 6 h au quart d'heure)
 // Barres de pluie (axe gauche, mm), probabilité en pointillés (axe droit, 0–100 %) ; barres ajustées à la largeur.
 function rainChart(scr, r, mm, o = {}) {
   const n = mm.length, ph = r.h - 2, pop = o.pop || null;
@@ -2338,74 +2389,313 @@ function rainChart(scr, r, mm, o = {}) {
     }
   });
 }
-const FC = { mode: null, cur: '24H' };                  // graphique : 6 H au quart d'heure ou 24 H à l'heure (*2)
-PAGES.M08 = { code: 'M08', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
-  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']], ['2', '6H/24H', (app, arg, w) => { FC.mode = w === '6H' || w === '24H' ? w : (FC.cur === '6H' ? '24H' : '6H'); }, ['6H24H', '6H', '24H'], '6H · 24H']],
+// ------------------------------------------------------------------ météo : outils communs aux formats 4.1 · 4.2 · 4.3
+// Pictogrammes dessinés (pas de police d'icônes) : soleil / lune, nuages, pluie, neige, brouillard, orage.
+const WXC = { BG: 'rgb(' + BG.join(',') + ')' };
+const wxKind = c => c == null ? 'na' : c <= 1 ? 'clear' : c === 2 ? 'part' : c === 3 ? 'cloud' : c <= 48 ? 'fog' : c <= 57 ? 'drizzle'
+  : c <= 67 ? 'rain' : c <= 77 ? 'snow' : c <= 82 ? 'rain' : c <= 86 ? 'snow' : 'storm';
+const WX_SEV = c => c == null ? -1 : c >= 95 ? 9 : (c >= 71 && c <= 77) || c >= 85 ? 8 : c >= 80 ? 7 : c >= 61 ? 6 : c >= 51 ? 5 : c >= 45 ? 4 : c;
+function wxIcon(c, cx, cy, s, code, day = 1, col = COL.N, dim = COL.D) {
+  const k = wxKind(code), d = s / 10;
+  c.save(); c.lineCap = 'round'; c.lineJoin = 'round';
+  const sun = (x, y, r) => {
+    c.strokeStyle = col; c.fillStyle = col; c.lineWidth = Math.max(1, 1.1 * d);
+    if (day) {
+      c.beginPath(); c.arc(x, y, r, 0, 2 * Math.PI); c.fill();
+      for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; c.beginPath(); c.moveTo(x + Math.cos(a) * r * 1.45, y + Math.sin(a) * r * 1.45); c.lineTo(x + Math.cos(a) * r * 1.95, y + Math.sin(a) * r * 1.95); c.stroke(); }
+    } else {
+      c.beginPath(); c.arc(x, y, r * 1.35, 0, 2 * Math.PI); c.fill();
+      c.fillStyle = WXC.BG; c.beginPath(); c.arc(x + r * 0.75, y - r * 0.55, r * 1.15, 0, 2 * Math.PI); c.fill();
+    }
+  };
+  const cloud = (x, y, w, fill) => {                  // nuage : trois bosses posées sur une base plate
+    c.beginPath();
+    c.moveTo(x - w * 0.5, y + w * 0.18);
+    c.arc(x - w * 0.26, y + w * 0.02, w * 0.2, Math.PI * 0.75, Math.PI * 1.55);
+    c.arc(x + w * 0.04, y - w * 0.1, w * 0.27, Math.PI * 1.15, Math.PI * 1.9);
+    c.arc(x + w * 0.3, y + w * 0.04, w * 0.19, Math.PI * 1.45, Math.PI * 0.35);
+    c.closePath();
+    c.fillStyle = WXC.BG; c.fill(); c.strokeStyle = fill; c.lineWidth = Math.max(1, 1.2 * d); c.stroke();
+  };
+  if (k === 'clear') sun(cx, cy, 2.6 * d);
+  else if (k === 'part') { sun(cx - 2.2 * d, cy - 2 * d, 2.2 * d); cloud(cx + 1.4 * d, cy + 1.4 * d, 9 * d, col); }
+  else if (k === 'cloud' || k === 'na') cloud(cx, cy, 11 * d, k === 'na' ? dim : col);
+  else if (k === 'fog') { c.strokeStyle = col; c.lineWidth = Math.max(1, 1.2 * d); for (let i = -1; i <= 1; i++) { c.beginPath(); c.moveTo(cx - 5 * d + (i & 1) * d * 1.5, cy + i * 3 * d); c.lineTo(cx + 5 * d - (i & 1) * d * 1.5, cy + i * 3 * d); c.stroke(); } }
+  else {
+    cloud(cx, cy - 2 * d, 10 * d, col);
+    c.strokeStyle = col; c.fillStyle = col; c.lineWidth = Math.max(1, 1.2 * d);
+    if (k === 'drizzle' || k === 'rain') {
+      const n = k === 'rain' ? 3 : 2;
+      for (let i = 0; i < n; i++) { const x = cx + (i - (n - 1) / 2) * 3.2 * d; c.beginPath(); c.moveTo(x + d, cy + 2.6 * d); c.lineTo(x - (k === 'rain' ? 0.6 : 0.2) * d, cy + (k === 'rain' ? 6 : 4.6) * d); c.stroke(); }
+    } else if (k === 'snow') {
+      for (let i = 0; i < 3; i++) { c.beginPath(); c.arc(cx + (i - 1) * 3.2 * d, cy + (i === 1 ? 5.2 : 3.8) * d, 0.9 * d, 0, 2 * Math.PI); c.fill(); }
+    } else {                                             // orage : éclair
+      c.beginPath(); c.moveTo(cx + 0.8 * d, cy + 1.6 * d); c.lineTo(cx - 1.4 * d, cy + 4.6 * d); c.lineTo(cx + 0.6 * d, cy + 4.6 * d); c.lineTo(cx - 1 * d, cy + 7.4 * d); c.stroke();
+    }
+  }
+  c.restore();
+}
+// pictogramme dans une case de texte (2 colonnes × 1 ligne) au point (x, y) de la grille
+function wxGlyph(scr, x, y, code, day = 1, col = 'N') {
+  scr.vector(x, y, 2, 1, (c, b) => wxIcon(c, b.x + b.cw, b.y + b.ch * 0.52, Math.min(b.ch * 0.62, b.cw * 1.15), code, day, COL[col], COL.D), false);
+}
+// heures du flux : indice de l'heure qui contient l'instant ms
+const wxHour = (w, ms) => { if (!w.hms) return -1; let i = w.hms.findIndex(x => x > ms); if (i < 0) i = w.hms.length; return i - 1; };
+// synthèse d'une tranche [t0, t1[ (ms) : températures, pluie, vent, temps dominant (le plus marqué qui dure)
+function wxSpan(w, t0, t1) {
+  if (!w.hms) return null;
+  const I = []; for (let i = 0; i < w.hms.length; i++) if (w.hms[i] >= t0 && w.hms[i] < t1) I.push(i);
+  if (!I.length) return null;
+  const at = (a, i) => a && a[i] != null ? a[i] : null, vals = a => a ? I.map(i => a[i]).filter(v => v != null) : [];
+  const T = vals(w.ht), AP = vals(w.happ), P = vals(w.hpop), R = vals(w.hpr), G = vals(w.hgust), V = vals(w.hwind), U = vals(w.huv);
+  const cnt = {}; I.forEach(i => { const c = at(w.hcode, i); if (c != null) cnt[c] = (cnt[c] || 0) + 1; });
+  const need = Math.max(1, Math.round(I.length / 4));
+  const codes = Object.keys(cnt).map(Number).sort((a, b) => WX_SEV(b) - WX_SEV(a));
+  const code = codes.find(c => cnt[c] >= need) ?? codes[0] ?? null;
+  const max = a => a.length ? Math.max(...a) : null, min = a => a.length ? Math.min(...a) : null;
+  const iT = w.ht ? I.reduce((b, i) => (w.ht[i] ?? -99) > (w.ht[b] ?? -99) ? i : b, I[0]) : null;
+  const iG = w.hgust ? I.reduce((b, i) => (w.hgust[i] ?? -1) > (w.hgust[b] ?? -1) ? i : b, I[0]) : null;
+  const iU = w.huv ? I.reduce((b, i) => (w.huv[i] ?? -1) > (w.huv[b] ?? -1) ? i : b, I[0]) : null;
+  const wetH = I.filter(i => (at(w.hpr, i) || 0) >= RAIN_MMH || (at(w.hpop, i) || 0) >= RAIN_POP);
+  return { I, code, day: w.hday ? Math.max(...I.map(i => w.hday[i] || 0)) : 1, tmin: min(T), tmax: max(T), amin: min(AP), amax: max(AP),
+    pop: max(P), mm: R.reduce((a, v) => a + v, 0), gust: max(G), wind: max(V), uv: max(U),
+    tAt: iT != null ? w.hms[iT] : null, gAt: iG != null ? w.hms[iG] : null, uAt: iU != null ? w.hms[iU] : null,
+    gDir: iG != null && w.hdir ? w.hdir[iG] : null, wet: wetH.map(i => w.hms[i]) };
+}
+// créneaux de pluie (heures humides consécutives) : [[début, fin], …] en ms
+function wxWetRuns(sp) {
+  const out = []; for (const t0 of sp ? sp.wet : []) { const l = out[out.length - 1]; if (l && t0 - l[1] <= 3600000) l[1] = t0 + 3600000; else out.push([t0, t0 + 3600000]); }
+  return out;
+}
+const UV_TXT = u => u == null ? '—' : u < 3 ? 'LOW' : u < 6 ? 'MODERATE' : u < 8 ? 'HIGH' : u < 11 ? 'VERY HIGH' : 'EXTREME';
+const tRange = (a, b) => a == null ? '—' : Math.round(a) + '–' + Math.round(b) + '°';
+const wxHead = (w, pg) => live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING');
+const dayOfMs = ms => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const dayRec = (w, ms) => { if (!w.days) return null; const d = new Date(ms), key = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); return w.days.find(x => x.date === key) || null; };
+
+// frise horaire dans r : pictogrammes (1 ligne), courbe + barres de pluie, axe (1 ligne), heures (1 ligne)
+function wxTimeline(scr, r, w, t0, hours) {
+  const i0 = wxHour(w, t0); if (i0 < 0 || !w.ht) return 0;
+  const n = Math.min(hours, w.ht.length - i0); if (n < 4) return 0;
+  const idx = Array.from({ length: n }, (_, k) => i0 + k), T = idx.map(i => w.ht[i]), AP = w.happ ? idx.map(i => w.happ[i]) : null;
+  const R = idx.map(i => (w.hpr && w.hpr[i]) || 0), P = w.hpop ? idx.map(i => w.hpop[i]) : null, tn = Date.now();
+  const lo = Math.floor(Math.min(...T, ...(AP || T).filter(v => v != null)) - 1), hi = Math.ceil(Math.max(...T) + 1);
+  const ph = r.h - 3, gw = Math.max(slen(hi + '°'), slen(lo + '°')), ax = r.x + gw, pw = r.r - ax - 1;
+  if (ph < 3 || pw < n) return 0;
+  const colX = k => ax + 1 + Math.floor((k + 0.5) * pw / n);
+  // pictogrammes toutes les 3 h (ou 2 h si la place le permet)
+  const step = pw / n >= 3 ? 2 : 3;
+  idx.forEach((i, k) => { const hr = new Date(w.hms[i]).getHours(); if (hr % step === 0 && k < n - 1) wxGlyph(scr, colX(k) - 1, r.y, w.hcode ? w.hcode[i] : null, w.hday ? w.hday[i] : 1, w.hms[i] + 3600000 <= tn ? 'D' : 'N'); });
+  const y0 = r.y + 1;
+  for (let j = 0; j < ph; j++) scr.put(ax, y0 + j, '│', t.L);
+  scr.put(ax, y0 + ph, '└' + '─'.repeat(pw), t.L);
+  scr.put(r.x, y0, rjustS(hi + '°', gw), t.D); scr.put(r.x, y0 + ph - 1, rjustS(lo + '°', gw), t.D);
+  idx.forEach((i, k) => { const hr = new Date(w.hms[i]).getHours(); if (hr % 3 === 0) { const cx = colX(k); scr.put(cx, y0 + ph, '┴', t.L); scr.put(Math.min(r.r - 2, cx - 1), y0 + ph + 1, pad2(hr), w.hms[i] <= tn && tn < w.hms[i] + 3600000 ? t.B : t.F); } });
+  const rmax = [1, 2, 5, 10, 20].find(v => v >= Math.max(...R) * 1.05) || Math.ceil(Math.max(...R));
+  const tMax = T.indexOf(Math.max(...T)), tMin = T.indexOf(Math.min(...T));
+  scr.vector(ax + 1, y0, pw, ph, (c, b) => {
+    const d = b.d, sw = b.w / n, X = k => b.x + (k + 0.5) * sw, Y = v => b.y + (0.4 + (hi - v) / (hi - lo) * (ph - 0.9)) * b.ch, yb = b.y + b.h;
+    c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3); c.beginPath();
+    for (let v = Math.ceil(lo / 5) * 5; v <= hi; v += 5) { const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x, yy); c.lineTo(b.x + b.w, yy); }
+    c.stroke(); dash(c, d, 0);
+    // passé grisé
+    const kNow = (tn - w.hms[i0]) / 3600000;
+    if (kNow > 0) { c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(b.x, b.y, Math.min(b.w, kNow * sw), b.h); }
+    // pluie : barres depuis le bas, hauteur ∝ mm (40 % de la hauteur au plus), teinte selon la probabilité
+    R.forEach((v, k) => {
+      if (!v) return;
+      const hgt = Math.max(2 * d, Math.min(1, v / rmax) * b.h * 0.4), p = P ? P[k] : 100;
+      c.fillStyle = p >= 60 ? COL.N : (p >= 30 ? COL.D : COL.F); c.globalAlpha = 0.85;
+      c.fillRect(Math.round(b.x + k * sw + sw * 0.18), Math.round(yb - hgt), Math.max(1, Math.round(sw * 0.64)), Math.round(hgt));
+      c.globalAlpha = 1;
+    });
+    // ressenti en pointillés, température en trait plein
+    if (AP && AP.every(v => v != null)) { c.beginPath(); W.mono(c, AP.map((v, k) => [X(k), Y(v)])); c.strokeStyle = COL.D; c.lineWidth = 1.1 * d; dash(c, d, 2, 3); c.stroke(); dash(c, d, 0); }
+    c.beginPath(); W.mono(c, T.map((v, k) => [X(k), Y(v)])); c.strokeStyle = COL.N; c.lineWidth = 1.8 * d; c.stroke();
+    [tMax, tMin].forEach(k => { c.beginPath(); c.arc(X(k), Y(T[k]), 2.2 * d, 0, 2 * Math.PI); c.fillStyle = COL.N; c.fill(); });
+    if (kNow >= 0 && kNow <= n) { const xn = b.x + kNow * sw; c.strokeStyle = COL.N; c.lineWidth = d; c.beginPath(); c.moveTo(xn, b.y); c.lineTo(xn, yb); c.stroke(); }
+  });
+  // valeurs du maxi et du mini posées près des points
+  const lab = (k, above) => { const s2 = Math.round(T[k]) + '°', x = Math.max(ax + 1, Math.min(r.r - slen(s2), colX(k) - 1)); const fy = (hi - T[k]) / (hi - lo) * (ph - 0.9) + 0.4; const yy = y0 + Math.max(0, Math.min(ph - 1, Math.round(fy + (above ? -1.1 : 0.7)))); scr.put(x, yy, s2, t.B); };
+  lab(tMax, true); if (tMin !== tMax) lab(tMin, false);
+  return r.h;
+}
+
+// ------------------------------------------------------------------ 4.1 M08 FORECAST : la journée d'un coup d'œil
+// Bandeau du jour, deux afficheurs (maxi · pluie), quatre tranches de 6 h à partir de maintenant, frise horaire
+// depuis le réveil (température, ressenti, pluie, ciel) et les repères : vent, soleil, UV.
+const PERIOD_N = ['NIGHT', 'MORNING', 'AFTNOON', 'EVENING'], PERIOD_T = ['NIGHT', 'TMW AM', 'TMW PM', 'TMW EVE'];
+PAGES.M08 = { code: 'M08', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
+  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
-    const ir = W.panel(scr, r, this.code, this.name, live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : 'OPEN-METEO · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING'), srcStyle('wx'));
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
     let y = ir.y;
     if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO FORECAST · NEEDS NETWORK'); return; }
-    if (!w.mt && !w.hpr && !w.days) { noData(scr, ir.x, y, ir.w, 'FORECAST NOT IN FEED · [*1] REFRESH'); return; }
-    const T = Date.now(), ro = rainOutlook(w, T) || { state: 'dry' }, [hw, x2] = twoUp(ir);
-    // pluie : quand, et combien sur 24 h
-    let lab = 'RAIN', val = 'dry', unit = ro.state === 'dry6' ? '6 H' : '24 H', al = false;
-    if (ro.state === 'now') { lab = 'RAINING'; val = ro.rate.toFixed(1); unit = 'mm/h'; al = ro.rate >= 7.6; }
-    else if (ro.state === 'soon') { if (ro.mins < 100) { lab = 'RAIN IN'; val = String(ro.mins); unit = 'MIN'; } else { lab = 'RAIN AT'; val = hm(ro.at); unit = ''; } }
-    else if (ro.state === 'later') { lab = 'RAIN' + (ro.pop != null ? ' ' + ro.pop + ' %' : '') + ' AT'; val = hm(ro.at); unit = ''; }
-    W.readout(scr, ir.x, y, hw, lab, val, unit, t.N, al, true);
-    const hi = w.hms ? w.hms.findIndex(x => x > T) : -1, h24 = hi >= 0 && w.hpr ? w.hpr.slice(hi, hi + 24) : [];
-    const tot = h24.reduce((a, v) => a + (v || 0), 0);
-    W.readout(scr, x2, y, ir.r - x2, 'NEXT 24 H', h24.length ? tot.toFixed(1) : '', 'mm', t.N, false, true);
+    if (!w.hms) { noData(scr, ir.x, y, ir.w, 'FORECAST NOT IN FEED · [*1] REFRESH'); return; }
+    const T = Date.now(), d0 = new Date(T), m0 = dayOfMs(T), today = wxSpan(w, m0, m0 + 864e5), dr = dayRec(w, T) || {};
+    // bandeau : ciel du jour, mini/maxi, pluie
+    const code = dr.code != null ? dr.code : today && today.code;
+    wxGlyph(scr, ir.x, y, code, 1);
+    scr.put(ir.x + 3, y, clip(DOW[d0.getDay()] + ' ' + d0.getDate() + ' · ' + (WMO[code] || WMO_S(code)), ir.w - 3), t.B);
+    W.rjust(scr, ir.r, y, tRange(dr.tmin ?? (today && today.tmin), dr.tmax ?? (today && today.tmax)), t.N);
+    y += 2;
+    // afficheurs : maxi restant du jour · prochaine pluie
+    const rest = wxSpan(w, T - 3600000, m0 + 864e5) || today, [hw, x2] = twoUp(ir);
+    const ro = rainOutlook(w, T) || { state: 'dry' };
+    const hiV = rest && rest.tmax != null ? rest.tmax : (dr.tmax ?? null);
+    W.readout(scr, ir.x, y, hw, rest && rest.tAt && rest.tAt > T - 3600000 ? 'HIGH · ' + hm(rest.tAt) : 'HIGH', hiV != null ? Math.round(hiV) + '' : '', '°C', t.N, hiV != null && hiV > CFG.FCU.T2Max, true, 2);
+    let lab = 'RAIN', val = 'dry', unit = '', al = false;
+    if (ro.state === 'now') { lab = 'RAINING · mm/h'; val = ro.rate.toFixed(1); al = ro.rate >= 7.6; }
+    else if (ro.state === 'soon') { if (ro.mins < 100) { lab = 'RAIN IN'; val = String(ro.mins); unit = 'MIN'; } else { lab = 'RAIN AT'; val = hm(ro.at); } }
+    else if (ro.state === 'later') { lab = 'RAIN' + (ro.pop != null ? ' ' + ro.pop + ' %' : '') + ' AT'; val = hm(ro.at); }
+    else { lab = 'RAIN TODAY'; val = today ? today.mm.toFixed(1) : '0'; unit = 'mm'; }
+    W.readout(scr, x2, y, ir.r - x2, lab, val, unit, t.N, al, true);
     y += 6;
     const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
     kv('OUTLOOK', rainText(ro), ro.state === 'now' || ro.state === 'soon' ? t.B : t.N);
-    const d0 = w.days && w.days[0];
-    if (d0) kv('TODAY', WMO_S(d0.code) + ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C · ' + d0.pop + ' % · ' + d0.psum.toFixed(1) + ' mm');
+    // tranches de 6 h
+    const nb = ir.b - y >= 20 ? 4 : 3, slot0 = Math.floor(d0.getHours() / 6);
+    if (ir.b - y >= nb + 2) {
+      y++; sub(scr, ir.x, y++, ir.w, 'PERIODS', ir.w >= 42 ? 'SKY · °C · RAIN · GUST' : '°C · RAIN', t.F);
+      for (let k = 0; k < nb; k++) {
+        const sl = slot0 + k, a = m0 + sl * 6 * 3600000, sp = wxSpan(w, a, a + 6 * 3600000); if (!sp) continue;
+        const next = sl >= 4, lbl = next ? (sl === 4 ? PERIOD_N[0] : PERIOD_T[sl - 4]) : PERIOD_N[sl];
+        const cur = k === 0, wetp = sp.pop >= 50 || sp.mm >= 1;
+        scr.put(ir.x, y, ljust(lbl, 7), cur ? t.B : t.N);
+        wxGlyph(scr, ir.x + 8, y, sp.code, sp.day);
+        scr.put(ir.x + 11, y, clip(WMO_S(sp.code), 8), wetp ? t.N : t.D);
+        scr.put(ir.x + 20, y, rjustS(tRange(sp.tmin, sp.tmax), 7), t.N);
+        scr.put(ir.x + 28, y, rjustS((sp.pop ?? 0) + '%', 4), wetp ? t.B : t.D);
+        if (ir.w >= 38) scr.put(ir.x + 33, y, rjustS(sp.mm >= 0.05 ? sp.mm.toFixed(1) : '·', 4), sp.mm >= 1 ? t.N : t.F);
+        if (ir.w >= 42 && sp.gust != null) W.rjust(scr, ir.r, y, String(Math.round(sp.gust)), sp.gust >= 60 ? t.RB : (sp.gust >= 40 ? t.N : t.D));
+        y++;
+      }
+    }
+    // frise : du réveil (ou 06:00) jusqu'à minuit, au moins les 12 heures à venir
+    const nKv = 3, room = ir.b - y - 1 - nKv;
+    if (room >= 7) {
+      const wake = DAYREC.wake && ymdOf(DAYREC.wake) === ymdOf(T / 1000) ? DAYREC.wake * 1000 : m0 + 6 * 3600000;
+      let a = Math.floor(Math.min(wake, T) / 3600000) * 3600000; const b = Math.max(m0 + 864e5, T + 12 * 3600000);
+      if ((b - a) / 3600000 > 24) a = b - 24 * 3600000;
+      y++; sub(scr, ir.x, y++, ir.w, 'HOURLY', '━ °C ┅ FEELS ▮ RAIN', t.F);
+      const h = Math.min(room - 1, 11);
+      wxTimeline(scr, new Rect(ir.x, y, ir.w, h), w, a, Math.round((b - a) / 3600000));
+      y += h;
+    }
+    // repères
+    const sp = rest || today;
+    if (sp && sp.gust != null) kv('WIND', 'MAX ' + Math.round(sp.wind) + ' · GUST ' + Math.round(sp.gust) + ' km/h' + (sp.gAt ? ' ' + hm(sp.gAt) : '') + (sp.gDir != null ? ' ' + card(sp.gDir) : ''), sp.gust >= 60 ? t.RB : t.N);
+    if (dr.rise && dr.set) kv('SUN', hm(dr.rise) + ' → ' + hm(dr.set) + ' · ' + durHM((dr.set - dr.rise) / 1000) + (T < dr.set && T > dr.rise ? ' · SETS IN ' + durHM((dr.set - T) / 1000) : ''));
+    const uv = dr.uv != null ? dr.uv : (today && today.uv);
+    if (uv != null) kv('UV MAX', Math.round(uv) + ' · ' + UV_TXT(uv) + (today && today.uAt && uv >= 1 ? ' · ' + hm(today.uAt) : ''), uv >= 6 ? t.B : t.N);
+  } };
+
+// ------------------------------------------------------------------ 4.2 S19 WEATHER : conditions actuelles + pluie à 6 h
+const WXP = { chart: 'AUTO' };                     // graphique du bas : pluie à 6 h (quart d'heure) ou pression 48 h
+PAGES.S19 = { code: 'S19', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
+  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']],
+    ['2', 'RAIN/PRESS', (app, arg, wd) => { WXP.chart = wd === '6H' ? 'RAIN' : wd === 'PRESS' ? 'PRESS' : (WXP.cur === 'RAIN' ? 'PRESS' : 'RAIN'); }, ['RAINPRESS', 'PRESS', '6H'], 'RAIN · PRESS']],
+  draw(scr, r) {
+    const w = SRC.wx.v;
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
+    let y = ir.y;
+    if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO WEATHER DATA · NEEDS NETWORK'); return; }
+    const [hw, x2] = twoUp(ir), T = Date.now(), ni = w.hms ? wxHour(w, T) : -1, at = a => a && ni >= 0 ? a[ni] : null;
+    W.readout(scr, ir.x, y, hw, 'TEMP', w.temp.toFixed(1), '°C', t.N, w.temp > CFG.FCU.T2Max, true, 3);
+    W.readout(scr, x2, y, hw, 'FEELS', w.feel.toFixed(1), '°C', t.N, false, true, 3);
+    y += 6;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    const cl = at(w.hcloud);
+    wxGlyph(scr, ir.x, y, w.code, w.day);
+    scr.put(ir.x + 3, y, clip((WMO[w.code] || 'CODE ' + w.code) + (cl != null ? ' · CLOUD ' + Math.round(cl) + ' %' : ''), ir.w - 3), t.B); y++;
+    kv('RAIN', rainText(rainOutlook(w)));
+    kv('WIND · GUSTS', Math.round(w.wind) + ' · ' + Math.round(w.gust) + ' km/h ' + card(w.dir) + ' ' + Math.round(w.dir) + '°', w.gust >= 60 ? t.RB : t.N);
+    kv('HUMIDITY · DEW', Math.round(w.rh) + ' % · ' + (w.dew != null ? w.dew.toFixed(1) + ' °C' : '—') + (w.dew >= 18 ? ' · MUGGY' : (w.dew != null && w.temp - w.dew < 2.5 ? ' · FOG RISK' : '')));
+    let pt = '';
+    if (w.hp && w.ni >= 3) { const dp = w.hp[w.ni] - w.hp[w.ni - 3]; pt = ' · ' + (dp > 0.3 ? '↗ ' : dp < -0.3 ? '↘ ' : '→ ') + sgn(dp, 1) + '/3h'; }
+    kv('PRESSURE MSL', w.p.toFixed(1) + ' hPa' + pt, w.p < CFG.FCU.DavMin ? t.R : t.N);
+    const uv = at(w.huv), vis = at(w.hvis);
+    if (uv != null) kv('UV NOW', (+uv).toFixed(1) + ' · ' + UV_TXT(uv), uv >= 6 ? t.B : t.N);
+    if (vis != null) kv('VISIBILITY', vis >= 10000 ? Math.round(vis / 1000) + ' km' : (vis / 1000).toFixed(1) + ' km', vis < 1000 ? t.B : t.N);
+    const dr = dayRec(w, T);
+    if (dr && dr.rise && dr.set) kv('SUN', T < dr.rise ? 'RISES ' + hm(dr.rise) + ' · IN ' + durHM((dr.rise - T) / 1000) : (T < dr.set ? 'SETS ' + hm(dr.set) + ' · IN ' + durHM((dr.set - T) / 1000) : 'SET ' + hm(dr.set)));
+    kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : CFG.HOME.name);
     y++;
-    const has6 = !!(w.mt && w.mp && ro.i15 >= 0), has24 = h24.length > 0;
-    FC.cur = FC.mode === '6H' && has6 ? '6H' : (FC.mode === '24H' && has24 ? '24H' : (has6 && (ro.state === 'now' || ro.state === 'soon' || !has24) ? '6H' : '24H'));
-    // 6 h au quart d'heure
-    if (FC.cur === '6H' && has6 && ir.b - y >= 7) {
+    // pluie au quart d'heure sur 6 h si elle arrive (ou sur demande), sinon pression
+    const ro = rainOutlook(w, T) || { state: 'dry' }, has6 = !!(w.mt && w.mp && ro.i15 >= 0);
+    WXP.cur = WXP.chart === 'PRESS' || !has6 ? 'PRESS' : (WXP.chart === 'RAIN' || ro.state === 'now' || ro.state === 'soon' ? 'RAIN' : 'PRESS');
+    if (WXP.cur === 'RAIN' && ir.b - y >= 7) {
       const i = ro.i15, mm = w.mp.slice(i, i + 24).map(v => (v || 0) * 4), xl = [];
       mm.forEach((_, k) => { const st = new Date(w.mt[i + k] - 9e5); if (st.getMinutes() === 0) xl[k] = pad2(st.getHours()); });
       const pk = Math.max(...mm);
-      sub(scr, ir.x, y++, ir.w, 'NEXT 6 H · mm/h', (pk > 0 ? 'PEAK ' + pk.toFixed(1) : 'NO RAIN') + ' · [*2] 24 H', pk > 0 ? t.N : t.D);
-      rainChart(scr, new Rect(ir.x, y, ir.w, 6), mm, { xlab: xl, vmax: pk > 0 ? null : 1 });
-      y += 7;
+      sub(scr, ir.x, y++, ir.w, 'NEXT 6 H · mm/h', (pk > 0 ? 'PEAK ' + pk.toFixed(1) : 'NO RAIN') + ' · [*2] hPa', pk > 0 ? t.N : t.D);
+      rainChart(scr, new Rect(ir.x, y, ir.w, Math.min(8, ir.b - y)), mm, { xlab: xl, vmax: pk > 0 ? null : 1 });
+    } else if (ir.b - y >= 7 && w.hp) {
+      const span = Math.min(w.hp.length, ir.w - 10), i0 = Math.max(0, Math.min(w.hp.length - span, w.ni - Math.floor(span * 0.6)));
+      const vals = w.hp.slice(i0, i0 + span), lo = Math.floor(Math.min(...vals, CFG.FCU.DavMin) - 2), hiV = Math.ceil(Math.max(...vals, CFG.FCU.DavMin) + 1);
+      const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
+      sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', has6 ? '◂ PAST · NEXT ▸ · [*2] RAIN' : '◂ PAST · FORECAST ▸');
+      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: lo, vmax: hiV, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
+        styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: [[CFG.FCU.DavMin, 0, 'ДАВ', 'lo']] });
     }
-    // 24 h à l'heure, probabilité en pointillés
-    else if (has24 && ir.b - y >= 7) {
-      const pop = w.hpop ? w.hpop.slice(hi, hi + 24) : null, xl = [];
-      h24.forEach((_, k) => { const hr = (new Date(w.hms[hi + k]).getHours() + 23) % 24; if (hr % 3 === 0) xl[k] = pad2(hr); });
-      sub(scr, ir.x, y++, ir.w, 'NEXT 24 H · mm', '┅ PROB % · [*2] 6 H', t.D);
-      rainChart(scr, new Rect(ir.x, y, ir.w, 6), h24, { pop, xlab: xl, styles: h24.map((_, k) => pop && pop[k] >= 60 ? t.N : (pop && pop[k] >= 30 ? t.D : t.F)) });
-      y += 7;
-    }
-    // 7 jours
-    const days = (w.days || []).slice(0, 7);
-    if (days.length && ir.b - y >= 3) {
-      sub(scr, ir.x, y++, ir.w, (days.length) + ' DAYS', 'PROB · mm · °C');
-      const lo = Math.min(...days.map(d => d.tmin)), hiT = Math.max(...days.map(d => d.tmax)), bx = ir.x + 28, bwid = ir.w - 28 - 8;
-      days.forEach((d, k) => {
-        if (y >= ir.b) return;
-        const dt = new Date(d.date + 'T12:00Z'), wet = d.pop >= 50 || d.psum >= 1;
-        scr.put(ir.x, y, k === 0 ? 'TODAY' : DOW[dt.getUTCDay()] + ' ' + d.date.slice(8), k === 0 ? t.B : t.N);
-        scr.put(ir.x + 7, y, WMO_S(d.code), wet ? t.N : t.D);
-        scr.put(ir.x + 16, y, rjustS(d.pop + '%', 4), wet ? t.B : t.D);
-        scr.put(ir.x + 21, y, rjustS(d.psum >= 0.05 ? d.psum.toFixed(1) : '·', 5), d.psum >= 1 ? t.N : t.F);
-        if (bwid >= 4) {
-          scr.put(bx, y, rjustS(Math.round(d.tmin) + '°', 3), t.D); W.rjust(scr, ir.r, y, Math.round(d.tmax) + '°', t.N);
-          const f0 = (d.tmin - lo) / Math.max(1, hiT - lo), f1 = (d.tmax - lo) / Math.max(1, hiT - lo);
-          scr.vector(bx + 4, y, bwid, 1, (c, b) => {
-            const yy = b.y + b.ch * 0.5, lw = Math.max(2, b.ch * 0.22);
-            c.lineCap = 'round'; c.lineWidth = lw; c.strokeStyle = COL.K; c.beginPath(); c.moveTo(b.x + lw, yy); c.lineTo(b.x + b.w - lw, yy); c.stroke();
-            const span = b.w - 2 * lw; c.strokeStyle = COL.N; c.beginPath(); c.moveTo(b.x + lw + f0 * span, yy); c.lineTo(b.x + lw + Math.max(f1 * span, f0 * span + 1), yy); c.stroke(); c.lineCap = 'butt';
-          });
-        }
-        y++;
+  } };
+
+// ------------------------------------------------------------------ 4.3 M10 WEEK : les 5 jours suivants
+// Par jour : ciel et mini/maxi sur l'échelle de la semaine, pluie (probabilité, cumul, heures), vent, matin / après-midi.
+PAGES.M10 = { code: 'M10', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SEMAINE', '5DAYS', 'DAYS'], fps: 1,
+  keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
+  draw(scr, r) {
+    const w = SRC.wx.v;
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
+    let y = ir.y;
+    if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO FORECAST · NEEDS NETWORK'); return; }
+    const T = Date.now(), m0 = dayOfMs(T);
+    const all = (w.days || []).filter(d => Date.parse(d.date + 'T12:00') > m0 + 864e5 - 1);
+    const days = all.slice(0, 5), d0 = dayRec(w, T);
+    if (!days.length) { noData(scr, ir.x, y, ir.w, 'WEEK NOT IN FEED · [*1] REFRESH'); return; }
+    const lo = Math.min(...days.map(d => d.tmin), d0 ? d0.tmin : 99), hiT = Math.max(...days.map(d => d.tmax), d0 ? d0.tmax : -99);
+    // tendance : comparée à aujourd'hui
+    const wetDays = days.filter(d => d.pop >= 50 || d.psum >= 1).map(d => DOW[new Date(d.date + 'T12:00').getDay()]);
+    const dT = d0 ? days.slice(0, 3).reduce((a, d) => a + d.tmax, 0) / Math.min(3, days.length) - d0.tmax : 0;
+    sub(scr, ir.x, y++, ir.w, 'NEXT ' + days.length + ' DAYS', (Math.abs(dT) >= 1.5 ? (dT > 0 ? 'WARMER ' : 'COOLER ') + sgn(dT, 0) + '° · ' : 'STEADY · ') + (wetDays.length ? 'WET ' + wetDays.join(' ') : 'DRY'), t.D);
+    const per = Math.floor((ir.b - y) / days.length), rows = Math.max(2, Math.min(5, per));
+    days.forEach((d, k) => {
+      if (y + 2 > ir.b) return;
+      const dt = new Date(d.date + 'T12:00'), dm = dayOfMs(dt.getTime()), wet = d.pop >= 50 || d.psum >= 1;
+      // ligne 1 : jour, ciel, mini → maxi
+      wxGlyph(scr, ir.x, y, d.code, 1);
+      scr.put(ir.x + 3, y, DOW[dt.getDay()] + ' ' + pad2(dt.getDate()), t.B);
+      scr.put(ir.x + 10, y, clip(WMO[d.code] || WMO_S(d.code), ir.w - 24), wet ? t.N : t.D);
+      W.rjust(scr, ir.r, y, Math.round(d.tmin) + '° / ' + Math.round(d.tmax) + '°', t.N);
+      y++;
+      // ligne 2 : barre mini/maxi sur l'échelle de la semaine + pluie
+      const pr = (d.pop != null ? d.pop + '%' : '—') + ' ' + (d.psum >= 0.05 ? d.psum.toFixed(1) + 'mm' : 'dry') + (d.ph ? ' ' + Math.round(d.ph) + 'h' : '');
+      const bw = ir.w - 17;
+      if (bw >= 8) scr.vector(ir.x + 3, y, bw, 1, (c, b) => {
+        const yy = b.y + b.ch * 0.5, lw = Math.max(2, b.ch * 0.24), span = b.w - 2 * lw, f0 = (d.tmin - lo) / Math.max(1, hiT - lo), f1 = (d.tmax - lo) / Math.max(1, hiT - lo);
+        c.lineCap = 'round'; c.lineWidth = lw; c.strokeStyle = COL.K; c.beginPath(); c.moveTo(b.x + lw, yy); c.lineTo(b.x + b.w - lw, yy); c.stroke();
+        c.strokeStyle = COL.N; c.beginPath(); c.moveTo(b.x + lw + f0 * span, yy); c.lineTo(b.x + lw + Math.max(f1 * span, f0 * span + 1), yy); c.stroke();
+        if (d0) { const fx = b.x + lw + (d0.tmax - lo) / Math.max(1, hiT - lo) * span; c.strokeStyle = COL.D; c.lineWidth = b.d; c.beginPath(); c.moveTo(fx, yy - b.ch * 0.35); c.lineTo(fx, yy + b.ch * 0.35); c.stroke(); }
       });
-    }
+      W.rjust(scr, ir.r, y, clip(pr, 13), wet ? t.B : t.D);
+      y++;
+      // ligne 3 : vent + UV
+      if (rows >= 3 && y < ir.b) {
+        const g = d.gmax != null ? Math.round(d.gmax) : null;
+        scr.put(ir.x + 3, y, clip('WIND ' + Math.round(d.wmax) + (g != null ? ' G' + g : '') + ' km/h' + (d.wdir != null ? ' ' + card(d.wdir) : ''), ir.w - 12), g != null && g >= 60 ? t.RB : t.D);
+        if (d.uv != null) W.rjust(scr, ir.r, y, 'UV ' + Math.round(d.uv), d.uv >= 6 ? t.B : t.D);
+        y++;
+      }
+      // ligne 4 : matin · après-midi (heures du flux)
+      if (rows >= 4 && y < ir.b) {
+        const am = wxSpan(w, dm + 6 * 3600000, dm + 12 * 3600000), pm = wxSpan(w, dm + 12 * 3600000, dm + 20 * 3600000);
+        const f = (l, sp) => sp ? l + ' ' + WMO_S(sp.code) + ' ' + tRange(sp.tmin, sp.tmax) + (sp.pop >= 30 ? ' ' + sp.pop + '%' : '') : '';
+        scr.put(ir.x + 3, y, clip([f('AM', am), f('PM', pm)].filter(Boolean).join(' · '), ir.w - 3), t.F);
+        y++;
+      }
+      if (rows >= 5) y++;
+    });
   } };
 
 // ------------------------------------------------------------------ S29 CHRONO
@@ -2578,7 +2868,7 @@ PAGES.M06 = { code: 'M06', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RE
     kv('AMATEUR RELAYS', ham.length + ' UP' + (ham.length ? ' · ' + ham.filter(s => s.el >= 10).length + ' ≥10°' : ''));
     ham.slice(0, 3).forEach(s => kv('  ' + s.label, Math.round(s.az) + '° ' + card(s.az) + ' · EL ' + Math.round(s.el) + '°', s.el >= 10 ? t.B : t.D));
     const cl = SRC.cell.v;
-    kv('CELL TOWERS', 'SEE 4.3 M07 TOWERS', t.D, t.F);
+    kv('CELL TOWERS', 'SEE ' + pageAddr('M07') + ' M07 TOWERS', t.D, t.F);
     if (false) kv('CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'CELL TOWERS · APK ONLY', t.D, live('cell') ? t.N : t.F);
   } };
 
@@ -2616,11 +2906,6 @@ PAGES.S06 = { code: 'S06', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
     }
   } };
 
-// groupes : mêmes numéros qu'au pavé de Grafit sur le PC ; un changement de groupe ramène au format .1
-const GROUPS = [
-  ['1', 'STATUS', 'СОСТ', ['S00']], ['2', 'SYSTEMS', 'СИСТ', ['M01', 'M02', 'M03', 'S06']], ['3', 'ALARMS', 'АВАР', ['S01', 'S02', 'S03']],
-  ['4', 'COMMS', 'СВЯЗЬ', ['S12', 'M06', 'M07', 'S08']], ['5', 'NAV', 'НАВ', ['S18', 'S23', 'M05', 'S24', 'M04']], ['6', 'LIFE', 'БЫТ', ['S19', 'M08', 'S25', 'M09', 'S29']], ['7', 'CMD', 'КОМ', ['S28']],
-];
 
 // ---------------------------------------------------------------------------------------- antennes-relais (ANFR)
 // Données publiques de l'ANFR (« Données sur les réseaux mobiles », data.gouv.fr, hebdomadaire, Licence Ouverte),
@@ -2754,17 +3039,23 @@ PAGES.M07 = { code: 'M07', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
   } };
 
 // ---------------------------------------------------------------------------------------- réveil · agenda
-// RÉVEIL : point de départ du MET (bandeau) et de M09 DAY. Automatique : première activité de Grafit après
-// une coupure de 4 h ou plus, entre 03:00 et 14:00 ; corrigeable (WAKE 7:15, WAKE NOW). La dernière activité
-// avant la coupure sert d'heure de coucher approchée. Dans l'APK (accès aux statistiques d'usage accordé), le
-// premier déverrouillage du jour et le dernier verrouillage de la veille remplacent ces approximations.
-const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '' };
-const BRIEF = { pending: false };     // wake : epoch s ; hist : [{d, wake, bed}]
+// RÉVEIL : point de départ du MET (bandeau) et de M09 DAY, par ordre de priorité :
+//  1. MANUAL : WAKE 7:15 · WAKE NOW, jamais remplacé dans la journée ;
+//  2. ALARM  : l'alarme du réveil Android prévue ce matin (retenue la veille par l'APK), si le premier
+//     déverrouillage durable tombe entre 30 min avant et 90 min après elle, ou s'il n'est pas connu ;
+//  3. UNLOCK : premier déverrouillage durable après 03:00, coups d'œil nocturnes écartés (APK + accès usage) ;
+//  4. AUTO   : première activité de Grafit après une coupure de 4 h, entre 03:00 et 14:00 (repli, web surtout).
+// La dernière activité avant la coupure (ou le dernier verrouillage de la veille, APK) sert d'heure de coucher.
+const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '', alarms: {}, ul: null, usage: null };
+const BRIEF = { pending: false };     // wake : epoch s ; hist : [{d, wake, bed}] ; alarms : {AAAAMMJJ: epoch s}
 function dayLoad() {
   try { const j = JSON.parse(localStorage.getItem('grafit.day') || 'null'); if (j) Object.assign(DAYREC, j); } catch (e) { /* */ }
+  if (!DAYREC.alarms || typeof DAYREC.alarms !== 'object') DAYREC.alarms = {};
 }
 function daySave() { try { localStorage.setItem('grafit.day', JSON.stringify(DAYREC)); } catch (e) { /* */ } }
 const ymdOf = ts => { const d = new Date(ts * 1000); return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); };
+const isMorning = ts => { const h = new Date(ts * 1000).getHours(); return h >= 3 && h < 14; };
+const WAKE_TAG = { ALARM: 'R', UNLOCK: 'U', AUTO: 'A', MANUAL: 'M' };
 function daySetWake(ts, src) {
   const prevBed = DAYREC.lastSeen && DAYREC.lastSeen < ts ? DAYREC.lastSeen : null;
   DAYREC.wake = ts; DAYREC.src = src;
@@ -2775,21 +3066,62 @@ function daySetWake(ts, src) {
   daySave(); log('DAY', 'WAKE ' + hhmm(ts) + ' · ' + src);
   if (src !== 'MANUAL' && DAYREC.briefD !== d) BRIEF.pending = true;     // briefing au premier réveil du jour
 }
+const dayToday = () => DAYREC.wake && ymdOf(DAYREC.wake) === ymdOf(now());
+// candidat du jour d'après l'alarme et le déverrouillage (null : rien de mieux qu'AUTO)
+function dayCandidate() {
+  const t = now(), today = ymdOf(t), al = DAYREC.alarms[today], alarm = al && al <= t ? al : null;
+  const ul = DAYREC.ul && DAYREC.ul.d === today ? DAYREC.ul.t : null;
+  if (alarm) {
+    if (ul != null && ul >= alarm - 1800 && ul <= alarm + 5400) return [alarm, 'ALARM'];
+    if (ul == null) {
+      const auto = dayToday() && DAYREC.src === 'AUTO' ? DAYREC.wake : null;   // levé bien avant l'alarme (web / sans accès usage)
+      if (!(auto && auto < alarm - 1800)) return [alarm, 'ALARM'];
+    }
+  }
+  return ul != null ? [ul, 'UNLOCK'] : null;
+}
+function dayResolve() {
+  if (dayToday() && DAYREC.src === 'MANUAL') return;
+  const c = dayCandidate(); if (!c) return;
+  const [ts, src] = c, today = ymdOf(now());
+  if (!(dayToday() && DAYREC.src === src && Math.abs(DAYREC.wake - ts) <= 60)) daySetWake(ts, src);
+  const h = DAYREC.hist.find(x => x.d === today), bed = DAYREC.ul && DAYREC.ul.d === today ? DAYREC.ul.bed : null;
+  if (h && bed && bed < ts && h.bed !== bed) { h.bed = bed; daySave(); }
+}
 // appelée au lancement, au retour au premier plan et chaque minute au premier plan
 function dayTick(resume = false) {
   const t = now(), gap = DAYREC.lastSeen ? t - DAYREC.lastSeen : 0, hr = new Date().getHours();
-  if (resume && DAYREC.lastSeen && gap >= 4 * 3600 && hr >= 3 && hr < 14 && !(DAYREC.wake && ymdOf(DAYREC.wake) === ymdOf(t) && DAYREC.src === 'MANUAL'))
-    daySetWake(t, 'AUTO');
+  dayResolve();
+  if (resume && DAYREC.lastSeen && gap >= 4 * 3600 && hr >= 3 && hr < 14) {
+    const auto = () => { if (!dayCandidate() && !(dayToday() && DAYREC.src !== 'AUTO')) daySetWake(t, 'AUTO'); };
+    if (APK) setTimeout(auto, 5000); else auto();          // APK : on laisse d'abord arriver alarme et déverrouillage
+  }
   if (document.visibilityState !== 'hidden') { DAYREC.lastSeen = t; daySave(); }
 }
-function dayUnlock(fu, bed) {                                         // APK : premier déverrouillage du jour
-  const d = new Date(fu * 1000), today = ymdOf(now());
-  if (ymdOf(fu) !== today || d.getHours() < 3 || d.getHours() >= 14) return;
-  const cur = DAYREC.wake && ymdOf(DAYREC.wake) === today ? DAYREC : null;
-  if (cur && DAYREC.src === 'MANUAL') return;
-  if (!cur || Math.abs(DAYREC.wake - fu) > 60) { if (bed) DAYREC.lastSeen = Math.min(DAYREC.lastSeen || bed, bed); daySetWake(fu, 'UNLOCK'); }
-  const h = DAYREC.hist.find(x => x.d === today); if (h && bed && bed < fu) { h.bed = bed; daySave(); }
+function dayUnlock(fu, bed, glances = 0) {                            // APK : premier déverrouillage durable du jour
+  const today = ymdOf(now());
+  if (ymdOf(fu) !== today || !isMorning(fu)) return;
+  const prev = DAYREC.ul;
+  DAYREC.ul = { d: today, t: fu, bed: bed && bed < fu ? bed : null, g: glances };
+  if (!prev || prev.d !== today || Math.abs(prev.t - fu) > 60) log('DAY', 'FIRST UNLOCK ' + hhmm(fu) + (glances ? ' · ' + glances + ' NIGHT GLANCE' + (glances > 1 ? 'S' : '') + ' IGNORED' : ''));
+  if (bed) DAYREC.lastSeen = Math.min(DAYREC.lastSeen || bed, bed);
+  daySave(); dayResolve();
 }
+function dayAlarm(ts) {                                               // APK : prochaine alarme du réveil (0 : aucune)
+  const t = now(), A = DAYREC.alarms;
+  for (const k of Object.keys(A)) if (A[k] > t && (!ts || A[k] < ts - 60)) { log('DAY', 'ALARM ' + k.slice(6) + '/' + k.slice(4, 6) + ' ' + hhmm(A[k]) + ' CANCELLED'); delete A[k]; }
+  if (ts && isMorning(ts)) {
+    const d = ymdOf(ts);
+    if (!A[d] || (A[d] > t && Math.abs(A[d] - ts) > 60)) { A[d] = ts; log('DAY', 'ALARM SET · ' + DOW3[new Date(ts * 1000).getDay()] + ' ' + hhmm(ts)); }
+  }
+  const keys = Object.keys(A).sort(); while (keys.length > 14) delete A[keys.shift()];
+  daySave(); dayResolve();
+}
+function dayUsage(ok) {
+  if (DAYREC.usage === ok) return;
+  DAYREC.usage = ok; daySave(); log('DAY', 'USAGE ACCESS ' + (ok ? 'GRANTED' : 'MISSING · UNLOCK TIME OFF · ' + pageAddr('M09') + ' [*3]'), !ok);
+}
+const nextAlarm = () => { const t = now(), v = Object.values(DAYREC.alarms).filter(x => x > t).sort((a, b) => a - b); return v.length ? v[0] : null; };
 const awakeSecs = () => DAYREC.wake && now() - DAYREC.wake < 30 * 3600 ? now() - DAYREC.wake : null;
 function cmdWake(app, arg) {
   if (!arg || arg === 'NOW') { daySetWake(now(), 'MANUAL'); return app.say('WAKE · NOW ' + hhmm(now())); }
@@ -2884,7 +3216,7 @@ PAGES.S25 = { code: 'S25', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
     const up = agendaUpcoming(ir.b - y - 1), nx = agendaNext();
     sub(scr, ir.x, y++, ir.w, 'NEXT EVENTS', nx ? 'IN ' + inTxt(nx.start - now()) : '', nx && nx.start - now() < 900 ? t.RB : t.D);
     if (!up.length) {
-      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? (APK ? 'ALLOW CALENDAR ACCESS: 7.1 [*8] ARM' : 'PHONE CALENDAR: GRAFIT APK ONLY') : '']
+      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? (APK ? 'ALLOW CALENDAR ACCESS: ' + pageAddr('S28') + ' [*8] ARM' : 'PHONE CALENDAR: GRAFIT APK ONLY') : '']
         .forEach(l => { if (l && y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F); });
       return;
     }
@@ -2911,12 +3243,15 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
     if (!DAYREC.wake) { kv('WAKE TIME', 'WAKE NOW · WAKE 7:15', t.F); }
     else {
       const h = DAYREC.hist.find(x => x.d === ymdOf(DAYREC.wake)), bed = h && h.bed;
-      kv('WOKE UP', hhmm(DAYREC.wake) + ' · ' + DAYREC.src);
+      kv('WOKE UP', hhmm(DAYREC.wake) + ' · ' + DAYREC.src + (DAYREC.src === 'ALARM' && DAYREC.ul && DAYREC.ul.d === ymdOf(DAYREC.wake) ? ' · UNLOCK ' + hhmm(DAYREC.ul.t) : ''));
       if (bed) kv('NIGHT (PHONE IDLE)', hhmm(bed) + ' → ' + hhmm(DAYREC.wake) + ' · ' + durHM(DAYREC.wake - bed));
       kv('16 H AWAKE AT', hhmm(DAYREC.wake + 16 * 3600), aw != null && aw >= 16 * 3600 ? t.RB : t.N);
     }
+    const na = nextAlarm();
+    kv('NEXT ALARM', na ? DOW3[new Date(na * 1000).getDay()] + ' ' + hhmm(na) : (APK ? 'NONE SET' : 'APK ONLY'), na ? t.N : t.F);
+    if (APK && DAYREC.usage === false) kv('UNLOCK TIME', 'NO USAGE ACCESS · [*3]', t.RB);
     kv('STEPS TODAY', live('steps') ? SRC.steps.v.today.toLocaleString('fr-FR') : (STEPS.today ? STEPS.today + ' · LAST ' + STEPS.day.slice(6) : 'APK ONLY'), live('steps') ? t.B : t.F);
-    kv('NEXT', nx ? clip(nx.title.toUpperCase(), 20) + ' · IN ' + inTxt(nx.start - now()) : (AGENDA.src === 'NONE' ? 'NO AGENDA · 6.3' : 'NONE'));
+    kv('NEXT', nx ? clip(nx.title.toUpperCase(), 20) + ' · IN ' + inTxt(nx.start - now()) : (AGENDA.src === 'NONE' ? 'NO AGENDA · ' + pageAddr('S25') : 'NONE'));
     y++;
     // ligne de la journée : réveil → +18 h, maintenant, événements, coucher du soleil
     if (DAYREC.wake && y + 4 <= ir.b) {
@@ -2943,12 +3278,12 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
     // 7 derniers réveils
     const hs = DAYREC.hist.slice(-7);
     if (hs.length && y + 2 <= ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'LAST WAKES', 'A AUTO · U UNLOCK · M MANUAL', t.F);
+      sub(scr, ir.x, y++, ir.w, 'LAST WAKES', ir.w >= 44 ? 'R ALARM · U UNLOCK · A AUTO · M MAN' : 'R ALRM U UNLK A AUTO M MAN', t.F);
       for (const h of hs.slice().reverse()) {
         if (y >= ir.b) break;
         const d = new Date(h.wake * 1000);
         scr.put(ir.x, y, DOW3[d.getDay()] + ' ' + pad2(d.getDate()), h.d === ymdOf(now()) ? t.B : t.D);
-        scr.put(ir.x + 8, y, hhmm(h.wake), t.N); scr.put(ir.x + 14, y, h.src[0], t.F);
+        scr.put(ir.x + 8, y, hhmm(h.wake), t.N); scr.put(ir.x + 14, y, WAKE_TAG[h.src] || h.src[0], t.F);
         const sp = STEPS.hist[h.d]; if (sp != null) scr.put(ir.x + 16, y, rjustS(sp, 6) + ' STEPS', t.D);
         W.rjust(scr, ir.r, y++, h.bed ? 'NIGHT ' + durHM(h.wake - h.bed) : '', t.D);
       }
@@ -2956,7 +3291,7 @@ PAGES.M09 = { code: 'M09', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
   } };
 
 // ---------------------------------------------------------------------------------------- briefing du matin
-// Au premier réveil du jour (automatique ou déverrouillage), puis à la demande : BRIEF ou 6.4 [*2].
+// Au premier réveil du jour (automatique ou déverrouillage), puis à la demande : BRIEF ou DAY [*2].
 function briefLines() {
   const L = [], w = SRC.wx.v, T = now(), h = DAYREC.hist.find(x => x.d === ymdOf(T));
   L.push(['WOKE UP', DAYREC.wake ? hhmm(DAYREC.wake) + ' · ' + DAYREC.src + (h && h.bed ? ' · NIGHT ' + durHM(DAYREC.wake - h.bed) : '') : 'NOT SET · WAKE 7:15']);
@@ -2974,7 +3309,7 @@ function briefLines() {
   const ev = AGENDA.occ.filter(o => o.stop > T && o.start < end.getTime() / 1000);
   if (!ev.length) L.push(['—', AGENDA.src === 'NONE' ? 'NO AGENDA SOURCE' : 'NO EVENT TODAY']);
   ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
-  if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · 6.3']);
+  if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('S25')]);
   L.push(['', ''], ['STATUS', '']);
   const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
   L.push(['FAULTS', fs.open + ' ACTIVE · ' + (fs.ucrit + fs.ucaut) + ' UNACK' + (fa ? ' · ' + fa.msg : '')]);
@@ -3409,7 +3744,7 @@ class App {
   }
   // pupitre : onglets d'affichage (groupes, formats du groupe), espace, pavé de touches (+ et − : format suivant / précédent)
   drawConsole(scr, x0, y0, Wd) {
-    const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', COMMS: 'COMM' };
+    const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', WEATHER: 'WX', COMMS: 'COMM' };
     const codes = GROUPS[this.gi][3], ng = GROUPS.length, nf = codes.length, AW = 0;
     const bx = (i, n, a, b) => a + Math.round(i * (b - a) / n);
     const boxes = [];                                   // onglets : [xa, ya, xb, yb, id]
@@ -3442,7 +3777,7 @@ class App {
     for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) {
       const xa = bx(c, 4, 0, Wd), xb = bx(c + cs, 4, 0, Wd);
       const on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
-      // touches chiffres selon le mode : groupe (1-7), puis après * l'action n du format, après . le format n du groupe
+      // touches chiffres selon le mode : groupe (1-8), puis après * l'action n du format, après . le format n du groupe
       let tail = lab[k], dead = /^[89]$/.test(k) && +k > ng;
       if (/^\d$/.test(k) && pend === '*') { const a = (this.page.keys || []).find(x => x[0] === k); tail = a ? a[1] : ''; dead = !a; }
       else if (/^\d$/.test(k) && pend === '.') { const c = GROUPS[this.gi][3][(+k || 10) - 1]; tail = c || ''; dead = !c; }

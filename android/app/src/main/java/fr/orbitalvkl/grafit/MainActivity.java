@@ -2,6 +2,7 @@ package fr.orbitalvkl.grafit;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -10,6 +11,8 @@ import android.content.pm.PackageManager;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.view.View;
 import android.widget.FrameLayout;
@@ -31,6 +34,8 @@ import androidx.webkit.WebViewFeature;
 
 import org.json.JSONObject;
 
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -161,7 +166,7 @@ public class MainActivity extends Activity {
         if (!loaded) load(); else { probes.stop(); probes.start(); probes.pushAll(); }
     }
 
-    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings, on} */
+    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings | saveLog, on, name, text} */
     void onCommand(String data) {
         try {
             JSONObject o = new JSONObject(data);
@@ -184,6 +189,9 @@ public class MainActivity extends Activity {
                 case "update":
                     updater.install();
                     break;
+                case "saveLog":
+                    saveLog(o.optString("name"), o.optString("text"));
+                    break;
                 case "keepOn":
                     if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -204,6 +212,28 @@ public class MainActivity extends Activity {
         } catch (Exception e) { /* commande illisible : ignorée */ }
     }
 
+    /** Journal exporté par la page : Téléchargements/Grafit/grafit-log-AAAAMMJJ-HHMM.txt (MediaStore, sans permission). */
+    void saveLog(String name, String text) {
+        JSONObject d = new JSONObject();
+        try {
+            if (!name.matches("grafit-log-[0-9]{8}-[0-9]{4}\\.txt")) throw new IllegalArgumentException("BAD NAME");
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+            v.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+            v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Grafit");
+            Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (u == null) throw new IllegalStateException("MEDIASTORE REFUSED");
+            try (OutputStream os = getContentResolver().openOutputStream(u)) {
+                if (os == null) throw new IllegalStateException("NO STREAM");
+                os.write(text.getBytes(StandardCharsets.UTF_8));
+            }
+            d.put("logSaved", "DOWNLOAD/GRAFIT/" + name);
+        } catch (Exception e) {
+            try { d.put("logError", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ }
+        }
+        push(d);
+    }
+
     /** Envoi à la page : window.dispatchEvent(new CustomEvent('grafit-native', {detail})) */
     void push(JSONObject detail) {
         if (!pageReady || detail.length() == 0) return;
@@ -215,7 +245,11 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         web.onResume();
-        if (loaded) { probes.start(); probes.pushAll(); if (pageReady) autoCheck(); }
+        if (loaded) {
+            probes.start(); probes.pushAll();
+            try { JSONObject d = new JSONObject(); d.put("resumed", true); push(d); } catch (Exception e) { /* */ }
+            if (pageReady) autoCheck();
+        }
     }
 
     @Override

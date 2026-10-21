@@ -1,7 +1,7 @@
-// Grafit Mobile 1.7.1 : fonctionne hors ligne.
+// Grafit Mobile 1.8.0 : fonctionne hors ligne.
 // Page : réseau d'abord (3 s), copie en cache sinon -> une mise à jour s'affiche dès le relancement suivant.
 // Icônes, manifeste : cache, rafraîchi en arrière-plan. Polices Google : cache. Flux (météo, TLE) : réseau seulement.
-const SHELL = 'grafit-shell-1.7.1';
+const SHELL = 'grafit-shell-1.8.0';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== SHELL && k !== 'grafit-fonts').map(k => caches.delete(k)))).then(() => self.clients.claim())); });

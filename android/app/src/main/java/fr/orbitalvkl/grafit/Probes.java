@@ -1,6 +1,7 @@
 package fr.orbitalvkl.grafit;
 
 import android.Manifest;
+import android.app.AlarmManager;
 import android.app.AppOpsManager;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager;
@@ -41,6 +42,7 @@ import android.telephony.TelephonyManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.TimeZone;
@@ -51,7 +53,7 @@ import java.util.TimeZone;
  *                    steps (compteur depuis le démarrage), gnss [{c, svid, az, el, cn0, used}]
  *   toutes les 10 s : cell {rat, operator, pci, band, rsrp, ci, tac, mcc, mnc}
  *   au démarrage, au retour et à chaque changement : agenda [{start, stop (ms), title, loc, allDay, uid}]
- *   au démarrage et au retour : firstUnlock, lastLock (ms) si l'accès aux statistiques d'usage est accordé
+ *   au démarrage et au retour : nextAlarm (ms), usage ; firstUnlock, lastLock (ms), glances si l'accès aux statistiques d'usage est accordé
  */
 class Probes implements SensorEventListener {
     final MainActivity act;
@@ -346,32 +348,65 @@ class Probes implements SensorEventListener {
         return l.getTimeInMillis();
     }
 
-    // ------------------------------------------------------------------ réveil : premier déverrouillage
+    // ------------------------------------------------------------------ réveil : alarme et premier déverrouillage durable
+    // nextAlarm : prochaine alarme du réveil Android (ms, 0 = aucune), sans permission ; la page la retient la
+    // veille pour dater le réveil du lendemain. usage : accès aux statistiques d'usage accordé ou non.
+    // firstUnlock : premier déverrouillage « durable » après 03:00 — un coup d'œil nocturne (session < 3 min suivie
+    // de 45 min sans déverrouillage) est ignoré ; glances = nombre de coups d'œil écartés.
+    static final long GLANCE_MS = 3 * 60000L, GLANCE_GAP_MS = 45 * 60000L;
+
     void pushUnlock() {
+        JSONObject d = new JSONObject();
+        try {
+            AlarmManager am = (AlarmManager) act.getSystemService(Context.ALARM_SERVICE);
+            AlarmManager.AlarmClockInfo ai = am != null ? am.getNextAlarmClock() : null;
+            d.put("nextAlarm", ai != null ? ai.getTriggerTime() : 0);
+        } catch (Exception e) { /* */ }
         try {
             AppOpsManager ops = (AppOpsManager) act.getSystemService(Context.APP_OPS_SERVICE);
             int mode = ops.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), act.getPackageName());
-            if (mode != AppOpsManager.MODE_ALLOWED) return;
-            UsageStatsManager usm = (UsageStatsManager) act.getSystemService(Context.USAGE_STATS_SERVICE);
-            Calendar c = Calendar.getInstance();
-            c.set(Calendar.HOUR_OF_DAY, 3); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
-            long day3 = c.getTimeInMillis(), now = System.currentTimeMillis();
-            if (now < day3) return;
-            UsageEvents ev = usm.queryEvents(day3 - 9L * 3600000L, now);      // depuis 18 h la veille
-            UsageEvents.Event e = new UsageEvents.Event();
-            long first = 0, lastLock = 0;
-            while (ev.hasNextEvent()) {
-                ev.getNextEvent(e);
-                int t = e.getEventType();
-                long ts = e.getTimeStamp();
-                if (ts < day3 && (t == UsageEvents.Event.KEYGUARD_SHOWN || t == UsageEvents.Event.SCREEN_NON_INTERACTIVE)) lastLock = ts;
-                if (ts >= day3 && t == UsageEvents.Event.KEYGUARD_HIDDEN) { first = ts; break; }
-            }
-            if (first == 0) return;
-            JSONObject d = new JSONObject();
-            d.put("firstUnlock", first);
-            if (lastLock > 0) d.put("lastLock", lastLock);
-            act.push(d);
+            boolean ok = mode == AppOpsManager.MODE_ALLOWED;
+            d.put("usage", ok);
+            if (ok) unlockInto(d);
         } catch (Exception e) { /* accès refusé */ }
+        act.push(d);
+    }
+
+    void unlockInto(JSONObject d) throws Exception {
+        UsageStatsManager usm = (UsageStatsManager) act.getSystemService(Context.USAGE_STATS_SERVICE);
+        Calendar c = Calendar.getInstance();
+        c.set(Calendar.HOUR_OF_DAY, 3); c.set(Calendar.MINUTE, 0); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0);
+        long day3 = c.getTimeInMillis(), now = System.currentTimeMillis();
+        if (now < day3) return;
+        UsageEvents ev = usm.queryEvents(day3 - 9L * 3600000L, now);      // depuis 18 h la veille
+        UsageEvents.Event e = new UsageEvents.Event();
+        long lastLock = 0;
+        List<long[]> ses = new ArrayList<>();                              // [début, fin] après 03:00
+        long open = 0;
+        while (ev.hasNextEvent()) {
+            ev.getNextEvent(e);
+            int t = e.getEventType();
+            long ts = e.getTimeStamp();
+            boolean lock = t == UsageEvents.Event.KEYGUARD_SHOWN || t == UsageEvents.Event.SCREEN_NON_INTERACTIVE;
+            if (ts < day3) { if (lock) lastLock = ts; continue; }
+            if (t == UsageEvents.Event.KEYGUARD_HIDDEN && open == 0) open = ts;
+            else if (lock && open != 0) { ses.add(new long[]{open, ts}); open = 0; }
+        }
+        if (open != 0) ses.add(new long[]{open, now});
+        long first = 0;
+        int glances = 0;
+        for (int i = 0; i < ses.size(); i++) {
+            long[] s = ses.get(i);
+            boolean last = i == ses.size() - 1;
+            long nextStart = last ? Long.MAX_VALUE : ses.get(i + 1)[0];
+            boolean glance = !last && s[1] - s[0] < GLANCE_MS && nextStart - s[1] >= GLANCE_GAP_MS;
+            if (glance) { glances++; continue; }
+            first = s[0];
+            break;
+        }
+        if (first == 0) return;
+        d.put("firstUnlock", first);
+        d.put("glances", glances);
+        if (lastLock > 0) d.put("lastLock", lastLock);
     }
 }
