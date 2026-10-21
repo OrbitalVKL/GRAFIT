@@ -30,3 +30,18 @@ Code de format = M + adresse : 1 STATUS (M11) · 2 SYSTEMS (M21 POWER, M22 MOTIO
 Paramètres du téléphone seulement : batterie (charge, température, santé Android), état thermique, choc,
 réseau, signal mobile, GNSS, boussole, flux des capteurs, stockage. Le FCU virtuel du S-16 est retiré ; la
 tendance de pression reste une information sur 2.3 BARO.
+
+## Radar (4.4, 1.9.0)
+
+Passé (−2 h) : radar RainViewer (images de 10 min, gratuites en usage personnel, zoom 7), décodé et recoloré.
+Futur (+2 h) : prévision Open-Meteo au quart d'heure sur une grille 7 × 7 autour du téléphone (modèle). Fond :
+carte sombre CARTO (© OpenStreetMap, © CARTO) ou repères seuls (antennes ANFR). Pluie la plus proche et approche
+estimée à partir des dernières images radar.
+
+## Journal continu (APK, 1.9.0)
+
+Service Android de premier plan (réglable en 3.4 `*3`, actif par défaut) : un relevé par minute, écran éteint
+compris (pression, batterie, état thermique, pas, signal), plus les déverrouillages et extinctions d'écran, dans un
+fichier privé de l'application (une semaine environ). La page le lit au retour et complète graphes (2.1, 2.3 :
+3/12/24 h), tendance de pression, pas, heure de réveil et journal 3.3. La permission de notifications n'est pas
+demandée : la notification obligatoire du service n'apparaît pas dans le volet.

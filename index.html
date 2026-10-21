@@ -888,7 +888,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.8.1', BUILD: '20261021', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.9.0', BUILD: '20261021', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -921,7 +921,7 @@ function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringif
 // Les adresses citées dans les textes viennent de pageAddr() : elles suivent toute réorganisation.
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
-  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
+  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
   ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']], ['8', 'CMD', 'КОМ', ['M81']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
@@ -929,7 +929,7 @@ function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); 
 // ---------------------------------------------------------------------------------------- journal de bord (FEED)
 // Journal conservé sur l'appareil (2 000 entrées, plusieurs jours) et exportable : LOG EXPORT (3.3 [*1]).
 // Chaque passage au premier plan / en arrière-plan est noté (VIS) pour situer les alarmes dans la journée.
-const FEED = [], LOG_KEY = 'grafit.log', LOG_MAX = 2000;
+const FEED = [], LOG_KEY = 'grafit.log', LOG_MAX = 4000;
 try { const j = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); if (Array.isArray(j)) FEED.push(...j.slice(-LOG_MAX)); } catch (e) { /* */ }
 let logDirty = false;
 function logSave() {
@@ -939,6 +939,12 @@ function logSave() {
 function log(tag, msg, warn = false) {
   FEED.push([Math.round(now() * 10) / 10, tag, msg, warn ? 1 : 0]); if (FEED.length > LOG_MAX) FEED.shift();
   logDirty = true; if (warn) logSave();
+}
+// événement daté du passé (journal d'arrière-plan de l'APK) : inséré à sa place dans l'ordre chronologique
+function logAt(ts, tag, msg, warn = false) {
+  let i = FEED.length; while (i > 0 && FEED[i - 1][0] > ts) i--;
+  FEED.splice(i, 0, [Math.round(ts * 10) / 10, tag, msg, warn ? 1 : 0]); if (FEED.length > LOG_MAX) FEED.shift();
+  logDirty = true;
 }
 setInterval(logSave, 5000);
 // premier plan : sert aussi de délai de grâce aux contrôles de fraîcheur des capteurs (les flux s'arrêtent en arrière-plan)
@@ -987,9 +993,33 @@ class Hist {
     this.t = ts; this.v.push(v); while (this.v.length > this.cap) this.v.shift();
   }
   last() { return this.v.length ? this.v[this.v.length - 1] : null; }
+  put(v, ts) {                                     // valeur datée : après la dernière, ajoutée ; avant, elle comble un trou
+    if (!this.t || ts > this.t) return this.push(v, ts);
+    const k = this.v.length - 1 - Math.round((this.t - ts) / this.every);
+    if (k >= 0 && this.v[k] == null) this.v[k] = v;
+  }
   dump() { return { v: this.v, t: this.t }; }
   load(o) { if (!o || !Array.isArray(o.v) || !o.t || now() - o.t > this.cap * this.every) return; this.v = o.v.slice(-this.cap); this.t = o.t; }
 }
+// vue d'un historique sur une durée : moyennes par paquet, petits trous (≤ 20 min) interpolés, fin calée sur maintenant
+const SPANS = { '3H': 3 * 3600, '12H': 12 * 3600, '24H': 86400 };
+function histView(h, span, n) {
+  const per = Math.max(1, Math.round(span / h.every / n)), cnt = Math.ceil(span / h.every);
+  const tail = h.t ? Math.max(0, Math.floor((now() - h.t) / h.every)) : 0;
+  let src = h.v.concat(new Array(Math.min(tail, cnt)).fill(null)).slice(-cnt);
+  if (src.length < cnt) src = new Array(cnt - src.length).fill(null).concat(src);
+  const out = [];
+  for (let i = 0; i < src.length; i += per) { let a = 0, k = 0; for (let j = i; j < i + per && j < src.length; j++) if (src[j] != null) { a += src[j]; k++; } out.push(k ? a / k : null); }
+  const maxGap = Math.max(1, Math.round(1200 / (per * h.every)));
+  for (let i = 1; i < out.length; i++) if (out[i] == null && out[i - 1] != null) {
+    let j = i; while (j < out.length && out[j] == null) j++;
+    if (j < out.length && j - i <= maxGap) for (let k = i; k < j; k++) out[k] = out[i - 1] + (out[j] - out[i - 1]) * (k - i + 1) / (j - i + 1);
+    i = j;
+  }
+  return { v: out, step: per * h.every };
+}
+const rangeKey = (pg, dflt = '12H') => ['1', 'RANGE', (app, arg, wd) => { const k = Object.keys(SPANS); pg().rng = SPANS[wd] ? wd : (SPANS[arg] ? arg : k[(k.indexOf(pg().rng || dflt) + 1) % k.length]); app && app.say('RANGE ' + pg().rng); }, ['RANGE', '3H', '12H', '24H'], 'RANGE [3H|12H|24H]'];
+const logNote = () => APK ? (BGL.on === false ? 'OPEN ONLY' : 'CONTINUOUS') : 'OPEN ONLY';
 // mode : wait (en attente du 1er relevé), live, sim, na (absent ici), off (désarmé)
 const SRC = {};
 const SOURCES = [
@@ -1002,7 +1032,7 @@ const SOURCES = [
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
-const HIST = { g: new Hist(400, 0.25), batt: new Hist(600, 30), press: new Hist(200, 60), rtt: new Hist(300, 2), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
+const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(300, 2), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
 
 function feedLive(k, v) {
   const s = SRC[k];
@@ -1022,12 +1052,14 @@ const THERM_NAMES = ['NONE', 'LIGHT', 'MODERATE', 'SEVERE', 'CRITICAL', 'EMERGEN
 // d'aujourd'hui comptent pour aujourd'hui (la nuit, on marche peu). Historique 14 jours.
 const STEPS = { day: '', today: 0, last: null, hist: {} };
 try { Object.assign(STEPS, JSON.parse(localStorage.getItem('grafit.steps') || '{}')); } catch (e) { /* */ }
-function stepsFeed(c) {
-  const d = new Date(), day = d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
-  if (STEPS.day !== day) { STEPS.day = day; STEPS.today = 0; }
+function stepsFeed(c, ts = now(), bg = false) {
+  if (bg && ts <= (STEPS.lastT || 0)) return;                 // relevé d'arrière-plan déjà couvert
+  const d = new Date(ts * 1000), day = d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate());
+  if (STEPS.day !== day) { if (STEPS.day && day < STEPS.day) return; STEPS.day = day; STEPS.today = STEPS.hist[day] || 0; }
   if (STEPS.last != null) STEPS.today += c >= STEPS.last ? c - STEPS.last : (c < STEPS.last / 2 ? c : 0);   // forte baisse : téléphone redémarré
-  STEPS.last = c; STEPS.hist[day] = STEPS.today;
+  STEPS.last = c; STEPS.lastT = ts; STEPS.hist[day] = STEPS.today;
   const keys = Object.keys(STEPS.hist).sort(); while (keys.length > 14) delete STEPS.hist[keys.shift()];
+  if (bg) return;
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
   feedLive('steps', { today: STEPS.today, total: c });
 }
@@ -1050,7 +1082,8 @@ window.addEventListener('grafit-native', e => {
   if (d.resumed) visChange(true);
   if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
   if (d.nextAlarm != null && typeof dayAlarm === 'function') dayAlarm(+d.nextAlarm / 1000);
-  if (d.steps != null) stepsFeed(+d.steps);
+  if (d.steps != null && !bgWaiting()) stepsFeed(+d.steps);
+  if (d.bglog) bgIngest(d.bglog);
   if (d.thermal) {
     const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
     feedLive('therm', { status: st, headroom: d.thermal.headroom != null ? +d.thermal.headroom : null });
@@ -1355,16 +1388,17 @@ function attitude() {
 }
 function gLoad() { const m = SRC.motion.v; return live('motion') ? Math.hypot(m.ax, m.ay, m.az) / 9.80665 : null; }
 function aim() { return live('orient') ? aimFromOrient(SRC.orient.v) : null; }
-// Pression au niveau de la mer (QNH) : baromètre (APK) ramené au niveau de la mer par l'altitude GNSS,
+// ramené au niveau de la mer (formule hypsométrique, température extérieure de la météo, sinon 15 °C)
+const qnhOf = (p, h) => { const T = live('wx') ? SRC.wx.v.temp : 15; return p * Math.pow(1 - 0.0065 * h / (T + 0.0065 * h + 273.15), -5.257); };
+// Pression au niveau de la mer (QNH) : baromètre (APK) ramené au niveau de la mer par l'altitude GNSS (ou la dernière connue),
 // sinon pression météo, sinon rien.
 function pressure() {
   if (live('baro')) {
     const p = SRC.baro.v.hpa;
     if (SRC.baro.mode === 'sim') return { p, src: 'SIM' };
-    const h = live('geo') && SRC.geo.v.alt != null ? SRC.geo.v.alt : null;
+    const gl = live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null, h = gl ? SRC.geo.v.alt : BGL.alt;
     if (h == null) return { p, src: 'STATION · NO ALT' };
-    const T = live('wx') ? SRC.wx.v.temp : 15;
-    return { p: p * Math.pow(1 - 0.0065 * h / (T + 0.0065 * h + 273.15), -5.257), src: 'PHONE · QNH' };
+    return { p: qnhOf(p, h), src: gl ? 'PHONE · QNH' : 'PHONE · QNH · ALT ' + Math.round(h) + ' m' };
   }
   if (live('wx') && now() - (SRC.wx.v.at || 0) <= WX_MAX_AGE && SRC.wx.v.p != null) return { p: SRC.wx.v.p, src: SRC.wx.mode === 'sim' ? 'SIM' : 'WEATHER · MSL' };
   return null;
@@ -1387,7 +1421,7 @@ function seedSimTrend() {                                       // 3 h d'histori
 }
 // Absence (arrière-plan, App fermée) : le firmware repartirait de zéro au-delà d'un bloc manqué. Jusqu'à 3 h, les
 // blocs manquants sont comblés par interpolation entre le dernier bloc et le relevé du retour (la pression varie lentement).
-function trendBridge(p_pa, ms) {
+function trendBridge(p_pa, ms, at = null) {
   const s = TREND, c = PTC, lag = ms - s.block_start;
   if (!s.primed || s.count < 1 || lag < 2 * c.block_ms || lag > 3 * 3600000) return;
   const last = s.ring[(s.head + c.ring_len - 1) % c.ring_len], cur = s.acc_n ? Math.floor((Math.floor(s.acc_sum / s.acc_n) + 5) / 10) : last;
@@ -1395,9 +1429,11 @@ function trendBridge(p_pa, ms) {
   for (let i = 0; i < nb; i++) { s.ring[s.head] = Math.round(cur + (target - cur) * i / nb); s.head = (s.head + 1) % c.ring_len; if (s.count < c.ring_len) s.count += 1; }
   s.block_start += nb * c.block_ms; s.acc_sum = 0; s.acc_n = 0;
   PT.applyHold(s, c, PT.raw(s, c), ms);
-  log('BARO', 'P TREND · ' + nb + ' BLOCKS BRIDGED · GAP ' + durHM(lag / 1000));
+  if (lag > 20 * 60000) (at ? m => logAt(at, 'BARO', m) : m => log('BARO', m))('P TREND · ' + nb + ' BLOCKS BRIDGED · GAP ' + durHM(lag / 1000));
 }
+let TREND_T = 0;                                        // ms de la dernière mise à jour de la tendance
 function trendTick() {
+  if (bgWaiting()) return;                                // retour au premier plan : d'abord les relevés d'arrière-plan
   const pr = pressure();
   if (!pr) { if (TREND.primed && !settling()) resetTrend('NO PRESSURE SOURCE'); return; }
   if (pr.src !== 'SIM' && live('baro') && SRC.baro.mode === 'live' && now() - SRC.baro.liveT > 30) return;   // baromètre muet (arrière-plan) : rien de figé
@@ -1406,7 +1442,7 @@ function trendTick() {
   TREND_SRC = srcKey;
   const before = TREND.level;
   trendBridge(Math.round(pr.p * 100), Date.now());
-  PT.update(TREND, PTC, Math.round(pr.p * 100), Date.now());
+  PT.update(TREND, PTC, Math.round(pr.p * 100), Date.now()); TREND_T = Date.now();
   if (TREND.level !== before) log('BARO', 'P TREND ' + PT.NAMES[before] + ' → ' + PT.NAMES[TREND.level]);
   HIST.press.push(pr.p);
   if (srcKey !== 'SIM') { try { localStorage.setItem('grafit.dep', srcKey + '|' + PT.serialize(TREND)); } catch (e) { /* */ } }
@@ -1441,7 +1477,7 @@ const ANN = [
     fn: c => { if (!live('cell')) return null; const v = SRC.cell.v; if (v.none) return [2, 'NO SERVICE']; if (v.rsrp == null) return [0, (v.rat || 'CELL')]; return [lo(v.rsrp, c, AL.CellCaut, AL.CellCrit, 3), v.rsrp + ' dBm']; } },
   { key: 'GNSS', lab: 'GNSS', tag: 'NAV', title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `CAUT ACC > ${AL.GnssAccCaut} m · CRIT NO FIX ${AL.GnssLostSecs} s`,
     fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - Math.max(g.fixT, VIS.fg) > AL.GnssLostSecs) return settling() ? [c, 'RESUMING'] : [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
-  { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
+  { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', info: true, title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
     fn: () => { if (!live('orient')) return null; return [SRC.orient.v.abs ? 0 : 1, SRC.orient.v.abs ? 'ABS' : 'REL']; } },
   // flux de mouvement : il s'arrête légitimement en arrière-plan / écran éteint. Contrôle suspendu tant que Grafit
   // n'est pas au premier plan, puis délai de grâce au retour (SensorsGrace) avant de juger le flux figé.
@@ -1451,6 +1487,7 @@ const ANN = [
     fn: c => { if (!live('store')) return null; const v = SRC.store.v, pct = v.total ? v.free / v.total * 100 : 100; return [lo(pct, c, AL.StoreCaut, AL.StoreCrit, 1), Math.round(pct) + ' % · ' + (v.free / 1e9).toFixed(1) + ' GB']; } },
 ];
 const BATT_HEALTH = { 1: 'UNKNOWN', 2: 'GOOD', 3: 'OVERHEAT', 4: 'DEAD', 5: 'OVERVOLTAGE', 6: 'FAILURE', 7: 'COLD' };
+const ANN_INFO = new Set(ANN.filter(a => a.info).map(a => a.key));
 ANN.forEach(a => { a.lvl = 0; a.val = '—'; a.pend = null; a.since = 0; if (a.confirm == null) a.confirm = AL.ConfirmSecs; });
 const ALS = { caut: 0, crit: 0 };
 function alarmsTick() {
@@ -1464,20 +1501,21 @@ function alarmsTick() {
       if (t - a.since >= a.confirm) { a.pend = null; setLevel(a, raw); }
     } else { a.pend = null; if (raw < a.lvl) setLevel(a, raw); }
   }
-  ALS.caut = ANN.filter(a => a.lvl === 1).length; ALS.crit = ANN.filter(a => a.lvl === 2).length;
+  ALS.caut = ANN.filter(a => a.lvl === 1 && !a.info).length; ALS.crit = ANN.filter(a => a.lvl === 2 && !a.info).length; ALS.info = ANN.filter(a => a.lvl && a.info).length;
   for (const a of ANN) if (a.lvl) failCur(a.key, a.val);
 }
 function setLevel(a, n) {
   const old = a.lvl; a.lvl = n;
-  if (n > 0) failOpen(a.key, n + 1, a.tag, a.lab + ' ' + SEV[n], { title: a.title, val: a.val, thr: a.lim, act: a.act });
+  if (n > 0) failOpen(a.key, a.info ? 1 : n + 1, a.tag, a.lab + ' ' + (a.info ? 'INFO' : SEV[n]), { title: a.title, val: a.val, thr: a.lim, act: a.act });
   else failClose(a.key, a.val);
-  if (n > old) { log(a.tag, a.lab + ' ' + SEV[n] + ' · ' + a.val, true); haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
+  if (n > old) { log(a.tag, a.lab + ' ' + (a.info ? 'INFO' : SEV[n]) + ' · ' + a.val, !a.info); if (!a.info) haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
   else if (n === 0) log(a.tag, a.lab + ' NOMINAL · ' + a.val);
   else log(a.tag, a.lab + ' CRIT → CAUT · ' + a.val, true);
 }
 function annState(lvl, val, blink, lt, key) {
   if (lt && lt.ann) return lt.ann === 1 ? 'caut' : 'crit';
   if (val === '—') return 'na';
+  if (lvl && ANN_INFO.has(key)) return 'lit';                                   // information : blanc, jamais rouge
   if (lvl >= 2) return blink || (key && !failUnack(key, 3)) ? 'crit' : 'critoff';      // acquitté : rouge fixe
   return lvl === 1 ? 'caut' : 'nom';
 }
@@ -1520,6 +1558,7 @@ function failRestore() {
   try {
     const j = JSON.parse(localStorage.getItem('grafit.fail') || 'null'); if (!j) return;
     FAIL.seq = j.seq || 0; FAIL.list = (j.list || []).filter(e => !/^FCU\.|^THERM$|^NOISE$/.test(e.key));     // 1.8.1 : FCU virtuel, THERM et NOISE retirés
+    FAIL.list.forEach(e => { if (ANN_INFO.has(e.key) && e.sev > 1) e.sev = 1; if (e.sev < 2 && !e.ack) { e.ack = true; e.ackT = e.t0; } });   // 1.9.0 : informations
     const t = now(); FAIL.list.forEach(e => { if (!e.tend) { e.tend = t; e.note = 'SESSION END'; } });  // l'état réel est réévalué au démarrage
   } catch (e) { /* */ }
 }
@@ -1527,10 +1566,10 @@ const failOpenOf = key => FAIL.list.find(e => e.key === key && !e.tend);
 function failOpen(key, sev, tag, msg, o = {}) {
   const e = failOpenOf(key), t = now();
   if (e) {
-    if (sev > e.sev) { e.sev = sev; e.msg = msg; e.ack = false; e.ackT = 0; e.esc = t; e.val = o.val != null ? o.val : e.val; failSave(); }
+    if (sev > e.sev) { e.sev = sev; e.msg = msg; e.ack = sev < 2; e.ackT = sev < 2 ? t : 0; e.esc = t; e.val = o.val != null ? o.val : e.val; failSave(); }
     return e;
   }
-  const n = { id: ++FAIL.seq, t0: t, sev, tag, key, msg, title: o.title || msg, val: o.val || '', cur: o.val || '', thr: o.thr || '', act: o.act || '', tend: 0, ack: false, ackT: 0 };
+  const n = { id: ++FAIL.seq, t0: t, sev, tag, key, msg, title: o.title || msg, val: o.val || '', cur: o.val || '', thr: o.thr || '', act: o.act || '', tend: 0, ack: sev < 2, ackT: sev < 2 ? t : 0 };
   FAIL.list.unshift(n);
   // plafond : on oublie d'abord les plus anciens défauts acquittés et refermés
   while (FAIL.list.length > 60) { const k = FAIL.list.map(x => !!(x.ack && x.tend)).lastIndexOf(true); FAIL.list.splice(k >= 0 ? k : FAIL.list.length - 1, 1); }
@@ -1540,10 +1579,15 @@ function failClose(key, val) { const e = failOpenOf(key); if (e) { e.tend = now(
 function failCur(key, val) { const e = failOpenOf(key); if (e) e.cur = val; }
 const failUnack = (key, minSev = 2) => FAIL.list.some(e => (key == null || e.key === key) && !e.ack && e.sev >= minSev);
 function failStats() {
-  let open = 0, unack = 0, ucrit = 0, ucaut = 0;
-  for (const e of FAIL.list) { if (!e.tend) open++; if (!e.ack) { unack++; if (e.sev === 3) ucrit++; else if (e.sev === 2) ucaut++; } }
-  return { n: FAIL.list.length, open, unack, ucrit, ucaut };
+  let open = 0, unack = 0, ucrit = 0, ucaut = 0, nf = 0, ni = 0, iopen = 0;
+  for (const e of FAIL.list) {
+    if (e.sev < 2) { ni++; if (!e.tend) iopen++; continue; }                   // INFO : ni panne, ni acquittement
+    nf++; if (!e.tend) open++; if (!e.ack) { unack++; if (e.sev === 3) ucrit++; else ucaut++; }
+  }
+  return { n: FAIL.list.length, nf, ni, open, iopen, unack, ucrit, ucaut };
 }
+// ordre d'affichage (et de numérotation) : pannes d'abord, puis informations, chacune du plus récent au plus ancien
+const failView = () => FAIL.list.filter(e => e.sev >= 2).concat(FAIL.list.filter(e => e.sev < 2));
 function failAck(e) { if (!e || e.ack) return 0; e.ack = true; e.ackT = now(); return 1; }
 function failAckAll() { const n = FAIL.list.reduce((a, e) => a + failAck(e), 0); if (n) { log('ACK', 'ACK ALL · ' + n + ' FAULT' + (n > 1 ? 'S' : '')); failSave(); } return n; }
 function failClear(only) {                                     // efface les défauts acquittés ET refermés
@@ -1763,7 +1807,8 @@ PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
   } };
 
 // ------------------------------------------------------------------ M21 POWER
-PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTERY', 'BATT'], fps: 2,
+PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTERY', 'BATT'], fps: 2, rng: '12H',
+  keys: [rangeKey(() => PAGES.M21)],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'BATTERY ' + tag('batt'), srcStyle('batt'));
     let y = ir.y; const [hw, x2] = twoUp(ir), b = SRC.batt.v;
@@ -1780,8 +1825,9 @@ PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
     W.kv(scr, ir.x, y++, ir.w, 'LIMITS', 'CAUT < ' + AL.BattLowCaut + ' % · CRIT < ' + AL.BattLowCrit + ' %', t.D, t.F);
     y++;
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, 'CHARGE HISTORY', '30 s / POINT');
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.batt.v, t.N]], { vmin: 0, vmax: 100, step: 30, unit: '%', fmt: v => String(Math.round(v)),
+      const rg = this.rng || '12H', hv = histView(HIST.batt, SPANS[rg], (ir.w - 10) * 2);
+      sub(scr, ir.x, y++, ir.w, 'CHARGE · ' + rg.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, vmax: 100, step: hv.step, fit: true, unit: '%', fmt: v => String(Math.round(v)),
         limits: [[AL.BattLowCaut, 0, 'CAUT', 'lo'], [AL.BattLowCrit, 0, 'CRIT', 'lo']], yticks: [0, 25, 50, 75, 100] });
     }
   } };
@@ -1814,7 +1860,8 @@ PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'AC
   } };
 
 // ------------------------------------------------------------------ M23 BARO
-PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE', 'DEP', 'QNH'], fps: 2,
+PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE', 'DEP', 'QNH'], fps: 2, rng: '12H',
+  keys: [rangeKey(() => PAGES.M23)],
   draw(scr, r, app) {
     const pr = pressure();
     const ir = W.panel(scr, r, this.code, this.name, pr ? pr.src : 'NO SOURCE', pr ? (pr.src === 'SIM' ? t.T : t.TD) : t.TR);
@@ -1838,8 +1885,9 @@ PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
     W.kv(scr, ir.x, y++, ir.w, 'SENSOR', live('baro') ? SRC.baro.v.hpa.toFixed(1) + ' hPa ' + tag('baro') : 'APK ONLY · NO WEB API', t.D, live('baro') ? t.N : t.F);
     y++;
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, 'QNH · 3 h', '1 MIN / POINT');
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.press.v, t.N]], { auto: true, minSpan: 4, step: 60, fmt: v => v.toFixed(0), limits: [[CFG.WXL.StdP, 0, '1013', 'lo']] });
+      const rg = this.rng || '12H', hv = histView(HIST.press, SPANS[rg], (ir.w - 10) * 2);
+      sub(scr, ir.x, y++, ir.w, 'QNH · ' + rg.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { auto: true, minSpan: 4, step: hv.step, fit: true, fmt: v => v.toFixed(0), limits: [[CFG.WXL.StdP, 0, '1013', 'lo']] });
     }
   } };
 
@@ -1877,7 +1925,7 @@ PAGES.M31 = { code: 'M31', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'AN
         if (y < ir.b) scr.put(ir.x, y++, clip('▸ ' + a.act, ir.w), t.D);
       }
       const fe = FAIL.list.find(x => x.key === this.fkey());
-      if (fe && y < ir.b) scr.put(ir.x, y++, clip('FAULT #' + (FAIL.list.indexOf(fe) + 1) + ' · ' + (fe.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · [*4] ' + pageAddr('M32'), ir.w), fe.ack ? t.D : t.RB);
+      if (fe && y < ir.b) scr.put(ir.x, y++, clip((fe.sev < 2 ? 'INFO #' : 'FAULT #') + (failView().indexOf(fe) + 1) + ' · ' + (fe.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (fe.ack ? 'ACK' : 'UNACK') + ' · [*4] ' + pageAddr('M32'), ir.w), fe.ack ? t.D : t.RB);
     }
   } };
 
@@ -1893,16 +1941,16 @@ function wrap(text, w) {
 // Sélection des défauts visés par une commande : rien = le défaut choisi, n = rang affiché, ALL, ou nom (BATT, DEP, GNSS…)
 function failPick(arg) {
   const L = FAIL.list;
-  if (!arg) { const e = L.find(x => x.id === FAIL.sel) || L[0]; return e ? [e] : []; }
+  if (!arg) { const e = L.find(x => x.id === FAIL.sel) || failView()[0]; return e ? [e] : []; }
   if (arg === 'ALL') return L.slice();
-  if (/^\d+$/.test(arg)) return L[+arg - 1] ? [L[+arg - 1]] : [];
+  if (/^\d+$/.test(arg)) { const V = failView(); return V[+arg - 1] ? [V[+arg - 1]] : []; }
   const a = arg.replace(/[^A-Z0-9]/g, '');
   return L.filter(e => e.key.replace(/^FCU\./, '').toUpperCase() === a || e.tag === a || e.key.toUpperCase() === arg || e.msg.replace(/[^A-Z0-9]/g, '').startsWith(a));
 }
 function failCmdAck(app, arg) {
   const es = failPick(arg);
   if (!FAIL.list.length) return app.say('ACK · NO FAULT RECORDED');
-  if (!es.length) return app.say('ACK · NO FAULT ' + arg + ' · SEE 3.2', true);
+  if (!es.length) return app.say('ACK · NO FAULT ' + arg + ' · SEE ' + pageAddr('M32'), true);
   const n = es.reduce((k, e) => k + failAck(e), 0);
   if (n) { failSave(); log('ACK', (arg === 'ALL' ? 'ACK ALL · ' : 'ACK · ') + (es.length === 1 ? es[0].msg : n + ' FAULTS')); haptic(15); }
   app.say(n ? 'ACK · ' + n + ' FAULT' + (n > 1 ? 'S' : '') + ' ACKNOWLEDGED' : 'ACK · ALREADY ACKNOWLEDGED');
@@ -1924,63 +1972,82 @@ PAGES.M32 = { code: 'M32', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
     ['3', '▼ SEL', (app, arg) => PAGES.M32.select(app, arg), ['SEL', 'SEL+', 'DOWN'], 'SEL [n|+|-]'],
     ['4', 'ACK ALL', app => failCmdAck(app, 'ALL'), ['ACKALL']],
     ['5', 'CLEAR', (app, arg) => failCmdClear(app, arg), ['CLEAR', 'CLR'], 'CLEAR [n|ALL]']],
-  idx() { const i = FAIL.list.findIndex(e => e.id === FAIL.sel); return i < 0 ? 0 : i; },
-  cycle(dd) { const L = FAIL.list; if (!L.length) return; FAIL.sel = L[(this.idx() + dd + L.length) % L.length].id; },
+  idx() { const i = failView().findIndex(e => e.id === FAIL.sel); return i < 0 ? 0 : i; },
+  cycle(dd) { const L = failView(); if (!L.length) return; FAIL.sel = L[(this.idx() + dd + L.length) % L.length].id; },
   select(app, arg) {
     if (!arg || arg === '+') return this.cycle(1);
     if (arg === '-') return this.cycle(-1);
     const es = failPick(arg); if (es.length) FAIL.sel = es[0].id; else app.say('SEL · NO FAULT ' + arg, true);
   },
+  // Deux sections bien distinctes : FAILURES (CAUT / CRIT, rouge, à acquitter) puis INFO (flux perdu, boussole
+  // relative… : blanc atténué, acquitté d'office, jamais compté dans les alarmes ni dans le bandeau).
   draw(scr, r, app) {
-    const fs = failStats(), L = FAIL.list, blink = app.blink();
-    const ir = W.panel(scr, r, this.code, this.name, fs.unack + ' UNACK · ' + fs.open + ' ACTIVE · ' + fs.n, (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
+    const fs = failStats(), L = failView(), blink = app.blink();
+    const ir = W.panel(scr, r, this.code, this.name, (fs.unack ? fs.unack + ' UNACK · ' : '') + fs.open + ' ACTIVE' + (fs.ni ? ' · ' + fs.ni + ' INFO' : ''), (fs.ucrit || fs.ucaut) ? t.TR : t.TD);
     let y = ir.y; const by = ir.b;
     if (!L.length) {
       noData(scr, ir.x, y++, ir.w, 'NO FAULT RECORDED');
       y++;
-      ['A FAULT OPENS WHEN AN ANNUNCIATOR (' + pageAddr('M31') + ') TRIPS', 'OR WHEN A FEED IS LOST.', '', 'ACK    SILENCES THE BLINK · STAYS LISTED', 'CLEAR  REMOVES ACK\'D + ENDED FAULTS', 'ACTIVE = STILL PRESENT · ENDED = BACK TO NORMAL', '', 'COMMANDS: ACK [n|ALL] · CLEAR [n|ALL] · SEL n']
+      ['A FAILURE OPENS WHEN AN ALARM (' + pageAddr('M31') + ') TRIPS:', 'CAUT OR CRIT · RED · TO ACKNOWLEDGE.', 'AN INFO IS A NOTICE (FEED LOST, RELATIVE', 'COMPASS…): DIM, NO ACK, NOT AN ALARM.', '',
+        'ACK    SILENCES THE BLINK · STAYS LISTED', 'CLEAR  REMOVES ACK\'D + ENDED ENTRIES', 'ACTIVE = STILL PRESENT · ENDED = BACK TO NORMAL']
         .forEach(l => { if (y < by - 1) scr.put(ir.x, y++, clip(l, ir.w), t.D); });
       return;
     }
     const si = this.idx(); FAIL.sel = L[si].id;
-    // liste : n · ▶ non acquitté · sévérité · heure · message · état
-    const nRows = Math.min(L.length, Math.max(3, Math.min(6, Math.floor((by - y) / 3)))), LH = nRows, lw = ir.w, lr = ir.x + lw;
-    const top = Math.max(0, Math.min(L.length - nRows, si - Math.floor(nRows / 2)));
-    sub(scr, ir.x, y++, ir.w, 'LOG', (top > 0 ? '▲ ' : '') + (si + 1) + '/' + L.length + (top + nRows < L.length ? ' ▼' : ''));
-    const y0 = y;
-    for (let i = top; i < top + nRows; i++) {
-      const e = L[i], sel = i === si, red = e.sev >= 2 && !e.ack;
-      const live = !e.tend, crit = e.sev === 3 && live && !e.ack;
-      if (sel) scr.fill(ir.x, y, lw, 1, ' ', t.INVN);
+    const F = L.filter(e => e.sev >= 2), I = L.filter(e => e.sev < 2), lw = ir.w, lr = ir.x + lw;
+    // place : le détail garde au moins 9 lignes ; pannes jusqu'à 6 lignes, infos jusqu'à 3
+    const room = Math.max(4, by - y - 9 - 2), nF = F.length ? Math.min(F.length, Math.max(2, room - Math.min(I.length, 3))) : 1, nI = Math.min(I.length, Math.max(0, Math.min(3, room - Math.min(nF, 6))));
+    const win = (arr, n, offset) => { const k = si - offset; return k >= 0 && k < arr.length ? Math.max(0, Math.min(arr.length - n, k - Math.floor(n / 2))) : 0; };
+    const row = (e, i, info) => {
+      const sel = i === si, live = !e.tend;
+      if (sel) scr.fill(ir.x, y, lw, 1, ' ', info ? t.INVN : t.INVN);
       const base = sel ? t.INVN : null;
       scr.put(ir.x, y, rjustS(i + 1, 2), base || t.F);
-      scr.put(ir.x + 3, y, e.ack ? ' ' : '▶', base || (red ? t.RB : t.D));
-      scr.put(ir.x + 5, y, FSEV[e.sev], sel ? t.INV : (crit && blink ? t.ALERT : (red ? t.RB : (e.sev === 1 ? t.F : t.D))));
-      scr.put(ir.x + 10, y, hhmm(e.t0), base || t.F);
-      const stt = live ? 'ACTIVE' : 'ENDED';
-      scr.put(ir.x + 16, y, clip(e.msg, lw - 24), base || (live ? (red ? t.R : t.N) : t.D));
-      W.rjust(scr, lr, y, stt, sel ? t.INV : (live ? t.B : t.F));
+      if (info) {
+        scr.put(ir.x + 3, y, 'i', base || t.F);
+        scr.put(ir.x + 5, y, 'INFO', base || t.F);
+        scr.put(ir.x + 10, y, hhmm(e.t0), base || t.F);
+        scr.put(ir.x + 16, y, clip(e.msg, lw - 24), base || (live ? t.D : t.F));
+        W.rjust(scr, lr, y, live ? 'ACTIVE' : 'ENDED', base || (live ? t.D : t.F));
+      } else {
+        const un = !e.ack, crit = e.sev === 3;
+        scr.put(ir.x + 3, y, un ? '▶' : ' ', base || t.RB);
+        scr.put(ir.x + 5, y, FSEV[e.sev], sel ? t.INV : (crit && live && un ? (blink ? t.ALERT : t.RB) : (un || live ? t.RB : t.R)));
+        scr.put(ir.x + 10, y, hhmm(e.t0), base || t.D);
+        scr.put(ir.x + 16, y, clip(e.msg, lw - 24), base || (live ? (un ? t.RB : t.R) : t.D));
+        W.rjust(scr, lr, y, live ? 'ACTIVE' : 'ENDED', sel ? t.INV : (live ? t.RB : t.F));
+      }
       y++;
+    };
+    // FAILURES
+    sub(scr, ir.x, y++, ir.w, 'FAILURES', F.length ? F.length + ' · ' + fs.open + ' ACTIVE · ' + fs.unack + ' UNACK' : 'NONE', fs.unack ? t.RB : t.D);
+    if (!F.length) scr.put(ir.x, y++, clip('NO CAUTION OR CRITICAL ALARM RECORDED', ir.w), t.F);
+    else { const top = win(F, nF, 0); if (top > 0) W.rjust(scr, lr, y - 1, '▲', t.D); for (let i = top; i < top + nF; i++) row(F[i], i, false); if (top + nF < F.length) W.rjust(scr, ir.x + ir.w - 2, y - 1, '▼', t.D); }
+    // INFO
+    if (I.length && nI > 0) {
+      y++;
+      sub(scr, ir.x, y++, ir.w, 'INFO', I.length + ' · ' + fs.iopen + ' ACTIVE · NO ACK', t.F);
+      const top = win(I, nI, F.length); for (let i = top; i < top + nI; i++) row(I[i], F.length + i, true);
     }
-    y = y0 + LH;
-    // détail : le défaut (données), puis un cadre INSTRUCTIONS (conduite à tenir, puis cause) bien séparé
-    const e = L[si], doc = FAIL_DOC[e.key];
+    // détail : le défaut (données), puis un cadre INSTRUCTIONS (rouge pour une panne non acquittée)
+    const e = L[si], doc = FAIL_DOC[e.key], info = e.sev < 2;
     y++;
     if (y >= by - 1) return;
-    sub(scr, ir.x, y++, ir.w, 'FAULT #' + (si + 1) + ' · ' + FSEV[e.sev] + ' · ' + e.tag, (e.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (e.ack ? 'ACK ' + hhmm(e.ackT) : 'UNACK'), e.ack ? t.D : t.RB);
+    if (info) sub(scr, ir.x, y++, ir.w, 'INFO #' + (si + 1) + ' · ' + e.tag, (e.tend ? 'ENDED' : 'ACTIVE') + ' · NOTICE', t.D);
+    else sub(scr, ir.x, y++, ir.w, 'FAILURE #' + (si + 1) + ' · ' + FSEV[e.sev] + ' · ' + e.tag, (e.tend ? 'ENDED' : 'ACTIVE') + ' · ' + (e.ack ? 'ACK ' + hhmm(e.ackT) : 'UNACK'), e.ack ? t.R : t.RB);
     const kv = (k, v, st = t.N) => { if (y < by - 1 && v) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
-    kv(e.title, e.val + (e.cur && e.cur !== e.val ? ' → ' + e.cur : ''), e.sev >= 2 && !e.ack ? t.RB : t.B);
+    kv(e.title, e.val + (e.cur && e.cur !== e.val ? ' → ' + e.cur : ''), info ? t.N : (!e.ack ? t.RB : t.B));
     kv('LIMIT', e.thr, t.D);
     const d = new Date(e.t0 * 1000), day = pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + ' ';
-    kv('TRIPPED', e.tend ? day + hhmm(e.t0) + ' → ' + hhmm(e.tend) + ' · ' + durHM(e.tend - e.t0) + (e.note ? ' · ' + e.note : '') : day + hhmmss(e.t0) + ' · FOR ' + durHM(now() - e.t0), e.tend ? t.D : t.N);
+    kv(info ? 'SINCE' : 'TRIPPED', e.tend ? day + hhmm(e.t0) + ' → ' + hhmm(e.tend) + ' · ' + durHM(e.tend - e.t0) + (e.note ? ' · ' + e.note : '') : day + hhmmss(e.t0) + ' · FOR ' + durHM(now() - e.t0), e.tend ? t.D : t.N);
     const steps = doc ? doc[1].map(st => wrap(st.toUpperCase(), ir.w - 8)) : (e.act ? [wrap(e.act, ir.w - 8)] : []);
     const nSteps = steps.reduce((n, l) => n + l.length, 0), why = doc ? wrap(doc[0].toUpperCase(), ir.w - 4) : [];
     const bh = Math.min(2 + 1 + nSteps + (why.length ? 1 + why.length : 0), by - y);
     if (!steps.length || bh < 4) return;
-    W.box(scr, ir.x, y, ir.w, bh, t.L);
+    W.box(scr, ir.x, y, ir.w, bh, info ? t.L : (!e.ack && !e.tend ? t.RR : t.L));
     let yy = y + 1; const yb = y + bh - 1, ix = ir.x + 2;
-    scr.put(ix, yy++, 'INSTRUCTIONS', t.B);
-    steps.forEach((ls, k) => { if (yy >= yb) return; scr.put(ix, yy, (k + 1) + ' ▸', t.B); scr.put(ix + 4, yy++, ls[0], t.N); for (const l of ls.slice(1)) if (yy < yb) scr.put(ix + 4, yy++, l, t.N); });
+    scr.put(ix, yy++, info ? 'WHAT IT MEANS · OPTIONAL' : 'INSTRUCTIONS', info ? t.D : t.B);
+    steps.forEach((ls, k) => { if (yy >= yb) return; scr.put(ix, yy, (k + 1) + ' ▸', info ? t.D : t.B); scr.put(ix + 4, yy++, ls[0], info ? t.D : t.N); for (const l of ls.slice(1)) if (yy < yb) scr.put(ix + 4, yy++, l, info ? t.D : t.N); });
     if (why.length && yy + 1 < yb) {
       scr.put(ix, yy++, 'CAUSE', t.B);
       why.forEach((l, k) => { if (yy >= yb) return; const last = yy === yb - 1 && k < why.length - 1; scr.put(ix, yy++, last ? clip(l + ' …', ir.w - 4) : l, t.D); });
@@ -2658,6 +2725,318 @@ PAGES.M43 = { code: 'M43', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     });
   } };
 
+// ------------------------------------------------------------------ 4.4 M44 RADAR : pluie observée (−2 h) et prévue (+2 h)
+// Passé : radar RainViewer (mosaïque observée, 10 min, gratuit en usage personnel, zoom 7 ≈ 0,4 km/px). Les tuiles
+// « Universal Blue » sont décodées en dBZ puis recolorées dans la palette de Grafit. Futur : prévision Open-Meteo au
+// quart d'heure sur une grille 7 × 7 autour du téléphone (un modèle, pas une extrapolation du radar). Fond : carte
+// sombre CARTO (© OpenStreetMap, © CARTO) ou repères seuls (cercles, antennes ANFR). Hors ligne : simulation signalée.
+const RV_META = 'https://api.rainviewer.com/public/weather-maps.json';
+// Universal Blue (pluie), dBZ −10 → 74 : couleurs RGB (rainviewer_api_colors_table.csv)
+const RV_UB = ('636159 66635a 69665c 6c685d 6f6b5f 726e61 757062 787364 7c7565 7f7867 827b69 857d6a 88806c 8b826d 8e856f 928871 9e9375 aa9e79 b6a97e c2b482 '
+  + 'cec087 d2c48b d6c88f dacc93 ded097 88ddee 6cd1eb 51c5e8 36bae5 1baee2 00a3e0 009ad5 0091ca 0088bf 007fb4 0077aa 0070a3 00699c 006295 005b8e 005588 005180 '
+  + '004e78 004a70 004768 ffee00 ffe000 ffd200 ffc500 ffb700 ffaa00 ff9f00 ff9500 ff8b00 ff8100 ff4400 f23600 e62800 d91b00 cd0d00 c10000 a80000 8f0000 760000 '
+  + '5d0000 ffaaff ff9fff ff95ff ff8bff ff81ff ff77ff ff6cff ff62ff ff58ff ff4eff ffffff ffffff ffffff ffffff ffffff ffffff ffffff ffffff ffffff ffffff').split(' ')
+  .map(h => [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]);
+let RV_LUT = null;                                       // cube 32³ (RGB 5 bits) -> dBZ
+function rvLut() {
+  if (RV_LUT) return RV_LUT;
+  RV_LUT = new Int8Array(32768);
+  for (let r = 0; r < 32; r++) for (let g = 0; g < 32; g++) for (let b = 0; b < 32; b++) {
+    const R = r * 8 + 4, G = g * 8 + 4, B = b * 8 + 4; let best = 0, bd = 1e9;
+    RV_UB.forEach(([cr, cg, cb], k) => { const d = (cr - R) ** 2 + (cg - G) ** 2 + (cb - B) ** 2; if (d < bd) { bd = d; best = k; } });
+    RV_LUT[(r << 10) | (g << 5) | b] = best - 10;
+  }
+  return RV_LUT;
+}
+const mmhOf = dbz => Math.pow(Math.pow(10, dbz / 10) / 200, 1 / 1.6);          // Marshall-Palmer
+const dbzOf = mmh => mmh > 0 ? 10 * Math.log10(200 * Math.pow(mmh, 1.6)) : -99;
+const RAIN_DBZ = 10, NEAR_DBZ = 17;                         // seuil d'affichage (~0,15 mm/h) et de « pluie » (~0,4 mm/h)
+const rainLabel = mmh => mmh < 0.5 ? 'LIGHT' : (mmh < 4 ? 'MODERATE' : (mmh < 16 ? 'HEAVY' : 'VIOLENT'));
+// palette de Grafit : blanc de plus en plus opaque, rouge au-delà de 40 dBZ (~12 mm/h)
+function rainPx(dbz, out, o) {
+  if (dbz < RAIN_DBZ) { out[o + 3] = 0; return; }
+  if (dbz >= 40) { const c = dbz >= 47 ? REDT : RED; out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 235; return; }
+  out[o] = WHITE[0]; out[o + 1] = WHITE[1]; out[o + 2] = WHITE[2]; out[o + 3] = Math.round(45 + Math.min(1, (dbz - RAIN_DBZ) / 28) * 175);
+}
+
+const RDR = { meta: null, metaT: 0, metaTry: 0, metaErr: '', fc: null, fcT: 0, fcTry: 0, fcKey: '', fcErr: '', R: 30, map: true, play: false, playT0: 0,
+  pick: null, imgs: new Map(), frames: new Map(), cors: true, mapErr: 0, sim: false };
+const RAD_R = [15, 30, 60], RAD_RINGS = { 15: [5, 10], 30: [10, 25], 60: [25, 50] };
+const wxOf = lon => (lon + 180) / 360, wyOf = lat => { const s = Math.sin(lat * RAD); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); };
+const radSim = () => SET.sim === 'ON' || (SET.sim === 'AUTO' && !REAL && (!!RDR.metaErr || !RDR.meta));
+
+async function radFetchMeta() {
+  RDR.metaTry = now();
+  try { const j = JSON.parse(await getText(RV_META)); if (!j.radar || !j.host) throw new Error('BAD JSON'); RDR.meta = j; RDR.metaT = now(); RDR.metaErr = ''; }
+  catch (e) { RDR.metaErr = String(e.message || 'ERROR').toUpperCase(); if (!RDR.meta) log('WX', 'RADAR FEED UNREACHABLE · ' + RDR.metaErr, true); }
+}
+// grille 7 × 7 sur ±1,2 R autour du téléphone, précipitation au quart d'heure sur 2 h (une requête, 49 points)
+async function radFetchFc(key, lat, lon) {
+  RDR.fcTry = now();
+  const n = 7, E = RDR.R * 1.2, la = [], lo = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const dy = E - 2 * E * i / (n - 1), dx = -E + 2 * E * j / (n - 1);
+    la.push((lat + dy / 111.32).toFixed(3)); lo.push((lon + dx / (111.32 * Math.cos(lat * RAD))).toFixed(3));
+  }
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + la.join(',') + '&longitude=' + lo.join(',') + '&minutely_15=precipitation&forecast_minutely_15=9&past_minutely_15=1&timeformat=unixtime';
+  try {
+    const j = JSON.parse(await getText(url)), arr = Array.isArray(j) ? j : [j];
+    if (arr.length !== n * n || !arr[0].minutely_15) throw new Error('BAD GRID');
+    const times = arr[0].minutely_15.time, v = times.map((_, k) => arr.map(p => ((p.minutely_15.precipitation || [])[k] || 0) * 4));   // mm/h
+    RDR.fc = { key, n, E, times, v, t: now() }; RDR.fcT = now(); RDR.fcErr = '';
+  } catch (e) { RDR.fcErr = String(e.message || 'ERROR').toUpperCase(); }
+}
+function radTick() {
+  const T = now(), h = here(), key = h.lat.toFixed(2) + ',' + h.lon.toFixed(2) + ',' + RDR.R;
+  RDR.sim = radSim();
+  if (SET.sim === 'ON') return;
+  if (T - RDR.metaT > 600 && T - RDR.metaTry > (RDR.metaErr ? 120 : 30)) radFetchMeta();
+  if ((RDR.fcKey !== key || T - RDR.fcT > 900) && T - RDR.fcTry > (RDR.fcErr ? 120 : 20)) { RDR.fcKey = key; radFetchFc(key, h.lat, h.lon); }
+}
+
+// ---- simulation : trois averses qui traversent la zone du sud-ouest vers le nord-est
+function simDbz(t, xk, yk) {
+  const dt = (t - SIM.t0) / 3600; let best = -99;
+  for (const [x0, y0, sg, pk] of [[-38, -30, 7, 46], [-12, -42, 5, 34], [-55, 5, 9, 30]]) {
+    const x = x0 + 26 * dt, y = y0 + 20 * dt, d2 = (xk - x) ** 2 + (yk - y) ** 2;
+    best = Math.max(best, pk - 42 * (1 - Math.exp(-d2 / (2 * sg * sg))));
+  }
+  return best;
+}
+function radSimFrames() {
+  const T = Math.floor(now() / 600) * 600, out = [];
+  for (let k = 12; k >= 0; k--) out.push({ k: 'R', t: T - k * 600, sim: true });
+  const q = Math.ceil((T + 60) / 900) * 900; for (let k = 0; k < 8; k++) out.push({ k: 'F', t: q + k * 900, sim: true });
+  return out;
+}
+function radFrames() {
+  if (RDR.sim) return radSimFrames();
+  const out = (RDR.meta ? RDR.meta.radar.past : []).map(f => ({ k: 'R', t: f.time, path: f.path }));
+  const tl = out.length ? out[out.length - 1].t : now() - 600;
+  if (RDR.fc && RDR.fc.key === RDR.fcKey) RDR.fc.times.forEach((t, j) => { if (t > tl + 120 && t <= now() + 2 * 3600 + 300) out.push({ k: 'F', t, j }); });
+  return out;
+}
+function radImg(url, cors) {
+  const key = (cors ? 'C|' : 'N|') + url; let e = RDR.imgs.get(key);
+  if (!e) {
+    const img = new Image(); e = { img, ok: false, err: false, t: now() };
+    if (cors) img.crossOrigin = 'anonymous';
+    img.onload = () => { e.ok = true; }; img.onerror = () => { e.err = true; };
+    img.src = url; RDR.imgs.set(key, e);
+    if (RDR.imgs.size > 300) { const old = [...RDR.imgs.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, 80); old.forEach(([k]) => RDR.imgs.delete(k)); }
+  }
+  return e;
+}
+// statistiques d'une image décodée (dBZ par pixel, S × S couvrant ±R) : pluie la plus proche et pluie au centre
+function radStats(dbz, S, R) {
+  const c = (S - 1) / 2, kpp = 2 * R / S; let near = null, brg = 0, here = -99, best = 1e9;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const v = dbz[y * S + x]; if (v < NEAR_DBZ) continue;
+    const dx = (x - c) * kpp, dy = (c - y) * kpp, d = Math.hypot(dx, dy);
+    if (d <= R && d < best) { best = d; near = d; brg = A.norm360(Math.atan2(dx, dy) * DEG); }
+    if (d <= 1.5) here = Math.max(here, v);
+  }
+  return { near, brg, here };
+}
+// image d'une date : canvas S × S recoloré couvrant ±R, ou null tant que les tuiles arrivent
+function radFrameCanvas(f) {
+  const h = here(), R = RDR.R, vk = h.lat.toFixed(3) + ',' + h.lon.toFixed(3) + ',' + R, key = (f.path || ('sim' + f.t)) + '|' + vk;
+  const hit = RDR.frames.get(key); if (hit) return hit;
+  let S, dbz, raw = null;
+  if (f.sim) {
+    S = 96; dbz = new Float32Array(S * S);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) dbz[y * S + x] = simDbz(f.t, (x + 0.5) / S * 2 * R - R, R - (y + 0.5) / S * 2 * R);
+  } else {
+    const W7 = 512 * 128, cx = wxOf(h.lon) * W7, cy = wyOf(h.lat) * W7, mpp = 40075016.686 * Math.cos(h.lat * RAD) / W7, Rp = R * 1000 / mpp;
+    S = Math.max(16, Math.round(2 * Rp));
+    const x0 = cx - Rp, y0 = cy - Rp, tiles = [];
+    for (let ty = Math.floor(y0 / 512); ty <= Math.floor((y0 + 2 * Rp) / 512); ty++) for (let tx = Math.floor(x0 / 512); tx <= Math.floor((x0 + 2 * Rp) / 512); tx++)
+      tiles.push([tx, ty, radImg(RDR.meta.host + f.path + '/512/7/' + tx + '/' + ty + '/2/1_0.png', RDR.cors)]);
+    if (tiles.some(([, , e]) => e.err)) { if (RDR.cors) { RDR.cors = false; log('WX', 'RADAR TILES WITHOUT CORS · RAW COLORS'); } return null; }
+    if (!tiles.every(([, , e]) => e.ok)) return null;
+    const cv = document.createElement('canvas'); cv.width = cv.height = S;
+    const g = cv.getContext('2d', { willReadFrequently: true });
+    tiles.forEach(([tx, ty, e]) => g.drawImage(e.img, tx * 512 - x0, ty * 512 - y0));
+    try {
+      const id = g.getImageData(0, 0, S, S).data, L = rvLut(); dbz = new Float32Array(S * S);
+      for (let i = 0; i < S * S; i++) { const o = i * 4; dbz[i] = id[o + 3] < 30 ? -99 : L[((id[o] >> 3) << 10) | ((id[o + 1] >> 3) << 5) | (id[o + 2] >> 3)]; }
+    } catch (e) { raw = cv; }                                // tuiles sans CORS : couleurs d'origine, pas de statistiques
+  }
+  let out;
+  if (raw) out = { cv: raw, raw: true, st: null };
+  else {
+    const cv = document.createElement('canvas'); cv.width = cv.height = S;
+    const g = cv.getContext('2d'), im = g.createImageData(S, S);
+    for (let i = 0; i < S * S; i++) rainPx(dbz[i], im.data, i * 4);
+    g.putImageData(im, 0, 0); out = { cv, raw: false, st: radStats(dbz, S, R) };
+  }
+  RDR.frames.set(key, out);
+  if (RDR.frames.size > 60) RDR.frames.delete(RDR.frames.keys().next().value);
+  return out;
+}
+// prévision : grille n × n recolorée (lissée à l'affichage), couvrant ±E
+function radFcCanvas(f) {
+  const R = RDR.R, key = 'fc' + f.t + '|' + (f.sim ? 'sim' : RDR.fc.t) + '|' + R;
+  const hit = RDR.frames.get(key); if (hit) return hit;
+  const n = 7, E = R * 1.2, vals = [];
+  for (let i = 0; i < n * n; i++) {
+    const r = Math.floor(i / n), c = i % n, xk = -E + 2 * E * c / (n - 1), yk = E - 2 * E * r / (n - 1);
+    vals.push(f.sim ? simDbz(f.t, xk, yk) - 3 : dbzOf(RDR.fc.v[f.j][i]));
+  }
+  const cv = document.createElement('canvas'); cv.width = cv.height = n;
+  const g = cv.getContext('2d'), im = g.createImageData(n, n);
+  vals.forEach((v, i) => rainPx(v, im.data, i * 4)); g.putImageData(im, 0, 0);
+  // pluie au centre et la plus proche, sur la grille
+  let near = null, brg = 0; const c0 = (n - 1) / 2, kpp = 2 * E / (n - 1);
+  vals.forEach((v, i) => { if (v < NEAR_DBZ) return; const dx = (i % n - c0) * kpp, dy = (c0 - Math.floor(i / n)) * kpp, d = Math.hypot(dx, dy); if (near == null || d < near) { near = d; brg = A.norm360(Math.atan2(dx, dy) * DEG); } });
+  const out = { cv, fc: true, E, st: { near, brg, here: vals[Math.floor(n * n / 2)] } };
+  RDR.frames.set(key, out); return out;
+}
+// tendance de la pluie la plus proche sur les dernières images radar : km/h (négatif = elle approche)
+function radTrend(frames) {
+  const pts = []; for (const f of frames) { if (f.k !== 'R') continue; const fr = radFrameCanvas(f); if (fr && fr.st && fr.st.near != null) pts.push([f.t / 3600, fr.st.near]); }
+  const p = pts.slice(-4); if (p.length < 3) return null;
+  const mx = p.reduce((a, q) => a + q[0], 0) / p.length, my = p.reduce((a, q) => a + q[1], 0) / p.length;
+  const num = p.reduce((a, q) => a + (q[0] - mx) * (q[1] - my), 0), den = p.reduce((a, q) => a + (q[0] - mx) ** 2, 0);
+  return den ? num / den : null;
+}
+function radBase(c, b, h, R) {                       // fond de carte CARTO sombre (tuiles @2x)
+  const mppView = 2 * R * 1000 / b.w, cosl = Math.cos(h.lat * RAD);
+  const z = Math.max(5, Math.min(13, Math.round(Math.log2(40075016.686 * cosl / (512 * mppView))))), W = 512 * Math.pow(2, z);
+  const cx = wxOf(h.lon) * W, cy = wyOf(h.lat) * W, Rp = R * 1000 / (40075016.686 * cosl / W), s = (b.w / 2) / Rp;
+  let miss = 0;
+  c.save(); c.globalAlpha = 0.72;
+  for (let ty = Math.floor((cy - Rp) / 512); ty <= Math.floor((cy + Rp) / 512); ty++) for (let tx = Math.floor((cx - Rp) / 512); tx <= Math.floor((cx + Rp) / 512); tx++) {
+    const e = radImg('https://' + 'abcd'[(tx + ty) & 3] + '.basemaps.cartocdn.com/dark_all/' + z + '/' + tx + '/' + ty + '@2x.png', false);
+    if (e.err) { miss++; continue; } if (!e.ok) continue;
+    c.drawImage(e.img, b.x + b.w / 2 + (tx * 512 - cx) * s, b.y + b.h / 2 + (ty * 512 - cy) * s, 512 * s + 0.5, 512 * s + 0.5);
+  }
+  c.restore(); RDR.mapErr = miss;
+}
+PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
+  keys: [['1', 'PLAY', () => { RDR.play = !RDR.play; RDR.playT0 = Date.now(); if (RDR.play) RDR.pick = null; }, ['PLAY', 'PAUSE', 'LOOP'], 'PLAY · PAUSE'],
+    ['2', 'ZOOM', (app, arg) => { const v = parseInt(arg, 10); RDR.R = RAD_R.includes(v) ? v : RAD_R[(RAD_R.indexOf(RDR.R) + 1) % RAD_R.length]; RDR.frames.clear(); RDR.fcT = 0; app && app.say('RADAR · ±' + RDR.R + ' km'); }, ['ZOOM', 'RANGE'], 'ZOOM [15|30|60]'],
+    ['3', 'NOW', () => { RDR.play = false; RDR.pick = null; }, ['NOW']],
+    ['4', 'MAP', app => { RDR.map = !RDR.map; app && app.say('RADAR · ' + (RDR.map ? 'DARK MAP' : 'GRID ONLY')); }, ['MAP', 'GRID', 'BASEMAP']],
+    ['5', 'REFRESH', () => { RDR.metaT = 0; RDR.metaTry = 0; RDR.fcT = 0; RDR.fcTry = 0; RDR.frames.clear(); }, ['REFRESH', 'RELOAD']],
+    ['6', '◂', () => PAGES.M44.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M44.stepF(1), ['NEXT', 'FWD']]],
+  stepF(dd) {
+    const F = radFrames(); if (!F.length) return; RDR.play = false;
+    let i = RDR.pick == null ? F.map(f => f.k).lastIndexOf('R') : F.findIndex(f => f.t === RDR.pick);
+    i = Math.max(0, Math.min(F.length - 1, (i < 0 ? 0 : i) + dd)); RDR.pick = F[i].t;
+  },
+  draw(scr, r) {
+    radTick();
+    const F = radFrames(), T = now(), iNow = F.map(f => f.k).lastIndexOf('R');
+    // image affichée : lecture en boucle (passé → futur, pause sur maintenant et à la fin) ou choix fixe
+    let fi = iNow;
+    if (RDR.play && F.length) { const seq = []; F.forEach((_, i) => { seq.push(i); if (i === iNow || i === F.length - 1) seq.push(i, i); }); fi = seq[Math.floor((Date.now() - RDR.playT0) / 450) % seq.length]; }
+    else if (RDR.pick != null) { const k = F.findIndex(f => f.t === RDR.pick); fi = k >= 0 ? k : iNow; }
+    const f = F[fi], fr = !f ? null : (f.k === 'R' ? radFrameCanvas(f) : radFcCanvas(f));
+    const src = RDR.sim ? 'SIM' : (RDR.meta ? 'RAINVIEWER ' + hhmm(RDR.meta.radar.past.slice(-1)[0].time) : (RDR.metaErr ? 'RADAR UNREACHABLE' : 'LOADING'));
+    const ir = W.panel(scr, r, this.code, this.name, src + ' · ±' + RDR.R + ' km', RDR.sim ? t.T : (RDR.meta ? t.TD : t.TF));
+    let y = ir.y;
+    // ligne d'état de l'image
+    if (f) {
+      const dm = Math.round((f.t - T) / 60), rel = (dm >= 0 ? '+' : '−') + Math.floor(Math.abs(dm) / 60) + ':' + pad2(Math.abs(dm) % 60);
+      scr.put(ir.x, y, f.k === 'R' ? 'RADAR' : 'FCST', f.k === 'R' ? t.INV : t.INVN);
+      scr.put(ir.x + 6, y, hhmm(f.t) + ' · ' + (fi === iNow ? 'LATEST' : rel), t.B);
+      W.rjust(scr, ir.r, y, f.k === 'R' ? 'OBSERVED' : 'MODEL · OPEN-METEO', f.k === 'R' ? t.D : t.F);
+    } else scr.put(ir.x, y, RDR.metaErr ? 'RADAR FEED UNREACHABLE · [*5] RETRY' : 'LOADING RADAR FRAMES …', RDR.metaErr ? t.RB : t.D);
+    y++;
+    // carte : carré (largeur du format, hauteur corrigée du rapport des cellules)
+    const mh = Math.max(10, Math.min(ir.b - y - 9, Math.round(ir.w / CELL.aspect))), mw = Math.min(ir.w, Math.round(mh * CELL.aspect)), mx = ir.x + Math.floor((ir.w - mw) / 2);
+    const h = here(), R = RDR.R, useMap = RDR.map && !RDR.sim;
+    const cells = []; if (!useMap) for (const tl of Object.values(CELLS.tiles)) for (const s of tl) cells.push(s);
+    scr.vector(mx, y, mw, mh, (c, b) => {
+      const d = b.d, cx = b.x + b.w / 2, cy = b.y + b.h / 2, k = (b.w / 2) / R;            // px par km
+      c.fillStyle = 'rgb(' + BGT.join(',') + ')'; c.fillRect(b.x, b.y, b.w, b.h);
+      if (useMap) radBase(c, b, h, R);
+      else {                                                                                // repères : antennes ANFR en points
+        c.fillStyle = COL.F;
+        const cosl = Math.cos(h.lat * RAD);
+        for (const s of cells) { const dx = (s[1] - h.lon) * 111.32 * cosl, dy = (s[0] - h.lat) * 111.32; if (Math.abs(dx) < R && Math.abs(dy) < R) c.fillRect(cx + dx * k - d, cy - dy * k - d, 2 * d, 2 * d); }
+      }
+      if (fr) {
+        c.save(); c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+        if (fr.raw) c.globalAlpha = 0.7;
+        if (fr.fc) { const E = fr.E * k; c.drawImage(fr.cv, cx - E, cy - E, 2 * E, 2 * E); }
+        else c.drawImage(fr.cv, b.x, b.y, b.w, b.h);
+        c.restore();
+      }
+      // cercles de distance, croix du téléphone, nord
+      c.strokeStyle = COL.L; c.lineWidth = d; dash(c, d, 3, 4);
+      for (const rk of RAD_RINGS[R]) { c.beginPath(); c.arc(cx, cy, rk * k, 0, 2 * Math.PI); c.stroke(); }
+      dash(c, d, 0);
+      if (fr && fr.st && fr.st.near != null && fr.st.near > 1.5) {                          // vers la pluie la plus proche
+        const a = fr.st.brg * RAD, ex = cx + Math.sin(a) * fr.st.near * k, ey = cy - Math.cos(a) * fr.st.near * k;
+        c.strokeStyle = COL.RR; c.lineWidth = 1.2 * d; dash(c, d, 2, 3); c.beginPath(); c.moveTo(cx, cy); c.lineTo(ex, ey); c.stroke(); dash(c, d, 0);
+        c.fillStyle = COL.RR; c.beginPath(); c.arc(ex, ey, 2.6 * d, 0, 2 * Math.PI); c.fill();
+      }
+      c.strokeStyle = COL.N; c.lineWidth = 1.4 * d; c.beginPath();
+      c.moveTo(cx - 7 * d, cy); c.lineTo(cx - 2.5 * d, cy); c.moveTo(cx + 2.5 * d, cy); c.lineTo(cx + 7 * d, cy);
+      c.moveTo(cx, cy - 7 * d); c.lineTo(cx, cy - 2.5 * d); c.moveTo(cx, cy + 2.5 * d); c.lineTo(cx, cy + 7 * d); c.stroke();
+      c.strokeStyle = COL.L; c.lineWidth = d; c.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+    });
+    // libellés sur la carte
+    const midC = mx + Math.floor(mw / 2), midR = y + Math.floor(mh / 2);
+    scr.put(midC, y, 'N', t.B);
+    RAD_RINGS[R].forEach(rk => { const rr = Math.round(rk / R * mh / 2); if (rr < mh / 2) scr.put(midC + 1, midR - rr, rk + 'km', t.D); });
+    if (useMap) scr.put(mx + 1, y + mh - 1, RDR.mapErr ? 'MAP OFFLINE' : '© OSM © CARTO', t.F);
+    if (RDR.sim) scr.put(mx + 1, y + mh - 1, 'SIMULATED · OFFLINE', t.T);
+    if (fr && fr.raw) W.rjust(scr, mx + mw - 1, y + mh - 1, 'RAW COLORS', t.F);
+    y += mh;
+    // frise : images radar (pleines) et prévision (creuses), curseur, maintenant
+    if (F.length) {
+      const t0 = T - 2 * 3600, t1 = T + 2 * 3600;
+      scr.vector(ir.x, y, ir.w, 1, (c, b) => {
+        const d = b.d, X = tt => b.x + (tt - t0) / (t1 - t0) * b.w, yy = b.y + b.ch * 0.5;
+        c.fillStyle = COL.K; c.fillRect(b.x, yy - d, b.w, 2 * d);
+        F.forEach((g, i) => {
+          const x = X(g.t), hgt = (i === fi ? 0.42 : 0.26) * b.ch;
+          if (g.k === 'R') { c.fillStyle = i === fi ? COL.N : COL.D; c.fillRect(x - 1.5 * d, yy - hgt, 3 * d, 2 * hgt); }
+          else { c.strokeStyle = i === fi ? COL.N : COL.F; c.lineWidth = d; c.strokeRect(x - 1.5 * d, yy - hgt, 3 * d, 2 * hgt); }
+        });
+        c.strokeStyle = COL.RR; c.lineWidth = 1.2 * d; c.beginPath(); c.moveTo(X(T), b.y); c.lineTo(X(T), b.y + b.ch); c.stroke();
+      });
+      y++;
+      [['−2H', 0], ['−1H', 0.25], ['NOW', 0.5], ['+1H', 0.75], ['+2H', 1]].forEach(([l, p]) => scr.put(Math.max(ir.x, Math.min(ir.r - slen(l), ir.x + Math.round(p * (ir.w - 1)) - Math.floor(slen(l) / 2))), y, l, l === 'NOW' ? t.RB : t.F));
+      y++;
+    }
+    // légende
+    if (y < ir.b) {
+      const lg = [['0.2', 12], ['1', 20], ['4', 30], ['12+', 41]]; let x = ir.x;
+      scr.put(x, y, 'mm/h', t.F); x += 5;
+      lg.forEach(([l, z]) => { scr.vector(x, y, 2, 1, (c, b) => { const px = new Uint8ClampedArray(4); rainPx(z, px, 0); c.fillStyle = 'rgba(' + px[0] + ',' + px[1] + ',' + px[2] + ',' + (px[3] / 255) + ')'; c.fillRect(b.x + b.d, b.y + b.ch * 0.2, b.w - 2 * b.d, b.ch * 0.6); }); scr.put(x + 3, y, l, t.D); x += 4 + slen(l); });
+      y += 2;
+    }
+    const kv = (kk, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, kk, v, t.D, st); };
+    // pluie la plus proche (dernière image radar) et sa tendance
+    const fl = iNow >= 0 ? radFrameCanvas(F[iNow]) : null, st = fl && fl.st;
+    if (st) {
+      const tr = radTrend(F), here0 = st.here >= NEAR_DBZ;
+      const txt = here0 ? 'OVERHEAD · ' + rainLabel(mmhOf(st.here)) + ' ' + mmhOf(st.here).toFixed(1) + ' mm/h'
+        : (st.near != null ? Math.round(st.near) + ' km ' + card(st.brg) : 'NONE WITHIN ' + R + ' km');
+      kv('NEAREST RAIN', txt, here0 ? t.B : (st.near != null && st.near < 10 ? t.B : t.N));
+      if (!here0 && st.near != null && tr != null) {
+        if (tr < -4) kv('MOTION', 'APPROACHING ~' + Math.round(-tr) + ' km/h · ETA ~' + Math.max(5, Math.round(st.near / -tr * 60 / 5) * 5) + ' MIN', t.B);
+        else if (tr > 4) kv('MOTION', 'MOVING AWAY ~' + Math.round(tr) + ' km/h', t.D);
+        else kv('MOTION', 'NO CLEAR APPROACH', t.D);
+      }
+    } else if (iNow >= 0 && !RDR.sim && !RDR.cors) kv('NEAREST RAIN', 'N/A · TILES WITHOUT CORS', t.F);
+    // ici, d'après la prévision
+    const fcF = F.filter(g => g.k === 'F');
+    if (fcF.length) {
+      const wet = g => radFcCanvas(g).st.here >= NEAR_DBZ, first = fcF.find(wet);
+      let txt = 'DRY (MODEL)';
+      if (first && first === fcF[0]) { const dry = fcF.find(g => !wet(g)); txt = dry ? 'RAIN UNTIL ~' + hhmm(dry.t - 900) + ' (MODEL)' : 'RAIN ALL 2 H (MODEL)'; }
+      else if (first) txt = 'RAIN FROM ~' + hhmm(Math.max(T, first.t - 900)) + ' (MODEL)';
+      kv('HERE · NEXT 2 H', txt, first ? t.B : t.N);
+    } else if (!RDR.sim) kv('HERE · NEXT 2 H', RDR.fcErr ? 'MODEL UNREACHABLE' : 'LOADING …', t.F);
+    if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] ZOOM [*4] MAP', ir.w), t.F);
+    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP CARTO' : ''), ir.w), t.F);
+  } };
+
 // ------------------------------------------------------------------ M53 CHRONO
 const CHR = { run: false, t0: 0, acc: 0, laps: [], tmr: 0, tmrEnd: 0, tmrRun: false, tmrLeft: 0, rang: false };
 const chrEl = () => CHR.acc + (CHR.run ? now() - CHR.t0 : 0);
@@ -2712,6 +3091,7 @@ PAGES.M81 = { code: 'M81', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
     y++;
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SOURCES', SOURCES.filter(([k]) => SRC[k].mode === 'live').length + ' LIVE · SEE ' + pageAddr('M34'), t.D, t.N);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG', bgState() + ' · ' + pageAddr('M34') + ' [*3]', t.D, BGL.on ? t.N : t.F);
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BUILD', CFG.BUILD + (APK && UPD.current ? ' · APK ' + UPD.current : ''), t.D, t.F);
   } };
 
@@ -2724,7 +3104,8 @@ const SRC_FIX = { orient: 'ARM *1', motion: 'ARM *1', geo: 'LOCATION PERM', batt
 const ageTxt = s => s < 60 ? Math.round(s) + 's' : (s < 3600 ? Math.round(s / 60) + 'm' : (s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd'));
 PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES', 'SOURCE', 'SRC'], fps: 1,
   keys: [['1', 'ARM', cmdArm, ['ARM', 'PERMS']],
-    ['2', 'REFRESH', cmdFeeds, ['REFRESH', 'FEEDS']]],
+    ['2', 'REFRESH', cmdFeeds, ['REFRESH', 'FEEDS']],
+    ['3', 'BG LOG', (app, arg) => bgSet(app, arg === 'ON' ? true : (arg === 'OFF' ? false : BGL.on === false)), ['BGLOG', 'BACKGROUND'], 'BGLOG [ON|OFF]']],
   draw(scr, r) {
     const nl = SOURCES.filter(([k]) => SRC[k].mode === 'live').length, ns = SOURCES.filter(([k]) => SRC[k].mode === 'sim').length;
     const ir = W.panel(scr, r, this.code, this.name, nl + ' LIVE' + (ns ? ' · ' + ns + ' SIM' : ''), ns ? t.T : t.TD);
@@ -2732,7 +3113,7 @@ PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES
     sub(scr, ir.x, y++, ir.w, 'SOURCE', 'STATE · AGE · FIX', t.F);
     const T = now();
     for (const [k, n, desc] of SOURCES) {
-      if (y >= ir.b - 2) break;
+      if (y >= ir.b - 3) break;
       const s = SRC[k], m = k === 'tle' ? (TLE_SRC === 'CELESTRAK' ? 'live' : (TLE_SRC === 'CACHED' ? 'sim' : s.mode)) : s.mode;
       const st = ({ live: 'LIVE', sim: k === 'tle' ? 'CACHE' : 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[m] || m.toUpperCase();
       const apkOnly = / · APK$/.test(desc);
@@ -2743,7 +3124,11 @@ PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES
       W.rjust(scr, ir.r, y, clip(fix, ir.w - 23), t.F);
       y++;
     }
-    if (y < ir.b) { y++; scr.put(ir.x, Math.min(y, ir.b - 1), clip(REAL ? 'AUTO: PHONE SENSORS LIVE · NOTHING SIMULATED' : 'AUTO: NO PHONE SENSOR · MISSING SOURCES SIMULATED', ir.w), t.F); }
+    if (y < ir.b - 1) {
+      y++;
+      W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG [*3]', bgState() + (APK && BGL.last ? ' · LAST ' + hhmm(BGL.last / 1000) + ' · ' + (BGL.n || 0) + ' SAMPLES' : ''), t.D, BGL.on ? t.B : (APK ? t.RB : t.F));
+    }
+    if (y < ir.b) scr.put(ir.x, y, clip(REAL ? 'AUTO: PHONE SENSORS LIVE · NOTHING SIMULATED' : 'AUTO: NO PHONE SENSOR · MISSING SOURCES SIMULATED', ir.w), t.F);
   } };
 
 // ------------------------------------------------------------------ cadran du ciel commun (SATS, RELAYS)
@@ -3865,11 +4250,93 @@ function slowTick() {                                   // 1 Hz : alarmes, tenda
 }
 let DAYT = 0;
 
+// ---------------------------------------------------------------------------------------- journal continu (APK)
+// Le service Android de Grafit relève toutes les minutes, écran éteint compris : pression, batterie, état thermique,
+// pas, signal mobile ; il note aussi les déverrouillages et extinctions d'écran. Au retour au premier plan, la page lit
+// ce qui manque (bgRead) et le verse dans les historiques, la tendance de pression, les pas, le réveil et le journal.
+const BGL = { on: null, last: 0, alt: null, pending: false, waitT: 0, n: 0, prev: {}, ev: [] };
+try { const j = JSON.parse(localStorage.getItem('grafit.bg') || 'null'); if (j) Object.assign(BGL, j, { pending: false }); } catch (e) { /* */ }
+function bgSave() { try { localStorage.setItem('grafit.bg', JSON.stringify({ on: BGL.on, last: BGL.last, alt: BGL.alt, n: BGL.n, prev: BGL.prev, ev: BGL.ev })); } catch (e) { /* */ } }
+const bgWaiting = () => BGL.pending && now() - BGL.waitT < 6;
+function bgRequest() { if (APK && nativeCmd({ cmd: 'bgRead', since: BGL.last || 0 })) { BGL.pending = true; BGL.waitT = now(); } }
+function bgSet(app, on) {
+  if (!APK) return app && app.say('BACKGROUND LOG: GRAFIT APK ONLY', true);
+  nativeCmd({ cmd: 'bglog', on }); BGL.on = on; bgSave(); log('SYS', 'BACKGROUND LOG ' + (on ? 'ON' : 'OFF'));
+  app && app.say('BACKGROUND LOG ' + (on ? 'ON · EVERY MINUTE, SCREEN OFF TOO' : 'OFF · GRAPHS ONLY WHILE GRAFIT IS OPEN'));
+}
+const bgState = () => !APK ? 'APK ONLY' : (BGL.on === false ? 'OFF' : (BGL.on ? 'ON' : '…'));
+function bgEvent(ts, k) {
+  if (k === 'UNLOCK') logAt(ts, 'SCR', 'UNLOCK'); else if (k === 'OFF') logAt(ts, 'SCR', 'SCREEN OFF');
+  BGL.ev.push([ts, k]);
+  const lim = now() - 40 * 3600; while (BGL.ev.length && BGL.ev[0][0] < lim) BGL.ev.shift();
+}
+// réveil sans accès aux statistiques d'usage : mêmes règles que l'APK (coup d'œil < 3 min suivi de 45 min sans
+// déverrouillage = ignoré ; coucher = dernière extinction d'écran avant 03:00)
+function bgWake() {
+  if (DAYREC.usage === true) return;
+  const d3 = new Date(); d3.setHours(3, 0, 0, 0); const day3 = d3.getTime() / 1000, T = now();
+  if (T < day3) return;
+  let lastLock = null, open = null; const ses = [];
+  for (const [ts, k] of BGL.ev) {
+    if (ts < day3) { if (k === 'OFF' && ts > day3 - 9 * 3600) lastLock = ts; continue; }
+    if (k === 'UNLOCK' && open == null) open = ts;
+    else if (k === 'OFF' && open != null) { ses.push([open, ts]); open = null; }
+  }
+  if (open != null) ses.push([open, T]);
+  let g = 0;
+  for (let i = 0; i < ses.length; i++) {
+    const last = i === ses.length - 1, gap = last ? Infinity : ses[i + 1][0] - ses[i][1];
+    if (!last && ses[i][1] - ses[i][0] < 180 && gap >= 2700) { g++; continue; }
+    return dayUnlock(ses[i][0], lastLock, g);
+  }
+}
+// lignes : [ms, 'S', p hPa (station), batt %, charge 0/1, batt °C, santé, thermique, pas, dBm] · [ms, 'E', UNLOCK|OFF|ON]
+function bgIngest(d) {
+  BGL.pending = false;
+  if (d.on != null) BGL.on = !!d.on;
+  const rows = (d.rows || []).filter(r => r[0] > (BGL.last || 0)).sort((a, b) => a[0] - b[0]);
+  if (!rows.length) { bgSave(); return; }
+  const P = BGL.prev; let ns = 0, ne = 0;
+  for (const r of rows) {
+    const ms = r[0], ts = ms / 1000;
+    if (r[1] === 'E') { bgEvent(ts, r[2]); ne++; continue; }
+    ns++;
+    const [, , p, batt, chg, bt, health, therm, steps] = r;
+    if (p != null) {
+      const q = BGL.alt != null ? qnhOf(p, BGL.alt) : p;
+      HIST.press.put(q, ts);
+      if ((TREND_SRC === 'BARO' || !TREND_SRC) && ms > TREND_T) {
+        TREND_SRC = 'BARO'; const before = TREND.level, pa = Math.round(q * 100);
+        trendBridge(pa, ms, ts); PT.update(TREND, PTC, pa, ms); TREND_T = ms;
+        if (TREND.level !== before) logAt(ts, 'BARO', 'P TREND ' + PT.NAMES[before] + ' → ' + PT.NAMES[TREND.level]);
+      }
+    }
+    if (batt != null) {
+      HIST.batt.put(batt, ts);
+      if (P.chg != null && !!chg !== !!P.chg) logAt(ts, 'PWR', (chg ? 'CHARGER PLUGGED · ' : 'UNPLUGGED · ') + batt + ' %');
+      if (!chg && P.batt != null) for (const lim of [AL.BattLowCaut, AL.BattLowCrit]) if (P.batt >= lim && batt < lim) logAt(ts, 'PWR', 'BATT LOW · ' + batt + ' % < ' + lim + ' %', true);
+      P.batt = batt; P.chg = chg;
+    }
+    if (bt != null) { if (P.bt != null && P.bt < AL.BattTempCaut && bt >= AL.BattTempCaut) logAt(ts, 'TMP', 'BATT TEMP ' + bt.toFixed(1) + ' °C', true); P.bt = bt; }
+    if (therm != null) { if (P.therm != null && therm !== P.therm) logAt(ts, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[therm], therm >= 3); P.therm = therm; }
+    if (health != null) { if (P.health != null && health !== P.health && health !== 2) logAt(ts, 'PWR', 'BATT HEALTH ' + (BATT_HEALTH[health] || health), true); P.health = health; }
+    if (steps != null) stepsFeed(steps, ts, true);
+  }
+  BGL.last = rows[rows.length - 1][0]; BGL.n = (BGL.n || 0) + ns;
+  try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
+  if (SRC.steps.mode === 'live') SRC.steps.v.today = STEPS.today;
+  bgWake(); bgSave(); logDirty = true; logSave(); persistSave();
+  if (ns + ne > 2) log('SYS', 'BACKGROUND LOG · ' + ns + ' SAMPLES · ' + ne + ' SCREEN EVENTS SINCE ' + hhmm(rows[0][0] / 1000));
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') bgRequest(); });
+
+
 // ---------------------------------------------------------------------------------------- persistance
 // Ce qui doit survivre à la fermeture de l'App : historiques batterie et pression (avec trou marqué), dernière
 // météo (affichée « CACHED » jusqu'au prochain flux, 12 h au plus), dernier TLE, chrono et minuteur.
 function persistSave() {
   try {
+    if (live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null && SRC.geo.v.acc < 100) { BGL.alt = Math.round(SRC.geo.v.alt); bgSave(); }   // altitude pour le QNH hors GNSS
     localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), press: HIST.press.dump(), src: TREND_SRC }));
     localStorage.setItem('grafit.chr', JSON.stringify(CHR));
     if (SRC.wx.mode === 'live' && SRC.wx.v.at && SRC.wx.v.at !== persistSave.wxAt) { localStorage.setItem('grafit.wx', JSON.stringify(SRC.wx.v)); persistSave.wxAt = SRC.wx.v.at; }
@@ -3893,6 +4360,7 @@ window.addEventListener('pagehide', persistSave);
 
 function boot() {
   loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); persistLoad(); dayTick(true);
+  if (APK) setTimeout(bgRequest, 300);
   if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); }
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);

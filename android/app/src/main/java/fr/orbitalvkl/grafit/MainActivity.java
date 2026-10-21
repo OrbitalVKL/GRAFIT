@@ -158,6 +158,7 @@ public class MainActivity extends Activity {
         loaded = true;
         web.loadUrl(START);
         probes.start();
+        if (LoggerService.enabled(this)) LoggerService.start(this);       // journal continu (arrière-plan)
     }
 
     @Override
@@ -166,7 +167,7 @@ public class MainActivity extends Activity {
         if (!loaded) load(); else { probes.stop(); probes.start(); probes.pushAll(); }
     }
 
-    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings | saveLog, on, name, text} */
+    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings | saveLog | bglog | bgRead, on, name, text, since} */
     void onCommand(String data) {
         try {
             JSONObject o = new JSONObject(data);
@@ -191,6 +192,13 @@ public class MainActivity extends Activity {
                     break;
                 case "saveLog":
                     saveLog(o.optString("name"), o.optString("text"));
+                    break;
+                case "bglog":
+                    LoggerService.setEnabled(this, on);
+                    bgPush(-1);
+                    break;
+                case "bgRead":
+                    bgPush(o.optLong("since", 0));
                     break;
                 case "keepOn":
                     if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -232,6 +240,19 @@ public class MainActivity extends Activity {
             try { d.put("logError", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ }
         }
         push(d);
+    }
+
+    /** Journal continu vers la page : état, et lignes postérieures à since (since < 0 : état seul). Lecture hors du fil principal. */
+    void bgPush(long since) {
+        new Thread(() -> {
+            try {
+                JSONObject b = new JSONObject();
+                b.put("on", LoggerService.enabled(this));
+                if (since >= 0) b.put("rows", LoggerService.readSince(this, since, 15000));
+                JSONObject d = new JSONObject(); d.put("bglog", b);
+                push(d);
+            } catch (Exception e) { /* */ }
+        }).start();
     }
 
     /** Envoi à la page : window.dispatchEvent(new CustomEvent('grafit-native', {detail})) */
