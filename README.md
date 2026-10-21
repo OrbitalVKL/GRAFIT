@@ -19,7 +19,14 @@ Le journal est conservé sur l'appareil (2 000 événements, plusieurs jours), p
 arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargements/Grafit/grafit-log-AAAAMMJJ-HHMM.txt`
 (APK) ou le télécharge (web), avec l'état des sources au moment de l'export.
 
-## Groupes (1.8.0)
+## Groupes et codes (1.8.1)
 
-1 STATUS · 2 SYSTEMS · 3 ALARMS · 4 WEATHER (4.1 FORECAST jour, 4.2 WEATHER, 4.3 WEEK) · 5 DAY (agenda, day,
-chrono) · 6 COMMS · 7 NAV · 8 CMD.
+Code de format = M + adresse : 1 STATUS (M11) · 2 SYSTEMS (M21 POWER, M22 MOTION, M23 BARO, M24 TEMPS) ·
+3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 FORECAST, M42 WEATHER, M43 WEEK) ·
+5 DAY (M51 AGENDA, M52 DAY, M53 CHRONO) · 6 COMMS (M61–M64) · 7 NAV (M71–M75) · 8 CMD (M81 QUICK SET).
+
+## Alarmes (3.1)
+
+Paramètres du téléphone seulement : batterie (charge, température, santé Android), état thermique, choc,
+réseau, signal mobile, GNSS, boussole, flux des capteurs, stockage. Le FCU virtuel du S-16 est retiré ; la
+tendance de pression reste une information sur 2.3 BARO.

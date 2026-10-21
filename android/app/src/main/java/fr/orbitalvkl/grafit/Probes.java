@@ -22,6 +22,8 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Build;
+import android.os.Environment;
+import android.os.StatFs;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -51,7 +53,8 @@ import java.util.TimeZone;
  * Capteurs et sources du téléphone, lus seulement pendant que Grafit est au premier plan, et envoyés à la page :
  *   toutes les 2 s : baro (hPa), light (lx), ambient (°C), battTemp (°C), thermal {status, headroom},
  *                    steps (compteur depuis le démarrage), gnss [{c, svid, az, el, cn0, used}]
- *   toutes les 10 s : cell {rat, operator, pci, band, rsrp, ci, tac, mcc, mnc}
+ *   toutes les 10 s : cell {rat, operator, pci, band, rsrp, ci, tac, mcc, mnc} ou {none}, storage {free, total}
+ *   (toutes les 2 s aussi : battHealth, code BatteryManager.BATTERY_HEALTH_*)
  *   au démarrage, au retour et à chaque changement : agenda [{start, stop (ms), title, loc, allDay, uid}]
  *   au démarrage et au retour : nextAlarm (ms), usage ; firstUnlock, lastLock (ms), glances si l'accès aux statistiques d'usage est accordé
  */
@@ -156,6 +159,7 @@ class Probes implements SensorEventListener {
                 if (b != null) {
                     int t = b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
                     if (t != Integer.MIN_VALUE) d.put("battTemp", t / 10.0);
+                    d.put("battHealth", b.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
                 }
                 if (pm != null) {
                     JSONObject th = new JSONObject();
@@ -227,6 +231,11 @@ class Probes implements SensorEventListener {
                     try { onCells(tm.getAllCellInfo()); } catch (SecurityException se) { /* */ }
                 }
             }
+            try {                                                        // stockage interne : libre / total (octets)
+                StatFs st = new StatFs(Environment.getDataDirectory().getPath());
+                JSONObject o = new JSONObject(); o.put("free", st.getAvailableBytes()); o.put("total", st.getTotalBytes());
+                JSONObject d = new JSONObject(); d.put("storage", o); act.push(d);
+            } catch (Exception e) { /* */ }
             h.postDelayed(this, 10000);
         }
     };
@@ -286,6 +295,9 @@ class Probes implements SensorEventListener {
                 act.push(d);
                 return;
             }
+            // aucune cellule enregistrée : pas de service (mode avion, hors couverture, pas de SIM)
+            JSONObject c = new JSONObject(); c.put("none", true);
+            JSONObject d = new JSONObject(); d.put("cell", c); act.push(d);
         } catch (Exception e) { /* */ }
     }
 
