@@ -23,6 +23,10 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.os.SystemClock;
 import android.telephony.CellSignalStrength;
 import android.telephony.SignalStrength;
 import android.telephony.TelephonyManager;
@@ -34,16 +38,22 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Journal continu de Grafit (réglable, actif par défaut) : un relevé par minute, écran éteint compris, écrit dans
  * un fichier privé de l'application (files/bglog.csv, une semaine environ) que la page lit au retour au premier plan.
- *   S,ms,pression station hPa,batterie %,en charge 0/1,batterie °C,santé,état thermique,pas,dBm
+ *   S,ms,pression station hPa,batterie %,en charge 0/1,batterie °C,santé,état thermique,pas,dBm,RTT ms (−1 perdu),
+ *     réseau W|C|E|O|N,mouvement g rms,pic g      (mouvement : accéléromètre 3 s ; RTT : 2 requêtes 204, la meilleure)
  *   E,ms,UNLOCK|OFF|ON          (déverrouillage, extinction et allumage de l'écran)
  * Service de premier plan (exigé par Android pour lire le baromètre en arrière-plan). L'application ne demande pas
  * la permission des notifications : la notification obligatoire du service n'apparaît donc pas dans le volet (elle
@@ -57,6 +67,8 @@ public class LoggerService extends Service implements SensorEventListener {
     static final int NOTIF_ID = 16;
     static final Object LOCK = new Object();
     static LoggerService instance;
+    static final ExecutorService NET = Executors.newSingleThreadExecutor();
+    static final String PROBE = "https://www.gstatic.com/generate_204";
 
     final Handler h = new Handler(Looper.getMainLooper());
     SensorManager sm;
@@ -69,6 +81,12 @@ public class LoggerService extends Service implements SensorEventListener {
     double pSum = 0;
     int pN = 0;
     Long steps = null;
+    double aSum2 = 0, aMax = 0;
+    int aN = 0;
+    boolean winDone = false, netDone = false;
+    long rtt = -2;                                    // −2 : pas de mesure (pas de réseau), −1 : perdu
+    String tr = "N";
+    final Runnable winR = () -> { winDone = true; sm.unregisterListener(this); if (netDone) finish(); };
     final Runnable finishR = this::finish;
 
     // ------------------------------------------------------------------ commandes (page, démarrage, alarme)
@@ -123,9 +141,10 @@ public class LoggerService extends Service implements SensorEventListener {
             if (p.length >= 3 && "E".equals(p[0])) { a.put(Long.parseLong(p[1])); a.put("E"); a.put(p[2]); return a; }
             if (p.length < 10 || !"S".equals(p[0])) return null;
             a.put(Long.parseLong(p[1])); a.put("S");
-            for (int i = 2; i < 10; i++) {
-                if (p[i].isEmpty()) a.put(org.json.JSONObject.NULL);
-                else if (i == 2 || i == 5) a.put(Double.parseDouble(p[i]));
+            for (int i = 2; i < 14; i++) {
+                if (i >= p.length || p[i].isEmpty()) a.put(org.json.JSONObject.NULL);
+                else if (i == 11) a.put(p[i]);
+                else if (i == 2 || i == 5 || i == 12 || i == 13) a.put(Double.parseDouble(p[i]));
                 else a.put(Long.parseLong(p[i]));
             }
             return a;
@@ -214,23 +233,57 @@ public class LoggerService extends Service implements SensorEventListener {
         sampling = true;
         if (wl == null) { wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "grafit:log"); wl.setReferenceCounted(false); }
         wl.acquire(10_000L);
-        pSum = 0; pN = 0;
+        pSum = 0; pN = 0; aSum2 = 0; aMax = 0; aN = 0; winDone = false; netDone = false; rtt = -2; tr = "N";
         Sensor ps = sm.getDefaultSensor(Sensor.TYPE_PRESSURE);
         if (ps != null) sm.registerListener(this, ps, SensorManager.SENSOR_DELAY_NORMAL, h);
+        Sensor ac = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        if (ac != null) sm.registerListener(this, ac, SensorManager.SENSOR_DELAY_GAME, h);
+        NET.execute(this::probe);
         if (checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED) {
             Sensor sc = sm.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
             if (sc != null) sm.registerListener(this, sc, SensorManager.SENSOR_DELAY_NORMAL, h);
         }
-        h.postDelayed(finishR, ps != null ? 3000 : 400);
+        h.postDelayed(winR, 3000);
+        h.postDelayed(finishR, 9000);                  // garde-fou : la ligne s'écrit quoi qu'il arrive
+    }
+
+    /** Latence : deux petites requêtes sur le réseau actif ; la seconde réutilise la connexion. Type de réseau. */
+    void probe() {
+        long best = -2; String t = "N";
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            Network n = cm != null ? cm.getActiveNetwork() : null;
+            NetworkCapabilities nc = n != null ? cm.getNetworkCapabilities(n) : null;
+            if (nc != null) {
+                t = nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "W" : nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "C"
+                    : nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "E" : "O";
+                best = -1;
+                for (int k = 0; k < 2; k++) {
+                    long t0 = SystemClock.elapsedRealtime();
+                    HttpURLConnection c = (HttpURLConnection) n.openConnection(new URL(PROBE));
+                    c.setConnectTimeout(4000); c.setReadTimeout(4000); c.setUseCaches(false);
+                    try {
+                        int code = c.getResponseCode();
+                        try (InputStream is = code < 400 ? c.getInputStream() : c.getErrorStream()) { if (is != null) while (is.read() >= 0) { /* vide */ } }
+                        long dt = SystemClock.elapsedRealtime() - t0;
+                        if (code == 204 && (best < 0 || dt < best)) best = dt;
+                    } catch (Exception e) { /* tentative perdue */ }
+                }
+            }
+        } catch (Exception e) { /* */ }
+        final long r = best; final String tt = t;
+        h.post(() -> { rtt = r; tr = tt; netDone = true; if (winDone) finish(); });
     }
 
     @Override
     public void onSensorChanged(SensorEvent e) {
         int t = e.sensor.getType();
-        if (t == Sensor.TYPE_PRESSURE) {
-            pSum += e.values[0]; pN++;
-            if (pN >= 5) { h.removeCallbacks(finishR); h.post(finishR); }
-        } else if (t == Sensor.TYPE_STEP_COUNTER) steps = (long) e.values[0];
+        if (t == Sensor.TYPE_PRESSURE) { pSum += e.values[0]; pN++; }
+        else if (t == Sensor.TYPE_STEP_COUNTER) steps = (long) e.values[0];
+        else if (t == Sensor.TYPE_ACCELEROMETER) {
+            double m = Math.sqrt(e.values[0] * e.values[0] + e.values[1] * e.values[1] + e.values[2] * e.values[2]), dv = m - SensorManager.GRAVITY_EARTH;
+            aSum2 += dv * dv; aN++; if (m > aMax) aMax = m;
+        }
     }
 
     @Override
@@ -239,6 +292,7 @@ public class LoggerService extends Service implements SensorEventListener {
     void finish() {
         if (!sampling) return;
         sampling = false;
+        h.removeCallbacks(winR); h.removeCallbacks(finishR);
         sm.unregisterListener(this);
         StringBuilder b = new StringBuilder("S,").append(System.currentTimeMillis()).append(',');
         if (pN > 0) b.append(String.format(Locale.ROOT, "%.2f", pSum / pN));
@@ -257,6 +311,11 @@ public class LoggerService extends Service implements SensorEventListener {
         b.append(',');
         Integer dbm = dbm();
         if (dbm != null) b.append(dbm);
+        b.append(',');
+        if (rtt >= -1) b.append(rtt);
+        b.append(',').append(tr).append(',');
+        if (aN > 0) b.append(String.format(Locale.ROOT, "%.3f,%.2f", Math.sqrt(aSum2 / aN) / SensorManager.GRAVITY_EARTH, aMax / SensorManager.GRAVITY_EARTH));
+        else b.append(',');
         append(b.toString());
         release();
     }

@@ -43,7 +43,18 @@ estimée à partir des dernières images radar.
 ## Journal continu (APK, 1.9.0)
 
 Service Android de premier plan (réglable en 3.4 `*3`, actif par défaut) : un relevé par minute, écran éteint
-compris (pression, batterie, état thermique, pas, signal), plus les déverrouillages et extinctions d'écran, dans un
+compris (pression, batterie et charge, températures, état thermique, pas, signal mobile, latence Internet mesurée
+par deux requêtes 204, mouvement sur 3 s d'accéléromètre), plus les déverrouillages et extinctions d'écran, dans un
 fichier privé de l'application (une semaine environ). La page le lit au retour et complète graphes (2.1, 2.3 :
 3/12/24 h), tendance de pression, pas, heure de réveil et journal 3.3. La permission de notifications n'est pas
 demandée : la notification obligatoire du service n'apparaît pas dans le volet.
+
+## Courbes et santé (1.9.2)
+
+Toutes les courbes d'historique sont alimentées en continu par le journal de l'APK : batterie (2.1), mouvement (2.2),
+pression (2.3), températures (2.4), latence et signal mobile (6.1), sur 3/12/24 h, axe en heures. Restent en direct
+seulement : l'oscilloscope 10 s de 2.2 (`*1` LIVE), le niveau du micro (6.4, jamais enregistré) et la précision GNSS
+(7.5, GPS non journalisé pour la batterie).
+
+5.4 HEALTH : 7 jours glissants — nuits (coucher → réveil), réveil, coucher, sommeil, pas, minutes actives, temps
+d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événements d'écran (coups d'œil nocturnes écartés).

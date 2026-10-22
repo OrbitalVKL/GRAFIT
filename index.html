@@ -910,7 +910,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.9.1', BUILD: '20261022', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.9.2', BUILD: '20261022', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -943,7 +943,7 @@ function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringif
 // Les adresses citées dans les textes viennent de pageAddr() : elles suivent toute réorganisation.
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
-  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
+  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53', 'M54']],
   ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']], ['8', 'CMD', 'КОМ', ['M81']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
@@ -1040,8 +1040,8 @@ function histView(h, span, n) {
   }
   return { v: out, step: per * h.every };
 }
-const rangeKey = (pg, dflt = '12H') => ['1', 'RANGE', (app, arg, wd) => { const k = Object.keys(SPANS); pg().rng = SPANS[wd] ? wd : (SPANS[arg] ? arg : k[(k.indexOf(pg().rng || dflt) + 1) % k.length]); app && app.say('RANGE ' + pg().rng); }, ['RANGE', '3H', '12H', '24H'], 'RANGE [3H|12H|24H]'];
-const logNote = () => APK ? (BGL.on === false ? 'OPEN ONLY' : 'LOGGED 24/7') : 'OPEN ONLY';
+const rangeKey = (pg, dflt = '12H', key = '1') => [key, 'RANGE', (app, arg, wd) => { const k = Object.keys(SPANS); pg().rng = SPANS[wd] ? wd : (SPANS[arg] ? arg : k[(k.indexOf(pg().rng || dflt) + 1) % k.length]); app && app.say('RANGE ' + pg().rng); }, ['RANGE', '3H', '12H', '24H'], 'RANGE [3H|12H|24H]'];
+const logNote = () => APK ? (BGL.on === false ? 'OPEN ONLY' : '24/7 LOG') : 'OPEN ONLY';
 const clockAxis = () => { const T = now(); return { tEnd: T, xfmt: sec => hhmm(T - sec) }; };        // axe en heures réelles
 // vitesse de charge / décharge sur la dernière heure (%/h, régression) ; null si trop peu de données ou trop stable
 function battRate() {
@@ -1064,7 +1064,7 @@ const SOURCES = [
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
-const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(720, 5, true), chg: new Hist(1440, 60), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
+const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(1440, 60), chg: new Hist(1440, 60), act: new Hist(1440, 60), bt: new Hist(1440, 60), sig: new Hist(1440, 60), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
 
 function feedLive(k, v) {
   const s = SRC[k];
@@ -1122,7 +1122,7 @@ window.addEventListener('grafit-native', e => {
     feedLive('therm', { status: st, headroom: d.thermal.headroom != null ? +d.thermal.headroom : null });
     if (prev != null && st !== prev) log('TMP', 'PHONE THERMAL ' + THERM_NAMES[st], st >= 3);
   }
-  if (d.firstUnlock) { const fu = d.firstUnlock > 1e11 ? d.firstUnlock / 1000 : +d.firstUnlock; if (typeof dayUnlock === 'function') dayUnlock(fu, d.lastLock ? d.lastLock / 1000 : null, +d.glances || 0); }
+  if (d.firstUnlock && !(typeof bgNight === 'function' && bgNight())) { const fu = d.firstUnlock > 1e11 ? d.firstUnlock / 1000 : +d.firstUnlock; if (typeof dayUnlock === 'function') dayUnlock(fu, d.lastLock ? d.lastLock / 1000 : null, +d.glances || 0); }
   if (d.baro != null) feedLive('baro', { hpa: +d.baro });
   if (d.battTemp != null) feedLive('btemp', { c: +d.battTemp, health: d.battHealth != null ? +d.battHealth : null });
   if (d.storage && d.storage.total) feedLive('store', { free: +d.storage.free, total: +d.storage.total });
@@ -1890,7 +1890,8 @@ PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
   } };
 
 // ------------------------------------------------------------------ M22 MOTION
-PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'ACCEL', 'GYRO', 'G'], fps: 8,
+PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'ACCEL', 'GYRO', 'G'], fps: 8, rng: '12H',
+  keys: [['1', 'RANGE', (app, arg, wd) => { const k = ['LIVE', '3H', '12H', '24H'], v = k.includes(wd) ? wd : (k.includes(arg) ? arg : k[(k.indexOf(PAGES.M22.rng) + 1) % k.length]); PAGES.M22.rng = v; app && app.say('MOTION · ' + v); }, ['RANGE', 'LIVE', '3H', '12H', '24H'], 'RANGE [LIVE|3H|12H|24H]']],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'ACCEL · GYRO ' + tag('motion'), srcStyle('motion'));
     let y = ir.y; const [hw, x2] = twoUp(ir), g = gLoad();
@@ -1910,7 +1911,14 @@ PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'AC
     if (y < ir.b) { W.kv(scr, ir.x, y++, ir.w, 'GYRO α β γ', [m.ra, m.rb, m.rg].map(v => sgn(v, 0)).join(' ') + ' °/s'); }
     y++;
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, '|a| HISTORY', 'g');
+      if (this.rng !== 'LIVE') {                      // mouvement par minute (écart de |a| à 1 g), journal continu compris
+        const hv = histView(HIST.act, SPANS[this.rng], (ir.w - 10) * 2);
+        sub(scr, ir.x, y++, ir.w, 'MOVEMENT g · ' + this.rng.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
+        W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, minSpan: 0.3, step: hv.step, fit: true, area: false, unit: ' g', fmt: v => v.toFixed(2),
+          limits: [[0.08, 0, 'ACTIVE']], ...clockAxis() });
+        return;
+      }
+      sub(scr, ir.x, y++, ir.w, '|a| · LIVE 10 s', 'SCOPE · [*1] LOG', t.F);
       W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.g.v, t.N]], { vmin: 0, vmax: 5, step: 0.25, unit: ' g', fmt: v => v.toFixed(1),
         yticks: [0, 1, 2, 3, 4, 5].filter((_, i, a) => (ir.b - y) >= 12 || i % 2 === 0), limits: [[AL.GLoadCaut, 0, 'CAUT'], [AL.GLoadCrit, 0, 'CRIT']] });
     }
@@ -2142,7 +2150,10 @@ const netBearer = () => {
 };
 PAGES.M61 = { code: 'M61', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', 'NET', 'LINK', 'WIFI'], fps: 2,
   keys: [['1', 'NET RESET', app => netReset(app), ['NETRESET', 'RESETNET', 'INTERNETRESET'], 'NET RESET (TAP TWICE)'],
-    ['2', 'TEST', app => { if (!NETP.busy) netProbe(); app && app.say('NET · PROBE SENT'); }, ['TEST', 'PROBE', 'PING']]],
+    ['2', 'TEST', app => { if (!NETP.busy) netProbe(); app && app.say('NET · PROBE SENT'); }, ['TEST', 'PROBE', 'PING']],
+    rangeKey(() => PAGES.M61, '3H', '3'),
+    ['4', 'RTT/SIG', app => { PAGES.M61.g = PAGES.M61.g === 'SIG' ? 'RTT' : 'SIG'; app && app.say('NETWORK GRAPH · ' + (PAGES.M61.g === 'SIG' ? 'MOBILE SIGNAL' : 'LATENCY')); }, ['SIGNAL', 'SIG', 'RTT', 'GRAPH']]],
+  rng: '3H', g: 'RTT',
   draw(scr, r) {
     const left = 5 - (now() - NETR.armT), armed = left > 0; this.keys[0][1] = armed ? 'CONFIRM' : 'NET RESET';
     const n = SRC.net.v, X = APK && now() - NETX.t < 30 ? NETX : null, rt = netRtt(), on = live('net') ? n.online : navigator.onLine;
@@ -2166,10 +2177,12 @@ PAGES.M61 = { code: 'M61', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', '
     else kv('NET RESET [*1]', APK ? 'TAP TWICE · OPENS ANDROID INTERNET' : 'APK ONLY', t.F);
     y++;
     if (ir.b - y >= 7) {
-      const hv = histView(HIST.rtt, 1800, (ir.w - 10) * 2);
-      sub(scr, ir.x, y++, ir.w, 'RTT ms · 30 min', 'PROBE EVERY 5 s HERE', t.F);
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, step: hv.step, fit: true, minSpan: 200, area: false, fmt: v => String(Math.round(v)), unit: ' ms',
-        limits: [[AL.NetRttCaut, 0, 'CAUT']], tEnd: now(), xfmt: sec => hhmm(now() - sec) });
+      const rg = this.rng || '3H', sig = this.g === 'SIG', hv = histView(sig ? HIST.sig : HIST.rtt, SPANS[rg], (ir.w - 10) * 2);
+      sub(scr, ir.x, y++, ir.w, (sig ? 'MOBILE dBm · ' : 'RTT ms · ') + rg.toLowerCase(), logNote() + ' · [*3][*4]', BGL.on === false || !APK ? t.F : t.D);
+      if (sig) W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: -130, vmax: -60, step: hv.step, fit: true, area: false, fmt: v => String(Math.round(v)),
+        yticks: [-130, -110, -90, -70], limits: [[AL.CellCaut, 0, 'CAUT', 'lo']], ...clockAxis() });
+      else W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, step: hv.step, fit: true, minSpan: 200, area: false, fmt: v => String(Math.round(v)), unit: ' ms',
+        limits: [[AL.NetRttCaut, 0, 'CAUT']], ...clockAxis() });
     }
   } };
 
@@ -2192,7 +2205,7 @@ PAGES.M64 = { code: 'M64', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC'
     W.hbar(scr, ir.x, y, ir.w, (d + 60) / 60, caut, [(AL.NoiseCaut + 60) / 60], 6); y += 3;
     scr.put(ir.x, y, '−60', t.F); W.rjust(scr, ir.r, y, '0 dBFS', t.F); scr.put(ir.x + Math.round((AL.NoiseCaut + 60) / 60 * ir.w) - 2, y, String(AL.NoiseCaut), caut ? t.R : t.RZ); y += 2;
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, 'LEVEL HISTORY', 'UNCALIBRATED');
+      sub(scr, ir.x, y++, ir.w, 'LEVEL · LIVE 10 s', 'MIC NEVER LOGGED', t.F);
       W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.mic.v, t.N]], { vmin: -60, vmax: 0, step: 0.25, fmt: v => String(Math.round(v)), yticks: [-60, -45, -30, -15, 0], limits: [[AL.NoiseCaut, 0, 'CAUT']] });
     }
   } };
@@ -2448,7 +2461,7 @@ PAGES.M75 = { code: 'M75', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
     kv('SUNRISE · SET', (s.rise ? hhmm(s.rise) : '—') + ' · ' + (s.set ? hhmm(s.set) : '—'));
     kv('MOON EL · PHASE', sgn(m.el, 0) + '° · ' + Math.round(m.frac * 100) + ' %');
     if (ir.b - y >= 7 && HIST.acc.v.length > 2) {
-      y++; sub(scr, ir.x, y++, ir.w, 'ACCURACY', '5 s / POINT');
+      y++; sub(scr, ir.x, y++, ir.w, 'ACCURACY · LIVE', 'GPS NOT LOGGED (BATTERY)', t.F);
       W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.acc.v, t.N]], { vmin: 0, step: 5, minSpan: 60, unit: ' m', fmt: v => String(Math.round(v)), limits: [[AL.GnssAccCaut, 0, 'CAUT']] });
     }
   } };
@@ -3331,7 +3344,8 @@ PAGES.M62 = { code: 'M62', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RE
 // ------------------------------------------------------------------ M24 TEMPS : météo et téléphone
 // 2.4 TEMPS : deux familles, deux échelles. OUTSIDE = modèle Open-Meteo à ta position (air à 2 m, ressenti, point
 // de rosée), pas une mesure. PHONE = mesures du téléphone (thermistance batterie, état thermique Android).
-PAGES.M24 = { code: 'M24', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP', 'TEMPERATURE'], fps: 1,
+PAGES.M24 = { code: 'M24', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP', 'TEMPERATURE'], fps: 1, rng: '12H',
+  keys: [rangeKey(() => PAGES.M24)],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'OUT ' + tag('wx') + ' · PHONE ' + (live('btemp') ? tag('btemp') : 'APK'), t.TD);
     const w = SRC.wx.v, ow = live('wx');
@@ -3356,12 +3370,12 @@ PAGES.M24 = { code: 'M24', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP
     kv('CPU LOAD', cp ? cp.toUpperCase() : ('PressureObserver' in window ? 'WAITING' : 'N/A HERE'), cp === 'serious' || cp === 'critical' ? t.RB : (cp ? t.N : t.F));
     if (ir.b - y >= 7 && ow && w.ht) {
       y++;
-      const span = Math.min(w.ht.length, ir.w - 8), i0 = Math.max(0, Math.min(w.ht.length - span, w.ni - Math.floor(span * 0.6)));
-      const vals = w.ht.slice(i0, i0 + span), vmin = Math.floor(Math.min(...vals) - 2), vmax = Math.ceil(Math.max(...vals, vmin + 4) + 1);
-      const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
-      sub(scr, ir.x, y++, ir.w, 'AIR · °C', '◂ PAST · FORECAST ▸');
-      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin, vmax, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
-        styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: vmax > CFG.WXL.HeatOut ? [[CFG.WXL.HeatOut, 0, 'HOT']] : [] });
+      const rg = this.rng || '12H', hv = histView(HIST.bt, SPANS[rg], (ir.w - 10) * 2), n = hv.v.length, T0 = now() - SPANS[rg];
+      const air = hv.v.map((_, j) => { const tb = (T0 + (j + 0.5) * hv.step) * 1000; let k = w.hms.findIndex(x => x > tb); if (k <= 0 || k >= w.hms.length) return null;
+        const f = (tb - w.hms[k - 1]) / (w.hms[k] - w.hms[k - 1]); return w.ht[k - 1] + (w.ht[k] - w.ht[k - 1]) * f; });
+      sub(scr, ir.x, y++, ir.w, '°C · ' + rg.toLowerCase(), 'PHONE · AIR DIM · ' + logNote(), t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N], [air, t.D]], { auto: true, minSpan: 8, step: hv.step, fit: true, area: false, fmt: v => String(Math.round(v)),
+        limits: [[AL.BattTempCaut, 0, 'HOT']], ...clockAxis() });
     }
   } };
 
@@ -3758,6 +3772,84 @@ PAGES.M52 = { code: 'M52', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
         W.rjust(scr, ir.r, y++, h.bed ? 'NIGHT ' + durHM(h.wake - h.bed) : '', t.D);
       }
     }
+  } };
+
+// ------------------------------------------------------------------ M54 HEALTH : 7 jours glissants
+// Nuits (coucher → réveil), puis tableau quotidien : réveil, coucher, sommeil, pas, minutes actives, temps d'écran,
+// déverrouillages ; moyennes sur 7 jours ; pas en barres. Sources : DAYREC (réveil/coucher), STEPS, HEALTH (APK).
+function health7() {
+  const out = [], t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  for (let k = 6; k >= 0; k--) {
+    const d0 = new Date(t0); d0.setDate(t0.getDate() - k); const m = d0.getTime() / 1000, d = ymdOf(m + 3600);
+    const h = DAYREC.hist.find(x => x.d === d), hs = HEALTH[d] || null;
+    const wake = h ? h.wake : null, bed = h && h.bed ? h.bed : null, sl = wake && bed && wake - bed > 2 * 3600 && wake - bed < 16 * 3600 ? wake - bed : null;
+    out.push({ d, m, dow: DOW3[d0.getDay()], dd: pad2(d0.getDate()), today: k === 0, wake, bed, sleep: sl, src: h ? h.src : '',
+      steps: STEPS.hist[d] != null ? STEPS.hist[d] : null, act: hs ? hs.act : null, scr: hs ? hs.scr : null, un: hs ? hs.un : null });
+  }
+  return out;
+}
+const fSteps = v => v == null ? '—' : (v >= 10000 ? Math.round(v / 1000) + 'k' : (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v)));
+const fMin = v => v == null ? '—' : (v < 60 ? Math.round(v) + 'm' : durHM(v * 60));
+const todOf = ts => { const d = new Date(ts * 1000); return d.getHours() * 3600 + d.getMinutes() * 60; };
+const avgOf = a => { const v = a.filter(x => x != null); return v.length ? v.reduce((p, q) => p + q, 0) / v.length : null; };
+const avgTod = (a, pivot) => { const v = a.filter(x => x != null).map(x => (todOf(x) - pivot + 86400) % 86400); return v.length ? (v.reduce((p, q) => p + q, 0) / v.length + pivot) % 86400 : null; };
+const todTxt = s => s == null ? '—' : pad2(Math.floor(s / 3600)) + ':' + pad2(Math.floor(s % 3600 / 60));
+PAGES.M54 = { code: 'M54', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1,
+  draw(scr, r) {
+    const D = health7(), first = D[0], last = D[6];
+    const dm = e => e.dd + '/' + pad2(new Date(e.m * 1000 + 43200000).getMonth() + 1);
+    const ir = W.panel(scr, r, this.code, this.name, '7 DAYS · ' + dm(first) + ' → ' + dm(last), t.TD);
+    let y = ir.y;
+    // nuits : barre du coucher au réveil sur 20:00 → 12:00
+    sub(scr, ir.x, y++, ir.w, 'NIGHTS · BED → WAKE', 'SLEEP', t.D);
+    const cx0 = ir.x + 7, cw = ir.w - 13;
+    D.forEach((e, i) => {
+      if (y >= ir.b) return;
+      scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
+      W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < 6 * 3600 ? t.RB : t.N) : t.F);
+      const A0 = e.m - 4 * 3600, A1 = e.m + 12 * 3600, yy = y;
+      scr.vector(cx0, yy, cw, 1, (c, b) => {
+        const X = tt => b.x + Math.max(0, Math.min(1, (tt - A0) / (A1 - A0))) * b.w, mid = b.y + b.ch * 0.5, hh = b.ch * 0.36;
+        c.fillStyle = COL.K; c.fillRect(b.x, mid - 0.5 * b.d, b.w, b.d);
+        c.strokeStyle = COL.K; c.lineWidth = b.d; dash(c, b.d, 1, 3); c.beginPath(); c.moveTo(X(e.m), b.y); c.lineTo(X(e.m), b.y + b.ch); c.stroke(); dash(c, b.d, 0);
+        if (e.bed && e.wake) { c.fillStyle = e.today ? COL.N : COL.D; c.fillRect(X(e.bed), mid - hh, Math.max(2 * b.d, X(e.wake) - X(e.bed)), 2 * hh); }
+        if (e.wake) { c.fillStyle = COL.N; c.fillRect(X(e.wake) - b.d, mid - hh * 1.4, 2 * b.d, hh * 2.8); }
+      });
+      y++;
+    });
+    if (y < ir.b) { for (let hgt = 0; hgt <= 16; hgt += 4) { const lab = pad2((20 + hgt) % 24) + 'h', x = cx0 + Math.round(hgt / 16 * (cw - 1)); scr.put(Math.max(cx0, Math.min(cx0 + cw - 3, x - 1)), y, lab, t.F); } y++; }
+    // tableau : une ligne par jour (même ordre que les nuits) + moyennes ; cumuls du jour = jusqu'ici
+    const full = D.slice(0, 6), avg = {
+      wake: avgTod(D.map(e => e.wake), 0), bed: avgTod(D.map(e => e.bed), 12 * 3600), sleep: avgOf(D.map(e => e.sleep)),
+      steps: avgOf(full.map(e => e.steps)), act: avgOf(full.map(e => e.act)), scr: avgOf(full.map(e => e.scr)), un: avgOf(full.map(e => e.un)) };
+    const COLS = [['WAKE', 12, e => e.wake ? todTxt(todOf(e.wake)) : '—', a => todTxt(a.wake)], ['BED', 18, e => e.bed ? todTxt(todOf(e.bed)) : '—', a => todTxt(a.bed)],
+      ['SLP', 23, e => e.sleep != null ? durHM(e.sleep) : '—', a => a.sleep != null ? durHM(a.sleep) : '—'], ['STEP', 28, e => fSteps(e.steps), a => fSteps(a.steps != null ? Math.round(a.steps) : null)],
+      ['ACT', 33, e => fMin(e.act), a => fMin(a.act)], ['SCR', 38, e => e.scr != null ? durHM(e.scr) : '—', a => a.scr != null ? durHM(a.scr) : '—'],
+      ['UNL', 42, e => e.un != null ? String(e.un) : '—', a => a.un != null ? String(Math.round(a.un)) : '—']].filter(c => c[1] <= ir.w);
+    y++;
+    if (y + 3 < ir.b) {
+      sub(scr, ir.x, y++, ir.w, 'DAILY', 'TODAY = SO FAR', t.F);
+      COLS.forEach(([lab, xe]) => scr.put(ir.x + xe - slen(lab), y, lab, t.D)); y++;
+      for (const e of D) {
+        if (y >= ir.b) break;
+        scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
+        COLS.forEach(([, xe, f]) => { const v = f(e); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : (e.today ? t.B : t.N)); });
+        y++;
+      }
+      if (y < ir.b) { scr.put(ir.x, y, 'AVG', t.B); COLS.forEach(([, xe, , g]) => { const v = g(avg); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : t.B); }); y++; }
+      for (const l of ['SLP SLEEP · STEP STEPS · ACT MINUTES MOVING', 'SCR SCREEN ON · UNL UNLOCKS']) if (y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F);
+    }
+    const ast = avg.steps;
+    // pas en barres
+    if (ir.b - y >= 7) {
+      y++;
+      const vals = D.map(e => e.steps || 0), top = Math.max(1000, ...vals), vmax = [2000, 5000, 8000, 10000, 15000, 20000, 30000].find(v => v >= top * 1.08) || Math.ceil(top / 5000) * 5000;
+      sub(scr, ir.x, y++, ir.w, 'STEPS · 7 DAYS', ast != null ? 'AVG ' + fSteps(Math.round(ast)) : '', t.D);
+      const bw = Math.max(1, Math.floor((ir.w - 12) / 7) - 2);
+      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: 0, vmax, bw, gap: 2, labels: D.map(e => e.dow), fmt: v => fSteps(Math.round(v)),
+        styles: D.map(e => e.today ? t.D : t.N) });
+    }
+    if (!APK && y < ir.b) scr.put(ir.x, ir.b - 1, clip('STEPS · ACTIVE · SCREEN: GRAFIT APK ONLY', ir.w), t.F);
   } };
 
 // ---------------------------------------------------------------------------------------- briefing du matin
@@ -4330,6 +4422,12 @@ function slowTick() {                                   // 1 Hz : alarmes, tenda
   alarmsTick(); trendTick();
   if (live('batt')) HIST.batt.push(SRC.batt.v.level * 100);
   if (live('batt')) HIST.chg.push(SRC.batt.v.charging ? 1 : 0);
+  if (SRC.btemp.mode === 'live') HIST.bt.push(SRC.btemp.v.c);
+  if (SRC.cell.mode === 'live' && SRC.cell.v.rsrp != null) HIST.sig.push(SRC.cell.v.rsrp);
+  if (SRC.motion.mode === 'live' && now() - HIST.act.t >= 60) {     // mouvement : écart quadratique de |a| à 1 g sur la dernière minute
+    const g = HIST.g.v.slice(-240).filter(v => v != null);
+    if (g.length > 40) HIST.act.push(Math.sqrt(g.reduce((a, v) => a + (v - 1) ** 2, 0) / g.length));
+  }
   netProbeTick();
   if (live('geo')) HIST.acc.push(SRC.geo.v.acc);
   const T = now();
@@ -4351,12 +4449,19 @@ async function netProbe() {
   try {
     await fetch('https://www.gstatic.com/generate_204?g=' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
     const ms = performance.now() - t0; NETP.last = ms; NETP.okT = now(); NETP.fails = 0;
-    NETP.rec.push([now(), ms]); HIST.rtt.push(ms, now(), true);
-  } catch (e) { NETP.fails++; NETP.lost++; NETP.rec.push([now(), null]); HIST.rtt.push(null, now(), true); }
+    NETP.rec.push([now(), ms]); rttMinute(ms);
+  } catch (e) { NETP.fails++; NETP.lost++; NETP.rec.push([now(), null]); rttMinute(-1); }
   finally { clearTimeout(to); NETP.busy = false; }
   while (NETP.rec.length > 120) NETP.rec.shift();
   const R = NETP.reset;                                   // bilan après une réinitialisation Internet
   if (R && !R.after && now() > R.t + 5) { const ok = NETP.rec.filter(([ts, v]) => ts > R.t && v != null); if (ok.length >= 3) { R.after = median(ok.slice(-3).map(x => x[1])); log('NET', 'AFTER INTERNET RESET · RTT ' + fmtMs(R.before) + ' → ' + fmtMs(R.after)); } }
+}
+// une valeur par minute dans l'historique : médiane des sondes réussies de la minute (aucune : minute perdue)
+const RTTM = { m: 0, v: [], n: 0 };
+function rttMinute(ms) {
+  const m = Math.floor(now() / 60);
+  if (RTTM.m && m !== RTTM.m) { if (RTTM.v.length) HIST.rtt.put(median(RTTM.v), RTTM.m * 60 + 30); RTTM.v = []; RTTM.n = 0; }
+  RTTM.m = m; RTTM.n++; if (ms >= 0) RTTM.v.push(ms);
 }
 const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
 const fmtMs = v => v == null ? '—' : Math.round(v) + ' ms';
@@ -4394,28 +4499,57 @@ function bgSet(app, on) {
 const bgState = () => !APK ? 'APK ONLY' : (BGL.on === false ? 'OFF' : (BGL.on ? 'ON' : '…'));
 function bgEvent(ts, k) {
   if (k === 'UNLOCK') logAt(ts, 'SCR', 'UNLOCK'); else if (k === 'OFF') logAt(ts, 'SCR', 'SCREEN OFF');
+  healthScreen(ts, k);
   BGL.ev.push([ts, k]);
-  const lim = now() - 40 * 3600; while (BGL.ev.length && BGL.ev[0][0] < lim) BGL.ev.shift();
+  const lim = now() - 48 * 3600; while (BGL.ev.length && BGL.ev[0][0] < lim) BGL.ev.shift();
 }
-// réveil sans accès aux statistiques d'usage : mêmes règles que l'APK (coup d'œil < 3 min suivi de 45 min sans
-// déverrouillage = ignoré ; coucher = dernière extinction d'écran avant 03:00)
+// Réveil et coucher d'après les événements d'écran du journal continu (prioritaires sur les statistiques d'usage) :
+// sessions = déverrouillage → extinction depuis 18:00 la veille. Coup d'œil nocturne = session < 3 min, commencée
+// après 00:30, suivie de 45 min sans déverrouillage : ignoré. Réveil = 1re session durable après 03:00 ; coucher =
+// fin de la dernière session qui n'est pas un coup d'œil nocturne, avant le réveil.
+const bgNight = () => BGL.on !== false && BGL.ev.some(([ts]) => ts > now() - 20 * 3600);
 function bgWake() {
-  if (DAYREC.usage === true) return;
-  const d3 = new Date(); d3.setHours(3, 0, 0, 0); const day3 = d3.getTime() / 1000, T = now();
+  const d3 = new Date(); d3.setHours(3, 0, 0, 0); const day3 = d3.getTime() / 1000, T = now(), from = day3 - 9 * 3600, m30 = day3 - 2.5 * 3600;
   if (T < day3) return;
-  let lastLock = null, open = null; const ses = [];
+  let open = null; const ses = [];
   for (const [ts, k] of BGL.ev) {
-    if (ts < day3) { if (k === 'OFF' && ts > day3 - 9 * 3600) lastLock = ts; continue; }
+    if (ts < from) continue;
     if (k === 'UNLOCK' && open == null) open = ts;
     else if (k === 'OFF' && open != null) { ses.push([open, ts]); open = null; }
   }
   if (open != null) ses.push([open, T]);
-  let g = 0;
-  for (let i = 0; i < ses.length; i++) {
-    const last = i === ses.length - 1, gap = last ? Infinity : ses[i + 1][0] - ses[i][1];
-    if (!last && ses[i][1] - ses[i][0] < 180 && gap >= 2700) { g++; continue; }
-    return dayUnlock(ses[i][0], lastLock, g);
+  const glance = i => i < ses.length - 1 && ses[i][1] - ses[i][0] < 180 && ses[i][0] >= m30 && ses[i + 1][0] - ses[i][1] >= 2700;
+  let wi = -1, g = 0;
+  for (let i = 0; i < ses.length; i++) { if (ses[i][0] < day3) continue; if (glance(i)) { g++; continue; } wi = i; break; }
+  if (wi < 0) return;
+  let bed = null;
+  for (let i = wi - 1; i >= 0; i--) { if (glance(i)) { if (ses[i][0] < day3) g++; continue; } bed = ses[i][1]; break; }
+  dayUnlock(ses[wi][0], bed, g);
+}
+// ---------------------------------------------------------------------------------------- santé (5.4)
+// Agrégats par jour, tirés du journal continu : déverrouillages, temps d'écran allumé, minutes actives (mouvement
+// ≥ 0,08 g rms ou ≥ 30 pas/min). Le réveil, le coucher et les pas viennent de DAYREC et STEPS. 15 jours gardés.
+const HEALTH = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.health') || '{}'); return j && typeof j === 'object' ? j : {}; } catch (e) { return {}; } })();
+const hDay = ts => { const d = ymdOf(ts); return HEALTH[d] || (HEALTH[d] = { un: 0, scr: 0, act: 0 }); };
+function hPrune() { const k = Object.keys(HEALTH).filter(x => x !== '_').sort(); while (k.length > 15) delete HEALTH[k.shift()]; }
+function healthScreen(ts, k) {
+  const S = HEALTH._ || (HEALTH._ = {});
+  if (k === 'UNLOCK') hDay(ts).un++;
+  if ((k === 'ON' || k === 'UNLOCK') && S.on == null) S.on = ts;
+  if (k === 'OFF' && S.on != null) {
+    let a = S.on; const b = ts; S.on = null;
+    if (b - a <= 0 || b - a > 6 * 3600) return;
+    while (a < b) { const m = new Date(a * 1000); m.setHours(24, 0, 0, 0); const e = Math.min(b, m.getTime() / 1000); hDay(a).scr += e - a; a = e; }
   }
+  hPrune();
+}
+function healthSample(ts, act, steps) {
+  const S = HEALTH._ || (HEALTH._ = {});
+  if (S.ts && ts > S.ts) {
+    const dt = Math.min(300, ts - S.ts), rate = steps != null && S.st != null && steps >= S.st ? (steps - S.st) / ((ts - S.ts) / 60) : 0;
+    if ((act != null && act >= 0.08) || rate >= 30) hDay(ts).act += dt / 60;
+  }
+  S.ts = ts; if (steps != null) S.st = steps;
 }
 // lignes : [ms, 'S', p hPa (station), batt %, charge 0/1, batt °C, santé, thermique, pas, dBm] · [ms, 'E', UNLOCK|OFF|ON]
 function bgIngest(d) {
@@ -4428,7 +4562,7 @@ function bgIngest(d) {
     const ms = r[0], ts = ms / 1000;
     if (r[1] === 'E') { bgEvent(ts, r[2]); ne++; continue; }
     ns++;
-    const [, , p, batt, chg, bt, health, therm, steps] = r;
+    const [, , p, batt, chg, bt, health, therm, steps, dbm, rtt, net, act, amax] = r;
     if (p != null) {
       const q = BGL.alt != null ? qnhOf(p, BGL.alt) : p;
       HIST.press.put(q, ts);
@@ -4448,11 +4582,25 @@ function bgIngest(d) {
     if (therm != null) { if (P.therm != null && therm !== P.therm) logAt(ts, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[therm], therm >= 3); P.therm = therm; }
     if (health != null) { if (P.health != null && health !== P.health && health !== 2) logAt(ts, 'PWR', 'BATT HEALTH ' + (BATT_HEALTH[health] || health), true); P.health = health; }
     if (steps != null) stepsFeed(steps, ts, true);
+    if (bt != null) HIST.bt.put(bt, ts);
+    if (dbm != null) HIST.sig.put(dbm, ts);
+    if (act != null) HIST.act.put(act, ts);
+    if (amax != null && amax >= AL.GLoadCaut) logAt(ts, 'MOT', 'SHOCK ' + amax.toFixed(1) + ' g (BACKGROUND)', amax >= AL.GLoadCrit);
+    if (rtt != null) {                                    // latence d'arrière-plan ; pertes d'Internet notées au journal
+      if (rtt >= 0) HIST.rtt.put(rtt, ts);
+      const lost = rtt < 0; P.lostN = lost ? (P.lostN || 0) + 1 : 0;
+      if (P.lostN === 3) logAt(ts, 'NET', 'INTERNET LOST (BACKGROUND)', true);
+      if (!lost && P.wasLost) logAt(ts, 'NET', 'INTERNET BACK · ' + Math.round(rtt) + ' ms' + (net ? ' · ' + ({ W: 'WI-FI', C: 'MOBILE', E: 'ETHERNET' }[net] || net) : ''));
+      P.wasLost = P.lostN >= 3 || (lost && P.wasLost);
+      NETP.rec.push([ts, lost ? null : rtt]); while (NETP.rec.length > 120) NETP.rec.shift();
+    }
+    healthSample(ts, act, steps);
   }
   BGL.last = rows[rows.length - 1][0]; BGL.n = (BGL.n || 0) + ns;
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
   if (SRC.steps.mode === 'live') SRC.steps.v.today = STEPS.today;
   bgWake(); bgSave(); logDirty = true; logSave(); persistSave();
+  NETP.rec.sort((a, b) => a[0] - b[0]);
   if (ns + ne > 2) log('SYS', 'BACKGROUND LOG · ' + ns + ' SAMPLES · ' + ne + ' SCREEN EVENTS SINCE ' + hhmm(rows[0][0] / 1000));
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') bgRequest(); });
@@ -4464,7 +4612,9 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 function persistSave() {
   try {
     if (live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null && SRC.geo.v.acc < 100) { BGL.alt = Math.round(SRC.geo.v.alt); bgSave(); }   // altitude pour le QNH hors GNSS
-    localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), chg: HIST.chg.dump(), press: HIST.press.dump(), src: TREND_SRC }));
+    localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), chg: HIST.chg.dump(), press: HIST.press.dump(), src: TREND_SRC,
+      rtt: HIST.rtt.dump(), act: HIST.act.dump(), bt: HIST.bt.dump(), sig: HIST.sig.dump() }));
+    localStorage.setItem('grafit.health', JSON.stringify(HEALTH));
     localStorage.setItem('grafit.chr', JSON.stringify(CHR));
     if (SRC.wx.mode === 'live' && SRC.wx.v.at && SRC.wx.v.at !== persistSave.wxAt) { localStorage.setItem('grafit.wx', JSON.stringify(SRC.wx.v)); persistSave.wxAt = SRC.wx.v.at; }
   } catch (e) { /* stockage plein */ }
@@ -4472,7 +4622,7 @@ function persistSave() {
 function persistLoad() {
   const get = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
   const h = get('grafit.hist');
-  if (h) { HIST.batt.load(h.batt); HIST.chg.load(h.chg); if (!h.src || h.src === TREND_SRC || !TREND_SRC) HIST.press.load(h.press); }
+  if (h) { HIST.batt.load(h.batt); HIST.chg.load(h.chg); HIST.rtt.load(h.rtt); HIST.act.load(h.act); HIST.bt.load(h.bt); HIST.sig.load(h.sig); if (!h.src || h.src === TREND_SRC || !TREND_SRC) HIST.press.load(h.press); }
   const c = get('grafit.chr'); if (c) Object.assign(CHR, c);
   const w = get('grafit.wx');
   if (w && w.at && now() - w.at < 12 * 3600 && w.hms) {
