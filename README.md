@@ -35,7 +35,9 @@ tendance de pression reste une information sur 2.3 BARO.
 
 Passé (−2 h) : radar RainViewer (images de 10 min, gratuites en usage personnel, zoom 7), décodé et recoloré.
 Futur (+2 h) : prévision Open-Meteo au quart d'heure sur une grille 7 × 7 autour du téléphone (modèle). Fond :
-carte sombre CARTO (© OpenStreetMap, © CARTO) ou repères seuls (antennes ANFR). Pluie la plus proche et approche
+carte sombre Esri Dark Gray Canvas sans clé (© Esri, HERE, OSM) ou, avec une clé CARTO personnelle saisie par
+`MAPKEY <clé>` (gratuite en usage non commercial, à demander sur carto.com/basemaps/apikey), CARTO Dark ; ou
+repères seuls (antennes ANFR). Pluie la plus proche et approche
 estimée à partir des dernières images radar.
 
 ## Journal continu (APK, 1.9.0)

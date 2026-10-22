@@ -17,6 +17,10 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.GnssStatus;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.wifi.WifiInfo;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.net.Uri;
@@ -121,6 +125,7 @@ class Probes implements SensorEventListener {
 
     void pushAll() {
         if (!running) return;
+        h.post(this::pushNet);
         h.removeCallbacks(agendaR);
         h.post(agendaR);
         h.post(this::pushUnlock);
@@ -231,6 +236,7 @@ class Probes implements SensorEventListener {
                     try { onCells(tm.getAllCellInfo()); } catch (SecurityException se) { /* */ }
                 }
             }
+            pushNet();
             try {                                                        // stockage interne : libre / total (octets)
                 StatFs st = new StatFs(Environment.getDataDirectory().getPath());
                 JSONObject o = new JSONObject(); o.put("free", st.getAvailableBytes()); o.put("total", st.getTotalBytes());
@@ -358,6 +364,35 @@ class Probes implements SensorEventListener {
         l.clear();
         l.set(u.get(Calendar.YEAR), u.get(Calendar.MONTH), u.get(Calendar.DAY_OF_MONTH), 0, 0, 0);
         return l.getTimeInMillis();
+    }
+
+    // ------------------------------------------------------------------ réseau actif (ConnectivityManager)
+    /** net {tr: WIFI|CELLULAR|ETHERNET|NONE, val, met, vpn, dn, up (kb/s estimés), rssi, link (Mb/s), freq (MHz)} */
+    void pushNet() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) act.getSystemService(Context.CONNECTIVITY_SERVICE);
+            JSONObject o = new JSONObject();
+            Network n = cm != null ? cm.getActiveNetwork() : null;
+            NetworkCapabilities nc = n != null ? cm.getNetworkCapabilities(n) : null;
+            if (nc == null) o.put("tr", "NONE");
+            else {
+                o.put("tr", nc.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "WIFI" : nc.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "CELLULAR"
+                    : nc.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ? "ETHERNET" : "OTHER");
+                o.put("val", nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));
+                o.put("met", !nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED));
+                o.put("vpn", nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN));
+                o.put("dn", nc.getLinkDownstreamBandwidthKbps());
+                o.put("up", nc.getLinkUpstreamBandwidthKbps());
+                if (Build.VERSION.SDK_INT >= 31 && nc.getTransportInfo() instanceof WifiInfo) {
+                    WifiInfo wi = (WifiInfo) nc.getTransportInfo();
+                    int rssi = wi.getRssi();
+                    if (rssi > -127 && rssi < 0) o.put("rssi", rssi);
+                    if (wi.getLinkSpeed() > 0) o.put("link", wi.getLinkSpeed());
+                    if (wi.getFrequency() > 0) o.put("freq", wi.getFrequency());
+                }
+            }
+            JSONObject d = new JSONObject(); d.put("net", o); act.push(d);
+        } catch (Exception e) { /* */ }
     }
 
     // ------------------------------------------------------------------ réveil : alarme et premier déverrouillage durable

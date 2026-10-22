@@ -55,7 +55,7 @@ function S(fg = WHITE, bg = BG, bold = false) {
 const t = {};
 t.N = S(); t.B = S(WHITE, BG, true); t.D = S(DIM); t.F = S(FAINT); t.L = S(LINE); t.K = S(TRACKC);
 t.R = S(REDT); t.RB = S(REDT, BG, true); t.RR = S(RED); t.RZ = S(REDDIM);
-t.INV = S(INK, WHITE, true); t.INVN = S(INK, WHITE); t.ALERT = S(REDINK, RED, true);
+t.INV = S(INK, WHITE, true); t.INVN = S(INK, WHITE); t.ALERT = S(REDINK, RED, true); t.INKB = S(INK, BG, true);
 t.T = S(WHITE, BGT, true); t.TD = S(DIM, BGT); t.TF = S(FAINT, BGT); t.TR = S(REDT, BGT, true);
 t.TB = S(FAINT, BGT); // bande titre : filets
 
@@ -232,8 +232,18 @@ const TILE = {
   nom: [t.F, t.D, t.F, null], caut: [t.RR, t.RB, t.R, null], crit: [t.ALERT, t.ALERT, t.ALERT, t.ALERT],
   critoff: [t.RR, t.R, t.R, null], on: [t.INV, t.INV, t.INVN, t.INV], lit: [t.N, t.B, t.N, null], na: [t.K, t.F, t.F, null],
 };
+// Voyant allumé (CRIT, ou test des voyants) : fond rouge vif (blanc au test) posé exactement entre les axes des
+// filets, filets blancs par-dessus, texte blanc gras. Rien ne dépasse du cadre : le fond n'est plus une couleur de
+// cellule (qui couvrait toute la hauteur de la ligne de cadre), mais un rectangle de la couche vectorielle.
+const LAMP_RED = 'rgb(214,38,38)';
+const lampLit = st => st === 'crit' || st === 'on';
+W.lampFill = (scr, x, y, w, h, col) => scr.vector(x, y, w, h, (c, b) => {
+  const x0 = Math.round(b.x + b.cw / 2), x1 = Math.round(b.x + b.w - b.cw / 2), y0 = Math.round(b.y + b.ch / 2), y1 = Math.round(b.y + b.h - b.ch / 2);
+  c.fillStyle = col; c.fillRect(x0, y0, x1 - x0, y1 - y0);
+});
 W.tile = (scr, x, y, w, h, label, value = '', state = 'nom') => {
-  const [bst, lst, vst, fill] = TILE[state] || TILE.nom;
+  let [bst, lst, vst, fill] = TILE[state] || TILE.nom;
+  if (lampLit(state)) { bst = t.N; fill = null; lst = vst = state === 'on' ? t.INKB : t.B; W.lampFill(scr, x, y, w, h, state === 'on' ? COL.N : LAMP_RED); }
   W.box(scr, x, y, w, h, bst, fill);
   const room = h - 2;
   const lines = String(label).split('\n').filter(Boolean).slice(0, Math.max(1, room)).map(s => [s, lst]);
@@ -242,30 +252,32 @@ W.tile = (scr, x, y, w, h, label, value = '', state = 'nom') => {
   lines.forEach(([s, st], i) => scr.put(x + 1, top + i, center(clip(s, w - 2), w - 2), st));
 };
 // Panneau d'annonciateurs à filets communs. items = [[libellé, état]]. Renvoie la hauteur.
+// Filets dessinés en vectoriel (et non en caractères de cadre) : une case en alarme a son propre cadre, posé
+// exactement sur ses filets (blanc et fond rouge vif si allumée, rouge si CAUT) sans déborder sur les voisines.
 W.tileGrid = (scr, x, y, cols, cw, items, hits) => {
-  const rows = Math.ceil(items.length / cols);
-  for (let r = 0; r <= rows; r++) {
-    const [l, m, rr] = r === 0 ? ['┌', '┬', '┐'] : (r === rows ? ['└', '┴', '┘'] : ['├', '┼', '┤']);
-    scr.put(x, y + 2 * r, l + Array.from({ length: cols }, () => '─'.repeat(cw)).join(m) + rr, t.F);
-  }
-  for (let i = 0; i < rows * cols; i++) {
-    const r = Math.floor(i / cols), c = i % cols;
-    scr.put(x + c * (cw + 1), y + 2 * r + 1, '│', t.F);
-    scr.put(x + (c + 1) * (cw + 1), y + 2 * r + 1, '│', t.F);
-  }
+  const rows = Math.ceil(items.length / cols), gw = cols * (cw + 1) + 1, gh = rows * 2 + 1;
+  scr.vector(x, y, gw, gh, (c, b) => {
+    const lw = Math.max(1, Math.round(b.cw * 0.1)), X = k => Math.round(b.x + (k * (cw + 1) + 0.5) * b.cw), Y = k => Math.round(b.y + (2 * k + 0.5) * b.ch);
+    const off = lw % 2 ? 0.5 : 0;
+    c.lineWidth = lw; c.strokeStyle = COL.F; c.beginPath();
+    for (let r = 0; r <= rows; r++) { c.moveTo(X(0), Y(r) + off); c.lineTo(X(cols), Y(r) + off); }
+    for (let k = 0; k <= cols; k++) { c.moveTo(X(k) + off, Y(0)); c.lineTo(X(k) + off, Y(rows)); }
+    c.stroke();
+    items.forEach(([, state], i) => {
+      const r = Math.floor(i / cols), k = i % cols, lit = lampLit(state);
+      if (!lit && state !== 'caut' && state !== 'critoff') return;
+      const x0 = X(k), x1 = X(k + 1), y0 = Y(r), y1 = Y(r + 1);
+      if (lit) { c.fillStyle = state === 'on' ? COL.N : LAMP_RED; c.fillRect(x0, y0, x1 - x0, y1 - y0); }
+      c.strokeStyle = lit ? COL.N : COL.RR; c.lineWidth = lw; c.strokeRect(x0 + off, y0 + off, x1 - x0, y1 - y0);
+    });
+  }, false);
   items.forEach(([label, state, fn], i) => {
-    const r = Math.floor(i / cols), c = i % cols, cx = x + c * (cw + 1), cy = y + 2 * r;
-    const [, lst, , fill] = TILE[state] || TILE.nom;
-    if (state === 'caut' || state === 'critoff' || state === 'crit') {
-      scr.put(cx + 1, cy, '─'.repeat(cw), t.RR); scr.put(cx + 1, cy + 2, '─'.repeat(cw), t.RR);
-      scr.put(cx, cy + 1, '│', t.RR); scr.put(cx + cw + 1, cy + 1, '│', t.RR);
-      for (const [xx, yy] of [[cx, cy], [cx + cw + 1, cy], [cx, cy + 2], [cx + cw + 1, cy + 2]]) scr.put(xx, yy, scr.get(xx, yy), t.RR);
-    }
-    scr.put(cx + 1, cy + 1, center(clip(label, cw), cw), fill != null ? fill : lst);
-    if (state === 'crit') scr.put(cx + 1, cy + 1, center(clip(label, cw), cw), t.ALERT);
+    const r = Math.floor(i / cols), k = i % cols, cx = x + k * (cw + 1), cy = y + 2 * r;
+    const [, lst0, , fill] = TILE[state] || TILE.nom, lit = lampLit(state);
+    scr.put(cx + 1, cy + 1, center(clip(label, cw), cw), lit ? (state === 'on' ? t.INKB : t.B) : (state === 'critoff' ? t.RB : (fill != null ? t.B : lst0)));
     if (hits && fn) hits.push({ x: cx + 1, y: cy + 1, w: cw, h: 1, fn });
   });
-  return rows * 2 + 1;
+  return gh;
 };
 
 W.limStyle = active => active ? t.RR : t.RZ;
@@ -513,11 +525,21 @@ W.plot = (scr, r, series, o = {}) => {
   scr.vector(px0, r.y, pw, ph + 1, (c, b) => {
     const d = b.d, Y = v => b.y + yRow(v) * b.ch, x0 = b.x, x1 = b.x + b.w;
     c.lineWidth = d;
+    if (o.band && o.fit) {                                   // bandes : valeurs 1 = période marquée (ex. en charge)
+      const L = o.band.length, X = i => x0 + (i / Math.max(1, L - 1)) * b.w;
+      for (let i = 0; i < L; i++) if (o.band[i] >= 0.5) {
+        let j = i; while (j + 1 < L && o.band[j + 1] >= 0.5) j++;
+        const xa = Math.max(x0, X(i - 0.5)), xb = Math.min(x1, X(j + 0.5));
+        c.fillStyle = rgba(WHITE, 0.09); c.fillRect(xa, b.y, xb - xa, Y(vmin) - b.y);
+        c.fillStyle = COL.D; c.fillRect(xa, Y(vmin) - 3 * d, xb - xa, 3 * d);
+        i = j;
+      }
+    }
     if (grid) { c.strokeStyle = COL.K; dash(c, d, 1, 3); c.beginPath(); yticks.forEach(v => { if (v !== vmin) { const yy = Math.round(Y(v)) + 0.5; c.moveTo(x0, yy); c.lineTo(x1, yy); } }); c.stroke(); }
     limits.forEach(([v], k) => { c.strokeStyle = limAct[k] ? COL.RR : COL.RZ; dash(c, d, 4, 3); c.beginPath(); const yy = Math.round(Y(v)) + 0.5; c.moveTo(x0 - b.cw * 0.5, yy); c.lineTo(x1, yy); c.stroke(); });
     dash(c, d, 0);
     series.forEach(([vs], n) => {
-      const pts = vs.slice(-N), off = N - pts.length, segs = [[]];
+      const pts = o.fit ? vs : vs.slice(-N), off = o.fit ? 0 : N - pts.length, segs = [[]];
       pts.forEach((v, i) => {
         if (v == null) { if (segs[segs.length - 1].length) segs.push([]); return; }
         const xx = o.fit ? x0 + (i / Math.max(1, pts.length - 1)) * b.w : x0 + (off + i + 0.5) / N * b.w;
@@ -888,14 +910,14 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.9.0', BUILD: '20261021', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.9.1', BUILD: '20261022', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
   // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
   AL: { BattLowCaut: 20, BattLowCrit: 10, HystPct: 3, BattTempCaut: 40, BattTempCrit: 45, HystTemp: 3,
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
-    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -110, CellCrit: -120, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
+    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
   WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
   WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
@@ -912,7 +934,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
@@ -984,10 +1006,10 @@ function logExport(app) {
 
 // ---------------------------------------------------------------------------------------- sources
 class Hist {
-  constructor(cap, every) { this.v = []; this.cap = cap; this.every = every; this.t = 0; }
+  constructor(cap, every, gaps = every >= 30) { this.v = []; this.cap = cap; this.every = every; this.t = 0; this.gaps = gaps; }
   push(v, ts = now(), force = false) {
     if (!force && ts - this.t < this.every) return;
-    if (this.t && this.every >= 30 && ts - this.t >= 2 * this.every) {        // absence : un trou (null) par pas manqué
+    if (this.t && this.gaps && ts - this.t >= 2 * this.every) {               // absence : un trou (null) par pas manqué
       const miss = Math.min(this.cap, Math.floor((ts - this.t) / this.every) - 1); for (let i = 0; i < miss; i++) this.v.push(null);
     }
     this.t = ts; this.v.push(v); while (this.v.length > this.cap) this.v.shift();
@@ -1019,7 +1041,17 @@ function histView(h, span, n) {
   return { v: out, step: per * h.every };
 }
 const rangeKey = (pg, dflt = '12H') => ['1', 'RANGE', (app, arg, wd) => { const k = Object.keys(SPANS); pg().rng = SPANS[wd] ? wd : (SPANS[arg] ? arg : k[(k.indexOf(pg().rng || dflt) + 1) % k.length]); app && app.say('RANGE ' + pg().rng); }, ['RANGE', '3H', '12H', '24H'], 'RANGE [3H|12H|24H]'];
-const logNote = () => APK ? (BGL.on === false ? 'OPEN ONLY' : 'CONTINUOUS') : 'OPEN ONLY';
+const logNote = () => APK ? (BGL.on === false ? 'OPEN ONLY' : 'LOGGED 24/7') : 'OPEN ONLY';
+const clockAxis = () => { const T = now(); return { tEnd: T, xfmt: sec => hhmm(T - sec) }; };        // axe en heures réelles
+// vitesse de charge / décharge sur la dernière heure (%/h, régression) ; null si trop peu de données ou trop stable
+function battRate() {
+  const v = HIST.batt.v, n = v.length, pts = [];
+  for (let i = Math.max(0, n - 60); i < n; i++) if (v[i] != null) pts.push([i, v[i]]);
+  if (pts.length < 10 || pts[pts.length - 1][0] - pts[0][0] < 20) return null;
+  const mx = pts.reduce((a, p) => a + p[0], 0) / pts.length, my = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  const sl = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0);
+  return sl * 3600 / HIST.batt.every;
+}
 // mode : wait (en attente du 1er relevé), live, sim, na (absent ici), off (désarmé)
 const SRC = {};
 const SOURCES = [
@@ -1032,7 +1064,7 @@ const SOURCES = [
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
-const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(300, 2), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
+const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(720, 5, true), chg: new Hist(1440, 60), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
 
 function feedLive(k, v) {
   const s = SRC[k];
@@ -1084,6 +1116,7 @@ window.addEventListener('grafit-native', e => {
   if (d.nextAlarm != null && typeof dayAlarm === 'function') dayAlarm(+d.nextAlarm / 1000);
   if (d.steps != null && !bgWaiting()) stepsFeed(+d.steps);
   if (d.bglog) bgIngest(d.bglog);
+  if (d.net) Object.assign(NETX, d.net, { t: now() });
   if (d.thermal) {
     const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
     feedLive('therm', { status: st, headroom: d.thermal.headroom != null ? +d.thermal.headroom : null });
@@ -1431,7 +1464,8 @@ function trendBridge(p_pa, ms, at = null) {
   PT.applyHold(s, c, PT.raw(s, c), ms);
   if (lag > 20 * 60000) (at ? m => logAt(at, 'BARO', m) : m => log('BARO', m))('P TREND · ' + nb + ' BLOCKS BRIDGED · GAP ' + durHM(lag / 1000));
 }
-let TREND_T = 0;                                        // ms de la dernière mise à jour de la tendance
+let TREND_T = 0;
+const trendStyle = () => TREND.level === PT.ALERT ? t.RB : (TREND.level === PT.WATCH ? t.R : t.N);   // ALERT rouge vif, WATCH rouge                                        // ms de la dernière mise à jour de la tendance
 function trendTick() {
   if (bgWaiting()) return;                                // retour au premier plan : d'abord les relevés d'arrière-plan
   const pr = pressure();
@@ -1460,6 +1494,7 @@ const AL = CFG.AL;
 function hi(x, cur, caut, crit, h) { let l = 0; if (caut != null && (x >= caut || (cur >= 1 && x > caut - h))) l = 1; if (crit != null && (x >= crit || (cur >= 2 && x > crit - h))) l = 2; return l; }
 function lo(x, cur, caut, crit, h) { let l = 0; if (caut != null && (x < caut || (cur >= 1 && x < caut + h))) l = 1; if (crit != null && (x < crit || (cur >= 2 && x < crit + h))) l = 2; return l; }
 const SEV = ['NOMINAL', 'CAUT', 'CRIT'];
+const CELLD = { weakT: 0, noneT: 0 };
 const ANN = [
   { key: 'BATT', lab: 'BATT LOW', tag: 'PWR', title: 'BATTERY CHARGE', act: 'PLUG CHARGER · ENABLE BATTERY SAVER', lim: `CAUT < ${AL.BattLowCaut} % · CRIT < ${AL.BattLowCrit} %`,
     fn: c => { if (!live('batt')) return null; const b = SRC.batt.v, p = b.level * 100; return [b.charging ? 0 : lo(p, c, AL.BattLowCaut, AL.BattLowCrit, AL.HystPct), Math.round(p) + ' %' + (b.charging ? ' ↑' : '')]; } },
@@ -1471,10 +1506,22 @@ const ANN = [
     fn: () => { if (!live('therm')) return null; const v = SRC.therm.v; return [v.status >= 4 ? 2 : (v.status >= 3 ? 1 : 0), THERM_NAMES[v.status] + (v.headroom != null && v.headroom >= 0 ? ' · ' + Math.round(v.headroom * 100) + ' %' : '')]; } },
   { key: 'GLOAD', lab: 'G-LOAD', tag: 'MOT', confirm: 0, title: 'SHOCK · ACCELERATION', act: `LATCHED ${AL.GLatchSecs} S AFTER THE PEAK`, lim: `CAUT ≥ ${AL.GLoadCaut} g · CRIT ≥ ${AL.GLoadCrit} g`,
     fn: () => { const g = gLoad(); if (g == null) return null; const pk = now() - DER.gPeakT < AL.GLatchSecs ? DER.gPeak : g; return [pk >= AL.GLoadCrit ? 2 : (pk >= AL.GLoadCaut ? 1 : 0), pk.toFixed(2) + ' g']; } },
-  { key: 'NET', lab: 'NET LINK', tag: 'NET', title: 'NET LINK', act: 'CHECK WI-FI / MOBILE DATA', lim: `CAUT RTT ≥ ${AL.NetRttCaut} ms · CRIT OFFLINE`,
-    fn: c => { if (!live('net')) return navigator.onLine === false ? [2, 'OFFLINE'] : null; const n = SRC.net.v; if (!n.online) return [2, 'OFFLINE']; return [n.rtt != null ? hi(n.rtt, c, AL.NetRttCaut, null, AL.HystRtt) : 0, (n.rtt != null ? n.rtt + ' ms' : 'ONLINE')]; } },
-  { key: 'CELL', lab: 'CELL SIGNAL', sh: 'CELL SIG', tag: 'NET', confirm: 15, title: 'MOBILE NETWORK SIGNAL', act: 'MOVE NEAR A WINDOW · CHECK SIM / AIRPLANE MODE', lim: `CAUT < ${AL.CellCaut} dBm · CRIT < ${AL.CellCrit} dBm OR NO SERVICE`,
-    fn: c => { if (!live('cell')) return null; const v = SRC.cell.v; if (v.none) return [2, 'NO SERVICE']; if (v.rsrp == null) return [0, (v.rat || 'CELL')]; return [lo(v.rsrp, c, AL.CellCaut, AL.CellCrit, 3), v.rsrp + ' dBm']; } },
+  { key: 'NET', lab: 'NET LINK', tag: 'NET', title: 'NET LINK · MEASURED RTT', act: 'CHECK WI-FI / MOBILE DATA · NET RESET IN 6.1', lim: `CAUT RTT ≥ ${AL.NetRttCaut} ms · CRIT OFFLINE / 3 PROBES LOST`,
+    fn: c => { if (!live('net')) return navigator.onLine === false ? [2, 'OFFLINE'] : null; const n = SRC.net.v; if (!n.online) return [2, 'OFFLINE']; if (NETP.fails >= 3) return [2, 'NO INTERNET']; const r = netRtt(); return [r != null ? hi(r, c, AL.NetRttCaut, null, AL.HystRtt) : 0, r != null ? Math.round(r) + ' ms' : 'ONLINE']; } },
+  // signal mobile : RSRP faible prolongé (CAUT, hystérésis 5 dB) ou plus aucune cellule (CRIT) ; délais gérés ici
+  { key: 'CELL', lab: 'CELL SIGNAL', sh: 'CELL SIG', tag: 'NET', confirm: 0, title: 'MOBILE NETWORK SIGNAL', act: 'MOVE NEAR A WINDOW · CHECK SIM / AIRPLANE MODE',
+    lim: `CAUT < ${AL.CellCaut} dBm ${AL.CellCautSecs / 60} MIN · CRIT NO SERVICE ${AL.CellNoneSecs / 60} MIN`,
+    fn: c => {
+      if (!live('cell')) return null;
+      const v = SRC.cell.v, T = now(), D = CELLD;
+      if (v.none) { D.weakT = 0; D.noneT = D.noneT || T; return [T - D.noneT >= AL.CellNoneSecs ? 2 : c, 'NO SERVICE']; }
+      D.noneT = 0;
+      if (v.rsrp == null) { D.weakT = 0; return [0, v.rat || 'CELL']; }
+      const weak = v.rsrp < AL.CellCaut + (c >= 1 ? AL.HystCell : 0);
+      if (!weak) { D.weakT = 0; return [0, v.rsrp + ' dBm']; }
+      D.weakT = D.weakT || T;
+      return [c >= 1 || T - D.weakT >= AL.CellCautSecs ? 1 : 0, v.rsrp + ' dBm'];
+    } },
   { key: 'GNSS', lab: 'GNSS', tag: 'NAV', title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `CAUT ACC > ${AL.GnssAccCaut} m · CRIT NO FIX ${AL.GnssLostSecs} s`,
     fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - Math.max(g.fixT, VIS.fg) > AL.GnssLostSecs) return settling() ? [c, 'RESUMING'] : [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
   { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', info: true, title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
@@ -1790,9 +1837,9 @@ PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     row('BATT', live('batt') ? b.level : null, live('batt') ? Math.round(b.level * 100) + ' %' + (b.charging ? ' ↑' : ' ↓') : tag('batt'));
     row('G', g != null ? g / 5 : null, g != null ? g.toFixed(2) + ' g' : tag('motion'), g != null && g >= AL.GLoadCaut);
     row('NOISE', live('mic') ? (mic.db + 60) / 60 : null, live('mic') ? mic.db.toFixed(0) + ' dB' : 'MIC ' + tag('mic'));
-    if (y < lim) { W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? (n.type || 'LINK').toUpperCase() + ' · ' + (n.eff || '').toUpperCase() + ' · ' + n.rtt + ' ms' : 'OFFLINE') : tag('net')); }
+    if (y < lim) { const rt = netRtt(); W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? netBearer().split(' · ').slice(0, 2).join(' · ') + ' · ' + fmtMs(rt) : 'OFFLINE') : tag('net'), t.D, NETP.fails >= 3 || (live('net') && !n.online) ? t.RB : t.N); }
     if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tag('geo')); }
-    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, TREND.level >= PT.WATCH ? t.B : t.N);
+    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, trendStyle());
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'TEMP', 'OUT ' + (live('wx') ? SRC.wx.v.temp.toFixed(1) + ' °C' : '—') + ' · PHONE ' + (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : 'APK'));
     if (y < lim) { const ro = live('wx') ? rainOutlook(SRC.wx.v) : null; W.kv(scr, ir.x, y++, ir.w, 'RAIN', live('wx') ? rainText(ro) : tag('wx'), t.D, ro && (ro.state === 'now' || (ro.state === 'soon' && ro.mins <= 30)) ? t.B : t.N); }
     if (y < lim) { const nx = agendaNext(), aw = awakeSecs(); W.kv(scr, ir.x, y++, ir.w, 'DAY', (aw != null ? 'AWAKE ' + durHM(aw) : 'WAKE ?') + ' · ' + (nx ? evWhen(nx.start) + ' ' + nx.title.toUpperCase() : 'NO EVENT'), t.D, nx && nx.start - now() < 900 ? t.RB : t.N); }
@@ -1816,19 +1863,29 @@ PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
     W.readout(scr, ir.x, y, hw, 'CHARGE', live('batt') ? Math.round(b.level * 100) : '', '%', t.N, low, true, 3);
     W.readout(scr, x2, y, hw, 'BATT T ' + tag('btemp'), live('btemp') ? SRC.btemp.v.c.toFixed(1) : '', '°C', t.N, live('btemp') && SRC.btemp.v.c >= AL.BattTempCaut, true, 3);
     y += 6;
+    const rate = battRate();
     if (live('batt')) {
       W.hbar(scr, ir.x, y, ir.w, b.level, low, [AL.BattLowCrit / 100, AL.BattLowCaut / 100]); y += 3;
-      W.kv(scr, ir.x, y++, ir.w, 'STATE', b.charging ? (b.level >= 1 ? 'FULL' : 'CHARGING') : 'DISCHARGING', t.D, b.charging ? t.B : t.N);
-      W.kv(scr, ir.x, y++, ir.w, b.charging ? 'TIME TO FULL' : 'TIME TO EMPTY', durHM(b.charging ? b.tFull : b.tEmpty));
+      W.kv(scr, ir.x, y++, ir.w, 'STATE', b.charging ? (b.level >= 1 ? 'FULL · PLUGGED' : 'CHARGING') : 'ON BATTERY', t.D, b.charging ? t.B : t.N);
+      let rt = 'MEASURING (≥ 20 MIN)';
+      if (rate != null) {
+        const lv = b.level * 100;
+        if (Math.abs(rate) < 0.5) rt = 'STABLE · ' + sgn(rate, 1) + ' %/h';
+        else if (rate > 0) rt = '+' + rate.toFixed(rate < 10 ? 1 : 0) + ' %/h · FULL ~' + hhmm(now() + (100 - lv) / rate * 3600);
+        else rt = '−' + (-rate).toFixed(-rate < 10 ? 1 : 0) + ' %/h · EMPTY ~' + (lv / -rate > 48 ? '> 2 DAYS' : hhmm(now() + lv / -rate * 3600));
+      }
+      W.kv(scr, ir.x, y++, ir.w, b.charging ? 'CHARGE RATE · 1 H' : 'DRAIN RATE · 1 H', rt, t.D, rate != null && rate < -8 ? t.RB : t.N);
     } else { noData(scr, ir.x, y++, ir.w, SRC.batt.mode === 'na' ? 'NO BATTERY STATUS API IN THIS BROWSER' : 'WAITING FOR BATTERY STATUS'); y++; }
     W.kv(scr, ir.x, y++, ir.w, 'THERMISTOR', live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C · ' + tag('btemp') : 'APK ONLY · NO WEB API', t.D, live('btemp') ? t.N : t.F);
     W.kv(scr, ir.x, y++, ir.w, 'LIMITS', 'CAUT < ' + AL.BattLowCaut + ' % · CRIT < ' + AL.BattLowCrit + ' %', t.D, t.F);
     y++;
-    if (ir.b - y >= 7) {
-      const rg = this.rng || '12H', hv = histView(HIST.batt, SPANS[rg], (ir.w - 10) * 2);
-      sub(scr, ir.x, y++, ir.w, 'CHARGE · ' + rg.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, vmax: 100, step: hv.step, fit: true, unit: '%', fmt: v => String(Math.round(v)),
-        limits: [[AL.BattLowCaut, 0, 'CAUT', 'lo'], [AL.BattLowCrit, 0, 'CRIT', 'lo']], yticks: [0, 25, 50, 75, 100] });
+    if (ir.b - y >= 8) {
+      // courbe = niveau de charge (%) ; bandes claires = branché ; axe en heures ; [*1] 3 / 12 / 24 h
+      const rg = this.rng || '12H', np = (ir.w - 10) * 2, hv = histView(HIST.batt, SPANS[rg], np), hc = histView(HIST.chg, SPANS[rg], np);
+      sub(scr, ir.x, y++, ir.w, 'BATTERY % · ' + rg.toLowerCase(), '▮ PLUGGED · ' + logNote(), BGL.on === false || !APK ? t.F : t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y - 1), [[hv.v, t.N]], { vmin: 0, vmax: 100, step: hv.step, fit: true, area: false, band: hc.v, unit: '%', fmt: v => String(Math.round(v)),
+        limits: [[AL.BattLowCaut, 0, 'CAUT', 'lo'], [AL.BattLowCrit, 0, 'CRIT', 'lo']], yticks: [0, 25, 50, 75, 100], ...clockAxis() });
+      scr.put(ir.x, ir.b - 1, clip('[*1] RANGE 3 / 12 / 24 H', ir.w), t.F);
     }
   } };
 
@@ -1871,13 +1928,11 @@ PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
     if (ir.w - wd >= 12) {
       const tx = ir.x + wd + 1, tw = ir.r - tx;
       const tst = lt ? 'on' : (TREND.level === PT.ALERT ? 'crit' : (TREND.level === PT.WATCH ? 'caut' : 'nom'));
-      W.tile(scr, tx, y, tw, 3, 'TREND', '', tst);
-      W.tile(scr, tx, y + 2, tw, 3, pr ? (pr.p < CFG.WXL.StdP ? 'LOW' : 'HIGH') : 'NO SRC', '', lt ? 'on' : (pr ? 'nom' : 'na'));
-      scr.put(tx, y + 2, '├', t.F); scr.put(tx + tw - 1, y + 2, '┤', t.F);
+      W.tileGrid(scr, tx, y, 1, tw - 2, [['TREND', tst], [pr ? (pr.p < CFG.WXL.StdP ? 'LOW' : 'HIGH') : 'NO SRC', lt ? 'on' : (pr ? 'nom' : 'na')]]);
     }
     y += 6;
     const span = PT.span_ms(TREND, PTC), drop = PT.drop(TREND, PTC) / 10, hrs = span / 3600000;
-    W.kv(scr, ir.x, y++, ir.w, 'P TREND (INFO)', PT.NAMES[TREND.level], t.D, TREND.level >= PT.WATCH ? t.B : t.N);
+    W.kv(scr, ir.x, y++, ir.w, 'P TREND (INFO)', PT.NAMES[TREND.level], t.D, trendStyle());
     W.kv(scr, ir.x, y++, ir.w, 'DROP / WINDOW', (span ? sgn(-drop, 1) : '—') + ' hPa · ' + (span ? hrs.toFixed(1) + ' h' : 'WARMING'));
     W.kv(scr, ir.x, y++, ir.w, 'RATE', span ? sgn(-drop / Math.max(hrs, 1e-6), 2) + ' hPa/h' : '—');
     W.kv(scr, ir.x, y++, ir.w, 'BLOCKS', TREND.count + ' / ' + PTC.ring_len + ' · 5 MIN');
@@ -1886,8 +1941,8 @@ PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
     y++;
     if (ir.b - y >= 7) {
       const rg = this.rng || '12H', hv = histView(HIST.press, SPANS[rg], (ir.w - 10) * 2);
-      sub(scr, ir.x, y++, ir.w, 'QNH · ' + rg.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { auto: true, minSpan: 4, step: hv.step, fit: true, fmt: v => v.toFixed(0), limits: [[CFG.WXL.StdP, 0, '1013', 'lo']] });
+      sub(scr, ir.x, y++, ir.w, 'QNH hPa · ' + rg.toLowerCase(), logNote() + ' · [*1]', BGL.on === false || !APK ? t.F : t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { auto: true, minSpan: 4, step: hv.step, fit: true, area: false, fmt: v => v.toFixed(0), limits: [[CFG.WXL.StdP, 0, '1013', 'lo']], ...clockAxis() });
     }
   } };
 
@@ -2077,26 +2132,44 @@ PAGES.M33 = { code: 'M33', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 
   } };
 
 // ------------------------------------------------------------------ M61 NETWORK
+// 6.1 NETWORK : latence mesurée (sonde), lien Android (APK : transport, validation Internet, Wi-Fi), réinitialisation
+const netBearer = () => {
+  const X = APK && now() - NETX.t < 30 ? NETX : null, n = SRC.net.v;
+  if (!X) return live('net') ? (n.type || 'LINK').toUpperCase() + (n.eff ? ' · ' + n.eff.toUpperCase() : '') : tag('net');
+  if (X.tr === 'WIFI') return 'WI-FI' + (X.rssi != null ? ' · ' + X.rssi + ' dBm' : '') + (X.link ? ' · ' + X.link + ' Mb/s' : '') + (X.freq ? ' · ' + (X.freq > 5900 ? '6' : X.freq > 4900 ? '5' : '2.4') + ' GHz' : '');
+  if (X.tr === 'CELLULAR') { const cl = SRC.cell.v; return 'MOBILE' + (live('cell') && cl.rat ? ' · ' + cl.rat : '') + (live('cell') && cl.rsrp != null ? ' · ' + cl.rsrp + ' dBm' : ''); }
+  return X.tr || 'NONE';
+};
 PAGES.M61 = { code: 'M61', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', 'NET', 'LINK', 'WIFI'], fps: 2,
+  keys: [['1', 'NET RESET', app => netReset(app), ['NETRESET', 'RESETNET', 'INTERNETRESET'], 'NET RESET (TAP TWICE)'],
+    ['2', 'TEST', app => { if (!NETP.busy) netProbe(); app && app.say('NET · PROBE SENT'); }, ['TEST', 'PROBE', 'PING']]],
   draw(scr, r) {
-    const ir = W.panel(scr, r, this.code, this.name, 'LINK ' + tag('net'), srcStyle('net'));
-    let y = ir.y; const [hw, x2] = twoUp(ir), n = SRC.net.v;
-    if (!live('net')) {
-      W.kv(scr, ir.x, y++, ir.w, 'STATUS', navigator.onLine ? 'ONLINE' : 'OFFLINE', t.D, navigator.onLine ? t.B : t.RB);
-      noData(scr, ir.x, y + 1, ir.w, SRC.net.mode === 'na' ? 'NO NETWORK INFORMATION API HERE' : 'WAITING FOR LINK DATA'); return;
-    }
-    W.readout(scr, ir.x, y, hw, 'RTT', n.online ? Math.min(999, Math.round(n.rtt)) : '', 'ms', t.N, n.rtt >= AL.NetRttCaut, true, 3);
-    W.readout(scr, x2, y, hw, 'DOWNLINK', n.online ? n.down.toFixed(n.down < 10 ? 1 : 0) : '', 'Mb/s', t.N, false, true, 3, 4);
+    const left = 5 - (now() - NETR.armT), armed = left > 0; this.keys[0][1] = armed ? 'CONFIRM' : 'NET RESET';
+    const n = SRC.net.v, X = APK && now() - NETX.t < 30 ? NETX : null, rt = netRtt(), on = live('net') ? n.online : navigator.onLine;
+    const noInet = NETP.fails >= 3 || (X && X.val === false);
+    const ir = W.panel(scr, r, this.code, this.name, !on ? 'OFFLINE' : (noInet ? 'NO INTERNET' : 'ONLINE · ' + (X ? (X.tr === 'WIFI' ? 'WI-FI' : X.tr === 'CELLULAR' ? 'MOBILE' : X.tr) : (n.type || 'LINK').toUpperCase())), !on || noInet ? t.TR : t.TD);
+    let y = ir.y; const [hw, x2] = twoUp(ir);
+    W.readout(scr, ir.x, y, hw, 'RTT · MEASURED', rt != null ? Math.min(999, Math.round(rt)) : '', 'ms', t.N, rt != null && rt >= AL.NetRttCaut, true, 3);
+    const dn = X && X.dn ? X.dn / 1000 : (live('net') && n.down ? n.down : null);
+    W.readout(scr, x2, y, hw, X && X.dn ? 'DOWN · ANDROID EST.' : 'DOWNLINK', dn != null ? dn.toFixed(dn < 10 ? 1 : 0) : '', 'Mb/s', t.N, false, true, 3, 4);
     y += 6;
-    W.kv(scr, ir.x, y++, ir.w, 'STATUS', n.online ? 'ONLINE' : 'OFFLINE', t.D, n.online ? t.B : t.RB);
-    W.kv(scr, ir.x, y++, ir.w, 'BEARER', (n.type || 'UNKNOWN').toUpperCase());
-    W.kv(scr, ir.x, y++, ir.w, 'EFFECTIVE TYPE', (n.eff || '—').toUpperCase());
-    W.kv(scr, ir.x, y++, ir.w, 'DATA SAVER', n.save ? 'ON' : 'OFF');
-    W.kv(scr, ir.x, y++, ir.w, 'FEEDS', 'WX ' + tag('wx') + ' · TLE ' + TLE_SRC, t.D, t.D);
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    kv('STATUS', !on ? 'OFFLINE' : (X ? (X.val ? 'INTERNET OK · VALIDATED' : 'CONNECTED · NOT VALIDATED') : (NETP.fails >= 3 ? 'NO INTERNET' : 'ONLINE')), !on || noInet ? t.RB : t.B);
+    kv('BEARER', netBearer());
+    if (X) kv('METERED · VPN', (X.met ? 'METERED' : 'UNMETERED') + (X.vpn ? ' · VPN' : ''));
+    const rec = NETP.rec.filter(([ts]) => now() - ts < 1800), lost = rec.filter(([, v]) => v == null).length;
+    kv('PROBES · 30 MIN', rec.length ? rec.length + ' SENT · ' + lost + ' LOST (' + Math.round(lost / rec.length * 100) + ' %)' : 'WAITING', lost ? t.RB : t.N);
+    kv('FEEDS', 'WX ' + tag('wx') + ' · TLE ' + TLE_SRC, t.D);
+    // réinitialisation Internet (deux appuis)
+    if (armed) kv('NET RESET [*1]', 'ARMED · TAP AGAIN WITHIN ' + Math.ceil(left) + ' S', t.RB);
+    else if (NETP.reset) kv('LAST NET RESET', hhmm(NETP.reset.t) + ' · RTT ' + fmtMs(NETP.reset.before) + ' → ' + (NETP.reset.after != null ? fmtMs(NETP.reset.after) : 'MEASURING'), t.N);
+    else kv('NET RESET [*1]', APK ? 'TAP TWICE · OPENS ANDROID INTERNET' : 'APK ONLY', t.F);
     y++;
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, 'RTT HISTORY', '2 s / POINT');
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.rtt.v, t.N]], { vmin: 0, step: 2, minSpan: 400, fmt: v => String(Math.round(v)), unit: ' ms', limits: [[AL.NetRttCaut, 0, 'CAUT']] });
+      const hv = histView(HIST.rtt, 1800, (ir.w - 10) * 2);
+      sub(scr, ir.x, y++, ir.w, 'RTT ms · 30 min', 'PROBE EVERY 5 s HERE', t.F);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[hv.v, t.N]], { vmin: 0, step: hv.step, fit: true, minSpan: 200, area: false, fmt: v => String(Math.round(v)), unit: ' ms',
+        limits: [[AL.NetRttCaut, 0, 'CAUT']], tEnd: now(), xfmt: sec => hhmm(now() - sec) });
     }
   } };
 
@@ -2900,18 +2973,27 @@ function radTrend(frames) {
   const num = p.reduce((a, q) => a + (q[0] - mx) * (q[1] - my), 0), den = p.reduce((a, q) => a + (q[0] - mx) ** 2, 0);
   return den ? num / den : null;
 }
-function radBase(c, b, h, R) {                       // fond de carte CARTO sombre (tuiles @2x)
-  const mppView = 2 * R * 1000 / b.w, cosl = Math.cos(h.lat * RAD);
-  const z = Math.max(5, Math.min(13, Math.round(Math.log2(40075016.686 * cosl / (512 * mppView))))), W = 512 * Math.pow(2, z);
+// Fond de carte. Par défaut Esri Dark Gray Canvas (sans clé ; base sous la pluie, noms de lieux au-dessus).
+// Avec une clé CARTO personnelle (MAPKEY <clé>, gratuite en usage non commercial, demandée par toi) : CARTO dark @2x.
+const MAPP = {
+  esri: { ts: 256, zmax: 16, att: '© ESRI · HERE · OSM',
+    url: (z, x, y, lab) => 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_' + (lab ? 'Reference' : 'Base') + '/MapServer/tile/' + z + '/' + y + '/' + x },
+  carto: { ts: 512, zmax: 13, att: '© OSM © CARTO',
+    url: (z, x, y, lab) => 'https://' + 'abcd'[(x + y) & 3] + '.basemaps.cartocdn.com/' + (lab ? 'dark_only_labels' : 'dark_nolabels') + '/' + z + '/' + x + '/' + y + '@2x.png?key=' + encodeURIComponent(SET.mapKey) },
+};
+const mapProv = () => SET.mapKey ? MAPP.carto : MAPP.esri;
+function radBase(c, b, h, R, lab = false) {
+  const P = mapProv(), TS = P.ts, mppView = 2 * R * 1000 / b.w, cosl = Math.cos(h.lat * RAD);
+  const z = Math.max(5, Math.min(P.zmax, Math.round(Math.log2(40075016.686 * cosl / (TS * mppView))))), W = TS * Math.pow(2, z);
   const cx = wxOf(h.lon) * W, cy = wyOf(h.lat) * W, Rp = R * 1000 / (40075016.686 * cosl / W), s = (b.w / 2) / Rp;
   let miss = 0;
-  c.save(); c.globalAlpha = 0.72;
-  for (let ty = Math.floor((cy - Rp) / 512); ty <= Math.floor((cy + Rp) / 512); ty++) for (let tx = Math.floor((cx - Rp) / 512); tx <= Math.floor((cx + Rp) / 512); tx++) {
-    const e = radImg('https://' + 'abcd'[(tx + ty) & 3] + '.basemaps.cartocdn.com/dark_all/' + z + '/' + tx + '/' + ty + '@2x.png', false);
+  c.save(); c.globalAlpha = lab ? 0.85 : 0.9; c.imageSmoothingEnabled = true;
+  for (let ty = Math.floor((cy - Rp) / TS); ty <= Math.floor((cy + Rp) / TS); ty++) for (let tx = Math.floor((cx - Rp) / TS); tx <= Math.floor((cx + Rp) / TS); tx++) {
+    const e = radImg(P.url(z, tx, ty, lab), false);
     if (e.err) { miss++; continue; } if (!e.ok) continue;
-    c.drawImage(e.img, b.x + b.w / 2 + (tx * 512 - cx) * s, b.y + b.h / 2 + (ty * 512 - cy) * s, 512 * s + 0.5, 512 * s + 0.5);
+    c.drawImage(e.img, b.x + b.w / 2 + (tx * TS - cx) * s, b.y + b.h / 2 + (ty * TS - cy) * s, TS * s + 0.5, TS * s + 0.5);
   }
-  c.restore(); RDR.mapErr = miss;
+  c.restore(); if (!lab) RDR.mapErr = miss;
 }
 PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
   keys: [['1', 'PLAY', () => { RDR.play = !RDR.play; RDR.playT0 = Date.now(); if (RDR.play) RDR.pick = null; }, ['PLAY', 'PAUSE', 'LOOP'], 'PLAY · PAUSE'],
@@ -2920,6 +3002,11 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     ['4', 'MAP', app => { RDR.map = !RDR.map; app && app.say('RADAR · ' + (RDR.map ? 'DARK MAP' : 'GRID ONLY')); }, ['MAP', 'GRID', 'BASEMAP']],
     ['5', 'REFRESH', () => { RDR.metaT = 0; RDR.metaTry = 0; RDR.fcT = 0; RDR.fcTry = 0; RDR.frames.clear(); }, ['REFRESH', 'RELOAD']],
     ['6', '◂', () => PAGES.M44.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M44.stepF(1), ['NEXT', 'FWD']]],
+  cmds: [[['MAPKEY'], app => {
+    const raw = String(app.rawLine || '').trim().split(/\s+/).slice(1).join('');
+    SET.mapKey = raw && raw.toUpperCase() !== 'OFF' ? raw : ''; saveSettings(); RDR.imgs.clear();
+    app.say(SET.mapKey ? 'MAP · CARTO KEY SET (' + SET.mapKey.length + ' CHARS)' : 'MAP · ESRI DARK GRAY (NO KEY)');
+  }, 'MAPKEY <KEY|OFF>']],
   stepF(dd) {
     const F = radFrames(); if (!F.length) return; RDR.play = false;
     let i = RDR.pick == null ? F.map(f => f.k).lastIndexOf('R') : F.findIndex(f => f.t === RDR.pick);
@@ -2951,7 +3038,7 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     scr.vector(mx, y, mw, mh, (c, b) => {
       const d = b.d, cx = b.x + b.w / 2, cy = b.y + b.h / 2, k = (b.w / 2) / R;            // px par km
       c.fillStyle = 'rgb(' + BGT.join(',') + ')'; c.fillRect(b.x, b.y, b.w, b.h);
-      if (useMap) radBase(c, b, h, R);
+      if (useMap) radBase(c, b, h, R, false);
       else {                                                                                // repères : antennes ANFR en points
         c.fillStyle = COL.F;
         const cosl = Math.cos(h.lat * RAD);
@@ -2964,6 +3051,7 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
         else c.drawImage(fr.cv, b.x, b.y, b.w, b.h);
         c.restore();
       }
+      if (useMap) radBase(c, b, h, R, true);                                               // noms de lieux par-dessus la pluie
       // cercles de distance, croix du téléphone, nord
       c.strokeStyle = COL.L; c.lineWidth = d; dash(c, d, 3, 4);
       for (const rk of RAD_RINGS[R]) { c.beginPath(); c.arc(cx, cy, rk * k, 0, 2 * Math.PI); c.stroke(); }
@@ -2982,7 +3070,7 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     const midC = mx + Math.floor(mw / 2), midR = y + Math.floor(mh / 2);
     scr.put(midC, y, 'N', t.B);
     RAD_RINGS[R].forEach(rk => { const rr = Math.round(rk / R * mh / 2); if (rr < mh / 2) scr.put(midC + 1, midR - rr, rk + 'km', t.D); });
-    if (useMap) scr.put(mx + 1, y + mh - 1, RDR.mapErr ? 'MAP OFFLINE' : '© OSM © CARTO', t.F);
+    if (useMap) scr.put(mx + 1, y + mh - 1, RDR.mapErr ? 'MAP OFFLINE' : mapProv().att, t.F);
     if (RDR.sim) scr.put(mx + 1, y + mh - 1, 'SIMULATED · OFFLINE', t.T);
     if (fr && fr.raw) W.rjust(scr, mx + mw - 1, y + mh - 1, 'RAW COLORS', t.F);
     y += mh;
@@ -3034,7 +3122,7 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
       kv('HERE · NEXT 2 H', txt, first ? t.B : t.N);
     } else if (!RDR.sim) kv('HERE · NEXT 2 H', RDR.fcErr ? 'MODEL UNREACHABLE' : 'LOADING …', t.F);
     if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] ZOOM [*4] MAP', ir.w), t.F);
-    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP CARTO' : ''), ir.w), t.F);
+    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP ' + (SET.mapKey ? 'CARTO' : 'ESRI') : ''), ir.w), t.F);
   } };
 
 // ------------------------------------------------------------------ M53 CHRONO
@@ -3941,6 +4029,7 @@ class App {
   }
   execute(line) {
     line = line.trim(); if (!line) return;
+    this.rawLine = line;
     this.helpOv = null;
     const toks = line.toUpperCase().split(/\s+/), v = toks[0];
     if (['HELP', '?', 'H'].includes(v)) return this.help(toks.slice(1).join(' '));
@@ -4240,7 +4329,8 @@ function fastTick() {                                   // 10 Hz : capteurs rapi
 function slowTick() {                                   // 1 Hz : alarmes, tendance, historiques
   alarmsTick(); trendTick();
   if (live('batt')) HIST.batt.push(SRC.batt.v.level * 100);
-  if (live('net') && SRC.net.v.online) HIST.rtt.push(SRC.net.v.rtt);
+  if (live('batt')) HIST.chg.push(SRC.batt.v.charging ? 1 : 0);
+  netProbeTick();
   if (live('geo')) HIST.acc.push(SRC.geo.v.acc);
   const T = now();
   if (T - WX.tryT > (WX.failed ? 300 : 900) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
@@ -4249,6 +4339,43 @@ function slowTick() {                                   // 1 Hz : alarmes, tenda
   if (T - DAYT >= 60) { DAYT = T; dayTick(); persistSave(); }
 }
 let DAYT = 0;
+
+// ---------------------------------------------------------------------------------------- latence réelle (sonde)
+// La WebView ne donne pas de RTT fiable (souvent 0). Sonde : petite requête vers une adresse qui répond 204 sans
+// contenu, toutes les 5 s quand 6.1 NETWORK est affiché, toutes les 30 s sinon, Grafit au premier plan seulement.
+const NETP = { t: 0, busy: false, last: null, okT: 0, fails: 0, n: 0, lost: 0, rec: [], reset: null };
+const NETX = { t: 0 };                                   // APK : transport, validation, Wi-Fi (ConnectivityManager)
+async function netProbe() {
+  NETP.busy = true; NETP.t = now(); NETP.n++;
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 4000), t0 = performance.now();
+  try {
+    await fetch('https://www.gstatic.com/generate_204?g=' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: ctl.signal });
+    const ms = performance.now() - t0; NETP.last = ms; NETP.okT = now(); NETP.fails = 0;
+    NETP.rec.push([now(), ms]); HIST.rtt.push(ms, now(), true);
+  } catch (e) { NETP.fails++; NETP.lost++; NETP.rec.push([now(), null]); HIST.rtt.push(null, now(), true); }
+  finally { clearTimeout(to); NETP.busy = false; }
+  while (NETP.rec.length > 120) NETP.rec.shift();
+  const R = NETP.reset;                                   // bilan après une réinitialisation Internet
+  if (R && !R.after && now() > R.t + 5) { const ok = NETP.rec.filter(([ts, v]) => ts > R.t && v != null); if (ok.length >= 3) { R.after = median(ok.slice(-3).map(x => x[1])); log('NET', 'AFTER INTERNET RESET · RTT ' + fmtMs(R.before) + ' → ' + fmtMs(R.after)); } }
+}
+const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : null; };
+const fmtMs = v => v == null ? '—' : Math.round(v) + ' ms';
+function netRtt() { const ok = NETP.rec.filter(([ts, v]) => v != null && now() - ts < 180).map(x => x[1]); return ok.length ? median(ok.slice(-3)) : null; }
+function netProbeTick() {
+  if (document.visibilityState === 'hidden' || NETP.busy || !live('net') || !SRC.net.v.online) return;
+  if (now() - NETP.t >= (APP && APP.page && APP.page.code === 'M61' ? 5 : 30)) netProbe();
+}
+// réinitialisation Internet : Android réserve le bouton au système ; Grafit ouvre la page Internet où il se trouve
+const NETR = { armT: 0 };
+function netReset(app) {
+  if (!APK) return app && app.say('NET RESET · GRAFIT APK ONLY (OPENS ANDROID INTERNET)', true);
+  if (now() - NETR.armT > 5) { NETR.armT = now(); haptic(40); return app && app.say('NET RESET ARMED · [*1] AGAIN WITHIN 5 S'); }
+  NETR.armT = 0; haptic([40, 60, 40]);
+  NETP.reset = { t: now(), before: netRtt(), after: null };
+  log('NET', 'INTERNET RESET · ANDROID PAGE OPENED · RTT BEFORE ' + fmtMs(NETP.reset.before));
+  nativeCmd({ cmd: 'netReset' });
+  app && app.say('ANDROID INTERNET · TAP THE RESET BUTTON AT THE TOP');
+}
 
 // ---------------------------------------------------------------------------------------- journal continu (APK)
 // Le service Android de Grafit relève toutes les minutes, écran éteint compris : pression, batterie, état thermique,
@@ -4312,7 +4439,7 @@ function bgIngest(d) {
       }
     }
     if (batt != null) {
-      HIST.batt.put(batt, ts);
+      HIST.batt.put(batt, ts); HIST.chg.put(chg ? 1 : 0, ts);
       if (P.chg != null && !!chg !== !!P.chg) logAt(ts, 'PWR', (chg ? 'CHARGER PLUGGED · ' : 'UNPLUGGED · ') + batt + ' %');
       if (!chg && P.batt != null) for (const lim of [AL.BattLowCaut, AL.BattLowCrit]) if (P.batt >= lim && batt < lim) logAt(ts, 'PWR', 'BATT LOW · ' + batt + ' % < ' + lim + ' %', true);
       P.batt = batt; P.chg = chg;
@@ -4337,7 +4464,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 function persistSave() {
   try {
     if (live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null && SRC.geo.v.acc < 100) { BGL.alt = Math.round(SRC.geo.v.alt); bgSave(); }   // altitude pour le QNH hors GNSS
-    localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), press: HIST.press.dump(), src: TREND_SRC }));
+    localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), chg: HIST.chg.dump(), press: HIST.press.dump(), src: TREND_SRC }));
     localStorage.setItem('grafit.chr', JSON.stringify(CHR));
     if (SRC.wx.mode === 'live' && SRC.wx.v.at && SRC.wx.v.at !== persistSave.wxAt) { localStorage.setItem('grafit.wx', JSON.stringify(SRC.wx.v)); persistSave.wxAt = SRC.wx.v.at; }
   } catch (e) { /* stockage plein */ }
@@ -4345,7 +4472,7 @@ function persistSave() {
 function persistLoad() {
   const get = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
   const h = get('grafit.hist');
-  if (h) { HIST.batt.load(h.batt); if (!h.src || h.src === TREND_SRC || !TREND_SRC) HIST.press.load(h.press); }
+  if (h) { HIST.batt.load(h.batt); HIST.chg.load(h.chg); if (!h.src || h.src === TREND_SRC || !TREND_SRC) HIST.press.load(h.press); }
   const c = get('grafit.chr'); if (c) Object.assign(CHR, c);
   const w = get('grafit.wx');
   if (w && w.at && now() - w.at < 12 * 3600 && w.hms) {

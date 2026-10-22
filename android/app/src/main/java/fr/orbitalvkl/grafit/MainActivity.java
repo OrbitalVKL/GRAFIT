@@ -167,7 +167,7 @@ public class MainActivity extends Activity {
         if (!loaded) load(); else { probes.stop(); probes.start(); probes.pushAll(); }
     }
 
-    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings | saveLog | bglog | bgRead, on, name, text, since} */
+    /** Commandes de la page : {cmd: perms | usage | keepOn | immersive | settings | saveLog | bglog | bgRead | netReset, on, name, text, since} */
     void onCommand(String data) {
         try {
             JSONObject o = new JSONObject(data);
@@ -196,6 +196,11 @@ public class MainActivity extends Activity {
                 case "bglog":
                     LoggerService.setEnabled(this, on);
                     bgPush(-1);
+                    break;
+                case "netReset":
+                    // le bouton « Réinitialiser Internet » est en haut de la page Internet (Android 12+ : action Wi-Fi)
+                    try { startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)); }
+                    catch (Exception e) { startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
                     break;
                 case "bgRead":
                     bgPush(o.optLong("since", 0));
