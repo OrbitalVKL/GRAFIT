@@ -910,7 +910,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.9.2', BUILD: '20261022', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.10.0', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -934,17 +934,18 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
-// groupes du pavé ; un changement de groupe ramène au format .1. Depuis la 1.8.0 la météo et la journée ont leur
-// groupe (4 WEATHER, 5 DAY) et COMMS, NAV, CMD passent en 6, 7, 8 : les numéros ne suivent plus ceux de Grafit PC.
+// groupes du pavé ; un changement de groupe ramène au format .1. 1.10 : 8 UTILITY (chrono, niveau, audio), 9 CMD ;
+// les numéros ne suivent plus ceux de Grafit PC.
 // Les adresses citées dans les textes viennent de pageAddr() : elles suivent toute réorganisation.
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
-  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53', 'M54']],
-  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']], ['8', 'CMD', 'КОМ', ['M81']],
+  ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
+  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']],
+  ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
 
@@ -1020,7 +1021,7 @@ class Hist {
     const k = this.v.length - 1 - Math.round((this.t - ts) / this.every);
     if (k >= 0 && this.v[k] == null) this.v[k] = v;
   }
-  dump() { return { v: this.v, t: this.t }; }
+  dump(dec = 3) { const f = Math.pow(10, dec); return { v: this.v.map(x => x == null ? null : Math.round(x * f) / f), t: this.t }; }
   load(o) { if (!o || !Array.isArray(o.v) || !o.t || now() - o.t > this.cap * this.every) return; this.v = o.v.slice(-this.cap); this.t = o.t; }
 }
 // vue d'un historique sur une durée : moyennes par paquet, petits trous (≤ 20 min) interpolés, fin calée sur maintenant
@@ -1099,14 +1100,14 @@ function stepsFeed(c, ts = now(), bg = false) {
 const UPD = { current: null, latest: null, available: false, state: 'idle', progress: 0, msg: '', said: '' };
 function updCmd(app) {
   if (!APK) return app && app.say('UPDATE: GRAFIT APK ONLY · THE WEB VERSION UPDATES ITSELF', true);
-  if (UPD.available) { nativeCmd({ cmd: 'update' }); app && app.say('UPDATE ' + UPD.latest + ' · DOWNLOADING'); }
+  if (UPD.available) { persistSave(); log('SYS', 'UPDATE ' + UPD.latest + ' · DATA SAVED'); logSave(); nativeCmd({ cmd: 'update' }); app && app.say('UPDATE ' + UPD.latest + ' · DOWNLOADING'); }
   else { nativeCmd({ cmd: 'checkUpdate' }); app && app.say('UPDATE · CHECKING GITHUB'); }
 }
 window.addEventListener('grafit-native', e => {
   const d = e.detail || {};
   if (d.update) {
     Object.assign(UPD, d.update);
-    if (UPD.available && UPD.said !== UPD.latest) { UPD.said = UPD.latest; log('SYS', 'APK UPDATE ' + UPD.latest + ' AVAILABLE · ' + pageAddr('M81') + ' [*9]'); }
+    if (UPD.available && UPD.said !== UPD.latest) { UPD.said = UPD.latest; log('SYS', 'APK UPDATE ' + UPD.latest + ' AVAILABLE · ' + pageAddr('M91') + ' [*9]'); }
     if (UPD.state === 'error' && UPD.msg) log('SYS', UPD.msg, true);
   }
   if (d.logSaved) { log('SYS', 'LOG EXPORTED · ' + d.logSaved); APP && APP.say('LOG · ' + d.logSaved); }
@@ -1116,7 +1117,16 @@ window.addEventListener('grafit-native', e => {
   if (d.nextAlarm != null && typeof dayAlarm === 'function') dayAlarm(+d.nextAlarm / 1000);
   if (d.steps != null && !bgWaiting()) stepsFeed(+d.steps);
   if (d.bglog) bgIngest(d.bglog);
-  if (d.net) Object.assign(NETX, d.net, { t: now() });
+  if (d.net) {
+    Object.assign(NETX, d.net, { t: now() });
+    const tr = NETX.tr;
+    feedLive('net', { online: tr !== 'NONE', type: tr === 'WIFI' ? 'wifi' : (tr === 'CELLULAR' ? 'cellular' : (tr === 'ETHERNET' ? 'ethernet' : (tr === 'NONE' ? 'none' : 'other'))),
+      eff: '', down: NETX.dn ? NETX.dn / 1000 : null, rtt: netRtt(), save: false });
+  }
+  // APK : batterie et position côté Android (la WebView n'expose pas toujours la batterie ; position de secours)
+  if (d.batt) feedLive('batt', { level: +d.batt.level, charging: !!d.batt.charging, plugged: d.batt.plugged, tFull: d.batt.full != null ? +d.batt.full : Infinity, tEmpty: Infinity });
+  if (d.loc && now() - (SRC.geo.webT || 0) > 10) { const o = d.loc; feedLive('geo', { lat: +o.lat, lon: +o.lon, alt: o.alt != null ? +o.alt : null, acc: o.acc != null ? +o.acc : 50, altAcc: null,
+    speed: o.spd != null ? +o.spd : null, course: o.brg != null ? +o.brg : null, fixT: (+o.t || Date.now()) / 1000 }); }
   if (d.thermal) {
     const st = +d.thermal.status || 0, prev = SRC.therm.v.status;
     feedLive('therm', { status: st, headroom: d.thermal.headroom != null ? +d.thermal.headroom : null });
@@ -1162,7 +1172,7 @@ function startSensors() {
   });
   try {
     if (navigator.geolocation) navigator.geolocation.watchPosition(p => {
-      const c = p.coords;
+      const c = p.coords; SRC.geo.webT = now();
       feedLive('geo', { lat: c.latitude, lon: c.longitude, alt: c.altitude, acc: c.accuracy, altAcc: c.altitudeAccuracy, speed: c.speed, course: c.heading, fixT: p.timestamp / 1000 });
     }, err => { if (SRC.geo.mode === 'wait') log('NAV', 'GNSS ' + (err.code === 1 ? 'PERMISSION DENIED' : 'UNAVAILABLE'), true); }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
   } catch (e) { /* refusé par le cadre */ }
@@ -1175,7 +1185,7 @@ function startSensors() {
   } catch (e) { /* idem */ }
   const net = () => {
     const c = navigator.connection;
-    if (!c) return;
+    if (!c || (APK && now() - NETX.t < 30)) return;                 // APK : le lien vient d'Android (ConnectivityManager)
     feedLive('net', { online: navigator.onLine, type: c.type || '', eff: c.effectiveType || '', down: c.downlink, rtt: c.rtt, save: !!c.saveData });
   };
   if (navigator.connection) { navigator.connection.addEventListener('change', net); setInterval(net, 2000); net(); }
@@ -1404,6 +1414,15 @@ function simTick() {
 }
 const live = k => SRC[k].mode === 'live' || SRC[k].mode === 'sim';
 const tag = k => ({ live: 'LIVE', sim: 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[SRC[k].mode];
+// état lisible (plus de « N/A ») : pourquoi une source manque
+function tagx(k) {
+  const m = SRC[k].mode;
+  if (m !== 'na') return ({ live: 'LIVE', sim: 'SIM', wait: 'WAITING…', off: 'OFF' })[m] || m.toUpperCase();
+  const desc = (SOURCES.find(x => x[0] === k) || [])[2] || '';
+  if (/ · APK$/.test(desc) && !APK) return 'APK ONLY';
+  return ({ geo: 'NO FIX · CHECK LOCATION', wx: 'NO NETWORK', net: 'NO LINK INFO', batt: 'NO BATTERY INFO', orient: 'NO COMPASS', motion: 'NO MOTION SENSOR',
+    baro: 'NO BAROMETER', mic: 'MIC OFF', cell: 'NO CELL INFO', steps: 'NO STEP SENSOR', store: 'NO STORAGE INFO' })[k] || 'NOT AVAILABLE';
+}
 const here = () => live('geo') ? { lat: SRC.geo.v.lat, lon: SRC.geo.v.lon, name: 'GNSS' } : CFG.HOME;
 
 // ---------------------------------------------------------------------------------------- grandeurs dérivées
@@ -1582,15 +1601,15 @@ const FAIL_DOC = {
   GLOAD: ['Peak acceleration over the limit: shock, fall or impact. The level is latched ' + AL.GLatchSecs + ' s after the peak so a short hit is not missed.',
     ['Check the phone for damage (screen, camera)', 'If unexpected: secure the mount / pocket', 'Acknowledge once checked']],
   NET: ['Round-trip time over the limit (CAUT) or no network at all (CRIT). Weather, TLE, satellites and towers feeds stall.',
-    ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see ' + pageAddr('M63') + ' TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
+    ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see ' + pageAddr('M62') + ' TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
   GNSS: ['Position accuracy worse than the limit (CAUT) or no fix for ' + AL.GnssLostSecs + ' s (CRIT). NAV formats freeze on the last position.',
     ['Go outdoors, clear view of the sky', 'Enable precise location for this app', 'See ' + pageAddr('M73') + ' SATS: satellites used and DOP']],
   COMPASS: ['Heading is relative: the browser gives no magnetic north reference. KURS, SKY and TOWERS bearings may be offset.',
     ['Figure-8 calibration away from metal', 'Use HDG UP off for a north-up display']],
   SENSORS: ['Motion sensor stream silent for more than ' + AL.SensorsFrozen + ' s while live: browser throttled the page or permission was revoked.',
-    ['Bring Grafit to the foreground', 'Re-arm sensors: ' + pageAddr('M81') + ' ARM (or command ARM)', 'Reopen the app if it persists']],
+    ['Bring Grafit to the foreground', 'Re-arm sensors: ' + pageAddr('M91') + ' ARM (or command ARM)', 'Reopen the app if it persists']],
   CELL: ['Mobile signal weak (CAUT) or no registered cell (CRIT): calls, SMS and mobile data may fail; GNSS assistance is slower.',
-    ['Move near a window or outdoors', 'Check SIM / airplane mode / roaming', 'See ' + pageAddr('M63') + ' TOWERS for the nearest sites']],
+    ['Move near a window or outdoors', 'Check SIM / airplane mode / roaming', 'See ' + pageAddr('M62') + ' TOWERS for the nearest sites']],
   BHEALTH: ['Android battery health is not GOOD: overheat, overvoltage, dead cell or failure (CRIT), too cold (CAUT).',
     ['Unplug the charger and let the phone rest', 'Try another charger / cable', 'If it persists: battery service']],
   STORAGE: ['Internal storage almost full: apps, camera and updates fail; Android slows down below a few %.',
@@ -1834,16 +1853,16 @@ PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     sub(scr, ir.x, y++, ir.w, 'VITALS', SRC_NAME.motion + ' ' + tag('motion'));
     const bw = Math.max(6, ir.w - 18), row = (lab, f, val, al = false) => { if (y >= lim) return; scr.put(ir.x, y, lab, t.D); if (f != null) W.segBar(scr, ir.x + 6, y, bw, f, 0.8, al); W.rjust(scr, ir.r, y, val, al ? t.RB : t.N); y++; };
     const g = gLoad(), mic = SRC.mic.v, n = SRC.net.v, pr = pressure(), at = attitude();
-    row('BATT', live('batt') ? b.level : null, live('batt') ? Math.round(b.level * 100) + ' %' + (b.charging ? ' ↑' : ' ↓') : tag('batt'));
-    row('G', g != null ? g / 5 : null, g != null ? g.toFixed(2) + ' g' : tag('motion'), g != null && g >= AL.GLoadCaut);
+    row('BATT', live('batt') ? b.level : null, live('batt') ? Math.round(b.level * 100) + ' %' + (b.charging ? ' ↑' : ' ↓') : tagx('batt'));
+    row('G', g != null ? g / 5 : null, g != null ? g.toFixed(2) + ' g' : tagx('motion'), g != null && g >= AL.GLoadCaut);
     row('NOISE', live('mic') ? (mic.db + 60) / 60 : null, live('mic') ? mic.db.toFixed(0) + ' dB' : 'MIC ' + tag('mic'));
-    if (y < lim) { const rt = netRtt(); W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? netBearer().split(' · ').slice(0, 2).join(' · ') + ' · ' + fmtMs(rt) : 'OFFLINE') : tag('net'), t.D, NETP.fails >= 3 || (live('net') && !n.online) ? t.RB : t.N); }
-    if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tag('geo')); }
+    if (y < lim) { const rt = netRtt(); W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? netBearer().split(' · ').slice(0, 2).join(' · ') + ' · ' + fmtMs(rt) : 'OFFLINE') : tagx('net'), t.D, NETP.fails >= 3 || (live('net') && !n.online) ? t.RB : t.N); }
+    if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tagx('geo')); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, trendStyle());
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'TEMP', 'OUT ' + (live('wx') ? SRC.wx.v.temp.toFixed(1) + ' °C' : '—') + ' · PHONE ' + (live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C' : 'APK'));
-    if (y < lim) { const ro = live('wx') ? rainOutlook(SRC.wx.v) : null; W.kv(scr, ir.x, y++, ir.w, 'RAIN', live('wx') ? rainText(ro) : tag('wx'), t.D, ro && (ro.state === 'now' || (ro.state === 'soon' && ro.mins <= 30)) ? t.B : t.N); }
+    if (y < lim) { const ro = live('wx') ? rainOutlook(SRC.wx.v) : null; W.kv(scr, ir.x, y++, ir.w, 'RAIN', live('wx') ? rainText(ro) : tagx('wx'), t.D, ro && (ro.state === 'now' || (ro.state === 'soon' && ro.mins <= 30)) ? t.B : t.N); }
     if (y < lim) { const nx = agendaNext(), aw = awakeSecs(); W.kv(scr, ir.x, y++, ir.w, 'DAY', (aw != null ? 'AWAKE ' + durHM(aw) : 'WAKE ?') + ' · ' + (nx ? evWhen(nx.start) + ' ' + nx.title.toUpperCase() : 'NO EVENT'), t.D, nx && nx.start - now() < 900 ? t.RB : t.N); }
-    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tag('motion'));
+    if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'ATT', live('motion') ? 'P ' + sgn(at.pitch) + '° · R ' + sgn(at.roll) + '° · ' + at.mode : tagx('motion'));
     y++;
     if (y + 5 <= lim) {
       const fs = failStats();
@@ -1853,9 +1872,9 @@ PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     }
   } };
 
-// ------------------------------------------------------------------ M21 POWER
-PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTERY', 'BATT'], fps: 2, rng: '12H',
-  keys: [rangeKey(() => PAGES.M21)],
+// ------------------------------------------------------------------ M23 POWER
+PAGES.M23 = { code: 'M23', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTERY', 'BATT'], fps: 2, rng: '12H',
+  keys: [rangeKey(() => PAGES.M23)],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'BATTERY ' + tag('batt'), srcStyle('batt'));
     let y = ir.y; const [hw, x2] = twoUp(ir), b = SRC.batt.v;
@@ -1889,9 +1908,9 @@ PAGES.M21 = { code: 'M21', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
     }
   } };
 
-// ------------------------------------------------------------------ M22 MOTION
-PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'ACCEL', 'GYRO', 'G'], fps: 8, rng: '12H',
-  keys: [['1', 'RANGE', (app, arg, wd) => { const k = ['LIVE', '3H', '12H', '24H'], v = k.includes(wd) ? wd : (k.includes(arg) ? arg : k[(k.indexOf(PAGES.M22.rng) + 1) % k.length]); PAGES.M22.rng = v; app && app.say('MOTION · ' + v); }, ['RANGE', 'LIVE', '3H', '12H', '24H'], 'RANGE [LIVE|3H|12H|24H]']],
+// ------------------------------------------------------------------ M24 MOTION
+PAGES.M24 = { code: 'M24', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'ACCEL', 'GYRO', 'G'], fps: 8, rng: '12H',
+  keys: [['1', 'RANGE', (app, arg, wd) => { const k = ['LIVE', '3H', '12H', '24H'], v = k.includes(wd) ? wd : (k.includes(arg) ? arg : k[(k.indexOf(PAGES.M24.rng) + 1) % k.length]); PAGES.M24.rng = v; app && app.say('MOTION · ' + v); }, ['RANGE', 'LIVE', '3H', '12H', '24H'], 'RANGE [LIVE|3H|12H|24H]']],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'ACCEL · GYRO ' + tag('motion'), srcStyle('motion'));
     let y = ir.y; const [hw, x2] = twoUp(ir), g = gLoad();
@@ -1924,9 +1943,9 @@ PAGES.M22 = { code: 'M22', name: 'MOTION', ru: 'ДВИЖ', words: ['MOTION', 'AC
     }
   } };
 
-// ------------------------------------------------------------------ M23 BARO
-PAGES.M23 = { code: 'M23', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE', 'DEP', 'QNH'], fps: 2, rng: '12H',
-  keys: [rangeKey(() => PAGES.M23)],
+// ------------------------------------------------------------------ M21 BARO
+PAGES.M21 = { code: 'M21', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE', 'DEP', 'QNH'], fps: 2, rng: '12H',
+  keys: [rangeKey(() => PAGES.M21)],
   draw(scr, r, app) {
     const pr = pressure();
     const ir = W.panel(scr, r, this.code, this.name, pr ? pr.src : 'NO SOURCE', pr ? (pr.src === 'SIM' ? t.T : t.TD) : t.TR);
@@ -2186,8 +2205,92 @@ PAGES.M61 = { code: 'M61', name: 'NETWORK', ru: 'СЕТЬ', words: ['NETWORK', '
     }
   } };
 
-// ------------------------------------------------------------------ M64 AUDIO
-PAGES.M64 = { code: 'M64', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
+// ------------------------------------------------------------------ 8.2 M82 LEVEL : niveau à bulle
+// Gravité de l'accéléromètre, lissée. À PLAT (écran vers le ciel) : bulle 2D + fioles X / Y. SUR LA TRANCHE (posé
+// sur un bord, portrait ou paysage) : inclinomètre, écart au multiple de 90° le plus proche. Zéro mémorisé par mode
+// (*1), effacé par *2 ; *3 fige la mesure. Vibration brève au passage à niveau (± 0,3°).
+const LVL = { u: [0, 0, 1], hold: null, ok: false };
+PAGES.M82 = { code: 'M82', name: 'LEVEL', ru: 'УРОВЕНЬ', words: ['LEVEL', 'NIVEAU', 'BUBBLE', 'INCLINO', 'SPIRIT'], fps: 20,
+  keys: [['1', 'ZERO', app => { const m = PAGES.M82.meas(); SET.lvl = SET.lvl || {}; if (m.flat) { SET.lvl.x = m.rx; SET.lvl.y = m.ry; } else SET.lvl.e = m.re; saveSettings(); app && app.say('LEVEL · ZERO SET (' + (m.flat ? 'FLAT' : 'EDGE') + ')'); }, ['ZERO', 'CAL', 'CALIBRATE']],
+    ['2', 'CLR ZERO', app => { SET.lvl = {}; saveSettings(); app && app.say('LEVEL · ZERO CLEARED'); }, ['CLEAR', 'CLRZERO', 'RESETZERO']],
+    ['3', 'HOLD', app => { LVL.hold = LVL.hold ? null : PAGES.M82.meas(); app && app.say(LVL.hold ? 'LEVEL · HOLD' : 'LEVEL · LIVE'); }, ['HOLD', 'FREEZE']]],
+  meas() {
+    const u = DER.u, k = 0.2; LVL.u = LVL.u.map((v, i) => v + (u[i] - v) * k);
+    const [x, y, z] = LVL.u, Z = SET.lvl || {}, flat = Math.abs(z) >= 0.7;
+    const rx = Math.atan2(x, z) * DEG, ry = Math.atan2(y, z) * DEG;                  // à plat : inclinaison selon X et Y
+    const th = Math.atan2(x, y) * DEG, re = ((th + 45) % 90 + 90) % 90 - 45;           // sur la tranche : écart au bord
+    const land = Math.abs(x) > Math.abs(y), e = re - (Z.e || 0);
+    // axes de l'écran (interface tournée en paysage ou non) : rotation des axes de l'appareil
+    const ang = window.innerWidth > window.innerHeight ? (((screen.orientation && screen.orientation.angle) || 90) % 360) : 0;
+    const rot = (a, b) => ang === 90 ? [-b, a] : (ang === 180 ? [-a, -b] : (ang === 270 ? [b, -a] : [a, b]));
+    const [sx, sy] = rot(rx - (Z.x || 0), ry - (Z.y || 0));
+    const [vx, vy] = rot(land ? 0 : e, land ? -e * Math.sign(x || 1) : 0);         // décalage de la bulle (vers le côté haut)
+    return { flat, rx, ry, re, x: sx, y: sy, e, vx, vy, land, zero: !!(Z.x || Z.y || Z.e) };
+  },
+  draw(scr, r) {
+    if (!live('motion')) { const ir = W.panel(scr, r, this.code, this.name, tagx('motion'), t.TF); noData(scr, ir.x, ir.y, ir.w, 'WAITING FOR MOTION SENSOR'); return; }
+    const m0 = this.meas(), m = LVL.hold || m0, tol = 0.3;
+    const lv = m.flat ? Math.abs(m.x) <= tol && Math.abs(m.y) <= tol : Math.abs(m.e) <= tol;
+    if (lv && !LVL.ok && !LVL.hold) haptic(25); LVL.ok = lv;
+    const ir = W.panel(scr, r, this.code, this.name, (LVL.hold ? 'HOLD · ' : '') + (m.flat ? 'FLAT' : 'ON EDGE · ' + (m.land ? 'LANDSCAPE' : 'PORTRAIT')) + (m.zero ? ' · ZERO SET' : ''), LVL.hold ? t.T : t.TD);
+    let y = ir.y; const [hw, x2] = twoUp(ir), f1 = v => (Math.abs(v) < 0.05 ? 0 : v).toFixed(1);
+    if (m.flat) { W.readout(scr, ir.x, y, hw, 'X · °', f1(m.x), '', t.N, false, true, 5); W.readout(scr, x2, y, hw, 'Y · °', f1(m.y), '', t.N, false, true, 5); }
+    else { W.readout(scr, ir.x, y, hw, 'TILT · °', f1(m.e), '', t.N, false, true, 5); W.readout(scr, x2, y, hw, 'SLOPE · %', (Math.abs(m.e) < 0.05 ? 0 : Math.tan(m.e * RAD) * 100).toFixed(1), '', t.N, false, true, 5); }
+    y += 6;
+    // voyant LEVEL (même rendu que les voyants d'alarme, en blanc)
+    W.tileGrid(scr, ir.x + Math.floor((ir.w - 22) / 2), y, 1, 20, [[lv ? 'LEVEL ± ' + tol + '°' : 'NOT LEVEL', lv ? 'on' : 'nom']]); y += 4;
+    const mh = Math.max(8, Math.min(ir.b - y - 5, Math.round((ir.w - 4) / CELL.aspect))), mw = Math.min(ir.w, Math.round(mh * CELL.aspect)), mx = ir.x + Math.floor((ir.w - mw) / 2);
+    if (m.flat) {
+      // bulle : 5° au bord du cadran ; cercles 1°, 2°, 5°
+      scr.vector(mx, y, mw, mh, (c, b) => {
+        const d = b.d, cx = b.x + b.w / 2, cy = b.y + b.h / 2, R = Math.min(b.w, b.h) / 2 - 4 * d, k = R / 5;
+        c.fillStyle = rgba(WHITE, 0.04); c.beginPath(); c.arc(cx, cy, R, 0, 2 * Math.PI); c.fill();
+        c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.stroke();
+        c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 2, 3);
+        for (const a of [1, 2]) { c.beginPath(); c.arc(cx, cy, a * k, 0, 2 * Math.PI); c.stroke(); }
+        c.beginPath(); c.moveTo(cx - R, cy); c.lineTo(cx + R, cy); c.moveTo(cx, cy - R); c.lineTo(cx, cy + R); c.stroke(); dash(c, d, 0);
+        c.strokeStyle = COL.N; c.lineWidth = 1.2 * d; c.beginPath(); c.arc(cx, cy, tol * k + 3 * d, 0, 2 * Math.PI); c.stroke();
+        let bx = m.x * k, by = -m.y * k; const L = Math.hypot(bx, by); if (L > R - 6 * d) { bx *= (R - 6 * d) / L; by *= (R - 6 * d) / L; }
+        c.fillStyle = lv ? COL.N : rgba(WHITE, 0.75); c.beginPath(); c.arc(cx + bx, cy + by, 6 * d, 0, 2 * Math.PI); c.fill();
+      });
+      const cr = mx + Math.floor(mw / 2), mr = y + Math.floor(mh / 2), k = Math.floor(Math.min(mw / CELL.aspect, mh) / 2) / 5;
+      scr.put(cr + Math.round(k * 2 * CELL.aspect) + 1, mr - 1, '2°', t.F); scr.put(mx + mw - 3, mr - 1, '5°', t.F);
+      y += mh;
+    } else {
+      // fiole le long de l'axe horizontal : couchée à l'écran, ou debout si le téléphone est en paysage interface portrait
+      const horiz = Math.abs(m.vx) >= Math.abs(m.vy) || Math.abs(m.vx) + Math.abs(m.vy) < 0.05 && !m.land;
+      const vial = (c, b, H) => {
+        const d = b.d, L0 = H ? b.x + 4 * d : b.y + 4 * d, L1 = H ? b.x + b.w - 4 * d : b.y + b.h - 4 * d, C = H ? b.y + b.h / 2 : b.x + b.w / 2;
+        const hh = (H ? b.h : b.w) * (H ? 0.32 : 0.3), mid = (L0 + L1) / 2, k = (L1 - L0) / 2 / 5;
+        const P = (u, v) => H ? [u, v] : [v, u];
+        c.strokeStyle = COL.L; c.lineWidth = 1.2 * d; c.beginPath();
+        c.rect(...P(L0, C - hh), ...(H ? [L1 - L0, 2 * hh] : [2 * hh, L1 - L0])); c.stroke();
+        c.strokeStyle = COL.N; for (const sg of [-1, 1]) { const u = mid + sg * (tol * k + 7 * d); c.beginPath(); c.moveTo(...P(u, C - hh)); c.lineTo(...P(u, C + hh)); c.stroke(); }
+        const off = H ? m.vx : -m.vy, u = Math.max(L0 + 8 * d, Math.min(L1 - 8 * d, mid + off * k));
+        c.fillStyle = lv ? COL.N : rgba(WHITE, 0.75); c.beginPath(); c.ellipse(...P(u, C), H ? 7 * d : hh * 0.7, H ? hh * 0.7 : 7 * d, 0, 0, 2 * Math.PI); c.fill();
+      };
+      if (horiz) {
+        y += Math.floor((mh - 5) / 2);
+        scr.vector(ir.x + 2, y, ir.w - 4, 3, (c, b) => vial(c, b, true));
+        y += 3;
+        scr.put(ir.x + 2, y, '−5°', t.F); W.rjust(scr, ir.r - 2, y, '+5°', t.F); scr.put(ir.x + Math.floor(ir.w / 2) - 1, y, '0°', t.F);
+        y += Math.ceil((mh - 5) / 2) + 2;
+      } else {
+        const vw = 6, vx0 = ir.x + Math.floor((ir.w - vw) / 2);
+        scr.vector(vx0, y, vw, mh, (c, b) => vial(c, b, false));
+        scr.put(vx0 + vw + 1, y, '+5°', t.F); scr.put(vx0 + vw + 1, y + Math.floor(mh / 2), '0°', t.F); scr.put(vx0 + vw + 1, y + mh - 1, '−5°', t.F);
+        y += mh;
+      }
+    }
+    const kv = (k2, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k2, v, t.D, st); };
+    y++;
+    kv('MODE', m.flat ? 'FLAT · SCREEN UP' : 'ON ITS EDGE · ' + (m.land ? 'LONG SIDE DOWN' : 'SHORT SIDE DOWN'));
+    kv('ZERO', m.zero ? 'CALIBRATED · [*2] CLEAR' : 'FACTORY · [*1] TO CALIBRATE', m.zero ? t.N : t.F);
+    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip('CALIBRATE: ZERO, TURN 180°, READ HALF THE DIFFERENCE', ir.w), t.F);
+  } };
+
+// ------------------------------------------------------------------ M83 AUDIO
+PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
   keys: [['1', 'ARM MIC', (app, arg) => micArm(onOff(arg, SRC.mic.mode === 'off')), ['MIC', 'ARMMIC'], 'MIC [ON|OFF]']],
   draw(scr, r) {
     this.keys[0][1] = SRC.mic.mode === 'off' ? 'ARM MIC' : 'DISARM MIC';
@@ -2466,7 +2569,7 @@ PAGES.M75 = { code: 'M75', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
     }
   } };
 
-// ------------------------------------------------------------------ M42 WEATHER
+// ------------------------------------------------------------------ M41 WEATHER
 // ------------------------------------------------------------------ graphique de pluie (4.2 WEATHER : 6 h au quart d'heure)
 // Barres de pluie (axe gauche, mm), probabilité en pointillés (axe droit, 0–100 %) ; barres ajustées à la largeur.
 function rainChart(scr, r, mm, o = {}) {
@@ -2634,11 +2737,11 @@ function wxTimeline(scr, r, w, t0, hours) {
   return r.h;
 }
 
-// ------------------------------------------------------------------ 4.1 M41 FORECAST : la journée d'un coup d'œil
+// ------------------------------------------------------------------ 4.1 M43 FORECAST : la journée d'un coup d'œil
 // Bandeau du jour, deux afficheurs (maxi · pluie), quatre tranches de 6 h à partir de maintenant, frise horaire
 // depuis le réveil (température, ressenti, pluie, ciel) et les repères : vent, soleil, UV.
 const PERIOD_N = ['NIGHT', 'MORNING', 'AFTNOON', 'EVENING'], PERIOD_T = ['NIGHT', 'TMW AM', 'TMW PM', 'TMW EVE'];
-PAGES.M41 = { code: 'M41', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
+PAGES.M43 = { code: 'M43', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
@@ -2704,9 +2807,9 @@ PAGES.M41 = { code: 'M41', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORE
     if (uv != null) kv('UV MAX', Math.round(uv) + ' · ' + UV_TXT(uv) + (today && today.uAt && uv >= 1 ? ' · ' + hm(today.uAt) : ''), uv >= 6 ? t.B : t.N);
   } };
 
-// ------------------------------------------------------------------ 4.2 M42 WEATHER : conditions actuelles + pluie à 6 h
+// ------------------------------------------------------------------ 4.2 M41 WEATHER : conditions actuelles + pluie à 6 h
 const WXP = { chart: 'AUTO' };                     // graphique du bas : pluie à 6 h (quart d'heure) ou pression 48 h
-PAGES.M42 = { code: 'M42', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
+PAGES.M41 = { code: 'M41', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']],
     ['2', 'RAIN/PRESS', (app, arg, wd) => { WXP.chart = wd === '6H' ? 'RAIN' : wd === 'PRESS' ? 'PRESS' : (WXP.cur === 'RAIN' ? 'PRESS' : 'RAIN'); }, ['RAINPRESS', 'PRESS', '6H'], 'RAIN · PRESS']],
   draw(scr, r) {
@@ -2754,9 +2857,9 @@ PAGES.M42 = { code: 'M42', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
     }
   } };
 
-// ------------------------------------------------------------------ 4.3 M43 WEEK : les 5 jours suivants
+// ------------------------------------------------------------------ 4.3 M44 WEEK : les 5 jours suivants
 // Par jour : ciel et mini/maxi sur l'échelle de la semaine, pluie (probabilité, cumul, heures), vent, matin / après-midi.
-PAGES.M43 = { code: 'M43', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SEMAINE', '5DAYS', 'DAYS'], fps: 1,
+PAGES.M44 = { code: 'M44', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SEMAINE', '5DAYS', 'DAYS'], fps: 1,
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
@@ -2811,7 +2914,7 @@ PAGES.M43 = { code: 'M43', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     });
   } };
 
-// ------------------------------------------------------------------ 4.4 M44 RADAR : pluie observée (−2 h) et prévue (+2 h)
+// ------------------------------------------------------------------ 4.4 M42 RADAR : pluie observée (−2 h) et prévue (+2 h)
 // Passé : radar RainViewer (mosaïque observée, 10 min, gratuit en usage personnel, zoom 7 ≈ 0,4 km/px). Les tuiles
 // « Universal Blue » sont décodées en dBZ puis recolorées dans la palette de Grafit. Futur : prévision Open-Meteo au
 // quart d'heure sur une grille 7 × 7 autour du téléphone (un modèle, pas une extrapolation du radar). Fond : carte
@@ -3008,13 +3111,13 @@ function radBase(c, b, h, R, lab = false) {
   }
   c.restore(); if (!lab) RDR.mapErr = miss;
 }
-PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
+PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
   keys: [['1', 'PLAY', () => { RDR.play = !RDR.play; RDR.playT0 = Date.now(); if (RDR.play) RDR.pick = null; }, ['PLAY', 'PAUSE', 'LOOP'], 'PLAY · PAUSE'],
     ['2', 'ZOOM', (app, arg) => { const v = parseInt(arg, 10); RDR.R = RAD_R.includes(v) ? v : RAD_R[(RAD_R.indexOf(RDR.R) + 1) % RAD_R.length]; RDR.frames.clear(); RDR.fcT = 0; app && app.say('RADAR · ±' + RDR.R + ' km'); }, ['ZOOM', 'RANGE'], 'ZOOM [15|30|60]'],
     ['3', 'NOW', () => { RDR.play = false; RDR.pick = null; }, ['NOW']],
     ['4', 'MAP', app => { RDR.map = !RDR.map; app && app.say('RADAR · ' + (RDR.map ? 'DARK MAP' : 'GRID ONLY')); }, ['MAP', 'GRID', 'BASEMAP']],
     ['5', 'REFRESH', () => { RDR.metaT = 0; RDR.metaTry = 0; RDR.fcT = 0; RDR.fcTry = 0; RDR.frames.clear(); }, ['REFRESH', 'RELOAD']],
-    ['6', '◂', () => PAGES.M44.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M44.stepF(1), ['NEXT', 'FWD']]],
+    ['6', '◂', () => PAGES.M42.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M42.stepF(1), ['NEXT', 'FWD']]],
   cmds: [[['MAPKEY'], app => {
     const raw = String(app.rawLine || '').trim().split(/\s+/).slice(1).join('');
     SET.mapKey = raw && raw.toUpperCase() !== 'OFF' ? raw : ''; saveSettings(); RDR.imgs.clear();
@@ -3138,7 +3241,7 @@ PAGES.M44 = { code: 'M44', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP ' + (SET.mapKey ? 'CARTO' : 'ESRI') : ''), ir.w), t.F);
   } };
 
-// ------------------------------------------------------------------ M53 CHRONO
+// ------------------------------------------------------------------ M81 CHRONO
 const CHR = { run: false, t0: 0, acc: 0, laps: [], tmr: 0, tmrEnd: 0, tmrRun: false, tmrLeft: 0, rang: false };
 const chrEl = () => CHR.acc + (CHR.run ? now() - CHR.t0 : 0);
 function tmrSet(s) { CHR.tmr = s; CHR.tmrLeft = s; CHR.tmrRun = false; CHR.rang = false; }
@@ -3147,12 +3250,12 @@ function chrTick() {
   if (CHR.tmrRun && now() >= CHR.tmrEnd) { CHR.tmrRun = false; CHR.tmrLeft = 0; CHR.rang = now(); log('TMR', 'TIMER ' + mmss(CHR.tmr) + ' ELAPSED', true); haptic([300, 150, 300, 150, 600]); }
 }
 const mmss = (s, tenth = false) => { s = Math.max(0, s); const m = Math.floor(s / 60), r = s - m * 60; return pad2(m) + ':' + pad2(Math.floor(r)) + (tenth ? '.' + Math.floor(r * 10 % 10) : ''); };
-PAGES.M53 = { code: 'M53', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['CHRONO', 'TIMER', 'STOPWATCH'], fps: 10,
+PAGES.M81 = { code: 'M81', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['CHRONO', 'TIMER', 'STOPWATCH'], fps: 10,
   keys: [['1', 'START', (app, arg, w) => { const run = w === 'START' ? true : (w === 'STOP' ? false : !CHR.run); if (CHR.run && !run) { CHR.acc += now() - CHR.t0; CHR.run = false; } else if (!CHR.run && run) { CHR.t0 = now(); CHR.run = true; } }, ['SW', 'START', 'STOP'], 'START · STOP'],
     ['2', 'LAP', () => { if (CHR.run) CHR.laps.unshift(chrEl()); }], ['3', 'RESET', () => { CHR.run = false; CHR.acc = 0; CHR.laps = []; }],
     ['4', "5'", () => tmrSet(300), ['5MIN']], ['5', "15'", () => tmrSet(900), ['15MIN']], ['6', "30'", () => tmrSet(1800), ['30MIN']],
     ['7', 'GO', (app, arg, w) => { if ((w === 'GO' && !CHR.tmrRun) || (w === 'HOLD' && CHR.tmrRun) || !w) tmrGo(); }, ['GO', 'HOLD'], 'GO · HOLD']],
-  cmds: [[['TIMER', 'TMR'], (app, arg) => { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (!mm) { app.go('M53'); return; } tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); app.go('M53'); app.say('TIMER ' + arg + ' RUNNING'); }, 'TIMER m[:ss]']],
+  cmds: [[['TIMER', 'TMR'], (app, arg) => { const mm = arg.match(/^(\d+)(?::(\d{1,2}))?$/); if (!mm) { app.go('M81'); return; } tmrSet(+mm[1] * 60 + (+mm[2] || 0)); tmrGo(); app.go('M81'); app.say('TIMER ' + arg + ' RUNNING'); }, 'TIMER m[:ss]']],
   draw(scr, r) {
     this.keys[0][1] = CHR.run ? 'STOP' : 'START'; this.keys[6][1] = CHR.tmrRun ? 'HOLD' : 'GO';
     const ir = W.panel(scr, r, this.code, this.name, (CHR.run ? 'STOPWATCH RUNNING' : 'STOPWATCH IDLE') + (CHR.tmrRun ? ' · TIMER ▶' : ''), CHR.run || CHR.tmrRun ? t.T : t.TD);
@@ -3171,8 +3274,8 @@ PAGES.M53 = { code: 'M53', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
     if (y < ir.b) scr.put(ir.x, y++, clip('LASER · PRINT · SOLDER', ir.w), t.F);
   } };
 
-// ------------------------------------------------------------------ M81 QUICK SET
-PAGES.M81 = { code: 'M81', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
+// ------------------------------------------------------------------ M91 QUICK SET
+PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
   keys: [['1', 'SIM', (app, arg) => { SET.sim = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); app && app.say('SIM MODE ' + SET.sim); }, ['SIM'], 'SIM [AUTO|ON|OFF]'],
     ['2', 'SCREEN', (app, arg) => { wakeSet(onOff(arg, SET.wake)); app && app.say('SCREEN KEEP-ON ' + (SET.wake ? 'ON' : 'OFF')); }, ['SCREEN', 'KEEPON', 'WAKELOCK'], 'SCREEN [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
@@ -3303,8 +3406,8 @@ PAGES.M73 = { code: 'M73', name: 'SATS', ru: 'СПУТН', words: ['SATS', 'SATE
     if (!raw && y < ir.b) scr.put(ir.x, y++, clip('RAW SIGNAL (C/N0, USED IN FIX): APK', ir.w), t.F);
   } };
 
-// ------------------------------------------------------------------ M62 RELAYS : relais de communication en vue
-PAGES.M62 = { code: 'M62', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RELAY', 'COMSAT', 'IRIDIUM', 'AMATEUR', 'CELL'], fps: 2,
+// ------------------------------------------------------------------ M63 RELAYS : relais de communication en vue
+PAGES.M63 = { code: 'M63', name: 'SATCOM', ru: 'РЕТР', words: ['SATCOM', 'RELAYS', 'RELAY', 'COMSAT', 'IRIDIUM', 'AMATEUR'], fps: 2,
   keys: [['1', ...K_HDG], ['2', 'REFRESH', refreshSats, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
@@ -3337,15 +3440,15 @@ PAGES.M62 = { code: 'M62', name: 'RELAYS', ru: 'РЕТР', words: ['RELAYS', 'RE
     kv('AMATEUR RELAYS', ham.length + ' UP' + (ham.length ? ' · ' + ham.filter(s => s.el >= 10).length + ' ≥10°' : ''));
     ham.slice(0, 3).forEach(s => kv('  ' + s.label, Math.round(s.az) + '° ' + card(s.az) + ' · EL ' + Math.round(s.el) + '°', s.el >= 10 ? t.B : t.D));
     const cl = SRC.cell.v;
-    kv('CELL TOWERS', 'SEE ' + pageAddr('M63') + ' TOWERS', t.D, t.F);
+    kv('CELL TOWERS', 'SEE ' + pageAddr('M62') + ' TOWERS', t.D, t.F);
     if (false) kv('CELL', live('cell') ? [cl.rat, cl.operator, cl.band ? 'B' + cl.band : '', cl.rsrp != null ? cl.rsrp + ' dBm' : ''].filter(Boolean).join(' · ') : 'CELL TOWERS · APK ONLY', t.D, live('cell') ? t.N : t.F);
   } };
 
-// ------------------------------------------------------------------ M24 TEMPS : météo et téléphone
+// ------------------------------------------------------------------ M22 TEMPS : météo et téléphone
 // 2.4 TEMPS : deux familles, deux échelles. OUTSIDE = modèle Open-Meteo à ta position (air à 2 m, ressenti, point
 // de rosée), pas une mesure. PHONE = mesures du téléphone (thermistance batterie, état thermique Android).
-PAGES.M24 = { code: 'M24', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP', 'TEMPERATURE'], fps: 1, rng: '12H',
-  keys: [rangeKey(() => PAGES.M24)],
+PAGES.M22 = { code: 'M22', name: 'TEMPS', ru: 'ТЕМП', words: ['TEMPS', 'TEMP', 'TEMPERATURE'], fps: 1, rng: '12H',
+  keys: [rangeKey(() => PAGES.M22)],
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'OUT ' + tag('wx') + ' · PHONE ' + (live('btemp') ? tag('btemp') : 'APK'), t.TD);
     const w = SRC.wx.v, ow = live('wx');
@@ -3450,9 +3553,9 @@ function towersNear(lat, lon, radius = 3000) {
   return out.sort((a, b) => a.dist - b.dist);
 }
 
-// ------------------------------------------------------------------ M63 TOWERS : antennes-relais autour du téléphone
-PAGES.M63 = { code: 'M63', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', 'TOWER', 'CELL', 'ANTENNA', 'GSM', 'ANFR'], fps: 4, range: 1,
-  keys: [['1', ...K_HDG], ['2', 'RANGE', (app, arg) => { const k = { 1: 0, 2: 1, 5: 2 }[parseInt(arg, 10)]; PAGES.M63.range = k != null ? k : (PAGES.M63.range + 1) % 3; app && app.say('RANGE ' + [1, 2, 5][PAGES.M63.range] + ' km'); }, ['RANGE'], 'RANGE [1|2|5]'], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }, ['RELOAD', 'REFRESH']]],
+// ------------------------------------------------------------------ M62 TOWERS : antennes-relais autour du téléphone
+PAGES.M62 = { code: 'M62', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', 'TOWER', 'CELL', 'ANTENNA', 'GSM', 'ANFR'], fps: 4, range: 1,
+  keys: [['1', ...K_HDG], ['2', 'RANGE', (app, arg) => { const k = { 1: 0, 2: 1, 5: 2 }[parseInt(arg, 10)]; PAGES.M62.range = k != null ? k : (PAGES.M62.range + 1) % 3; app && app.say('RANGE ' + [1, 2, 5][PAGES.M62.range] + ' km'); }, ['RANGE'], 'RANGE [1|2|5]'], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }, ['RELOAD', 'REFRESH']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
     const h = here(), a = aim(), rot = SET.skyRot && a ? a.hdg : 0, RANGE = [1000, 2000, 5000][this.range];
@@ -3514,7 +3617,7 @@ PAGES.M63 = { code: 'M63', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
   } };
 
 // ---------------------------------------------------------------------------------------- réveil · agenda
-// RÉVEIL : point de départ du MET (bandeau) et de M52 DAY, par ordre de priorité :
+// RÉVEIL : point de départ du MET (bandeau) et de M51 DAY, par ordre de priorité :
 //  1. MANUAL : WAKE 7:15 · WAKE NOW, jamais remplacé dans la journée ;
 //  2. ALARM  : l'alarme du réveil Android prévue ce matin (retenue la veille par l'APK), si le premier
 //     déverrouillage durable tombe entre 30 min avant et 90 min après elle, ou s'il n'est pas connu ;
@@ -3594,7 +3697,7 @@ function dayAlarm(ts) {                                               // APK : p
 }
 function dayUsage(ok) {
   if (DAYREC.usage === ok) return;
-  DAYREC.usage = ok; daySave(); log('DAY', 'USAGE ACCESS ' + (ok ? 'GRANTED' : 'MISSING · UNLOCK TIME OFF · ' + pageAddr('M52') + ' [*3]'), !ok);
+  DAYREC.usage = ok; daySave(); log('DAY', 'USAGE ACCESS ' + (ok ? 'GRANTED' : 'MISSING · UNLOCK TIME OFF · ' + pageAddr('M51') + ' [*3]'), !ok);
 }
 const nextAlarm = () => { const t = now(), v = Object.values(DAYREC.alarms).filter(x => x > t).sort((a, b) => a - b); return v.length ? v[0] : null; };
 const awakeSecs = () => DAYREC.wake && now() - DAYREC.wake < 30 * 3600 ? now() - DAYREC.wake : null;
@@ -3666,9 +3769,9 @@ const DOW3 = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const whenTxt = o => { const d = new Date(o.start * 1000); return DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + ' · ' + (o.allDay ? 'ALL DAY' : hhmm(o.start)); };
 const inTxt = s => s < 3600 ? Math.ceil(s / 60) + ' MIN' : (s < 86400 ? durHM(s) : Math.round(s / 86400) + ' D');
 
-// ------------------------------------------------------------------ M51 AGENDA (même code que sur le PC)
-PAGES.M51 = { code: 'M51', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CALENDAR', 'CAL', 'EVENTS'], fps: 1, off: 0,
-  keys: [['1', '◂ MONTH', () => { PAGES.M51.off--; }, ['MONTH-']], ['2', 'MONTH ▸', (app, arg) => { PAGES.M51.off = arg === '0' ? 0 : PAGES.M51.off + 1; }, ['MONTH', 'MONTH+'], 'MONTH [0]'],
+// ------------------------------------------------------------------ M52 AGENDA (même code que sur le PC)
+PAGES.M52 = { code: 'M52', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CALENDAR', 'CAL', 'EVENTS'], fps: 1, off: 0,
+  keys: [['1', '◂ MONTH', () => { PAGES.M52.off--; }, ['MONTH-']], ['2', 'MONTH ▸', (app, arg) => { PAGES.M52.off = arg === '0' ? 0 : PAGES.M52.off + 1; }, ['MONTH', 'MONTH+'], 'MONTH [0]'],
     ['3', 'GOOGLE', () => window.open('https://calendar.google.com', '_blank'), ['GOOGLE', 'GCAL']]],
   draw(scr, r) {
     const src = AGENDA.src === 'NONE' ? 'NO SOURCE' : AGENDA.src + (AGENDA.src === 'SIM' ? '' : ' · ' + hhmm(AGENDA.t));
@@ -3699,7 +3802,7 @@ PAGES.M51 = { code: 'M51', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
     const up = agendaUpcoming(ir.b - y - 1), nx = agendaNext();
     sub(scr, ir.x, y++, ir.w, 'NEXT EVENTS', nx ? 'IN ' + inTxt(nx.start - now()) : '', nx && nx.start - now() < 900 ? t.RB : t.D);
     if (!up.length) {
-      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? (APK ? 'ALLOW CALENDAR ACCESS: ' + pageAddr('M81') + ' [*8] ARM' : 'PHONE CALENDAR: GRAFIT APK ONLY') : '']
+      ['NO EVENT' + (AGENDA.src === 'NONE' ? ' · NO SOURCE' : ''), AGENDA.src === 'NONE' ? (APK ? 'ALLOW CALENDAR ACCESS: ' + pageAddr('M91') + ' [*8] ARM' : 'PHONE CALENDAR: GRAFIT APK ONLY') : '']
         .forEach(l => { if (l && y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F); });
       return;
     }
@@ -3711,8 +3814,8 @@ PAGES.M51 = { code: 'M51', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
     }
   } };
 
-// ------------------------------------------------------------------ M52 DAY : temps éveillé, journée
-PAGES.M52 = { code: 'M52', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
+// ------------------------------------------------------------------ M51 DAY : temps éveillé, journée
+PAGES.M51 = { code: 'M51', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
   keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]'], ['2', 'BRIEF', app => showBrief(app), ['BRIEF', 'BRIEFING']],
     ['3', 'UNLOCK', app => { if (!nativeCmd({ cmd: 'usage' })) app.say('UNLOCK TIME: GRAFIT APK ONLY', true); }, ['UNLOCK', 'USAGE'], 'UNLOCK (ALLOW USAGE ACCESS)']],
   draw(scr, r) {
@@ -3735,7 +3838,7 @@ PAGES.M52 = { code: 'M52', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
     if (APK && DAYREC.usage === false) kv('UNLOCK TIME', 'NO USAGE ACCESS · [*3]', t.RB);
     kv('STEPS TODAY', live('steps') ? SRC.steps.v.today.toLocaleString('fr-FR') : (STEPS.today ? STEPS.today + ' · LAST ' + STEPS.day.slice(6) : 'APK ONLY'), live('steps') ? t.B : t.F);
     kv(nx ? 'NEXT TODAY' : 'NEXT', nx ? clip(nx.title.toUpperCase(), 20) + ' · IN ' + inTxt(nx.start - now())
-      : (nxa ? evWhen(nxa.start) + ' · ' + clip(nxa.title.toUpperCase(), 18) : (AGENDA.src === 'NONE' ? 'NO AGENDA · ' + pageAddr('M51') : 'NONE')), nx ? t.N : t.D);
+      : (nxa ? evWhen(nxa.start) + ' · ' + clip(nxa.title.toUpperCase(), 18) : (AGENDA.src === 'NONE' ? 'NO AGENDA · ' + pageAddr('M52') : 'NONE')), nx ? t.N : t.D);
     y++;
     // ligne de la journée : réveil → +18 h, maintenant, événements, coucher du soleil
     if (DAYREC.wake && y + 4 <= ir.b) {
@@ -3774,7 +3877,7 @@ PAGES.M52 = { code: 'M52', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
     }
   } };
 
-// ------------------------------------------------------------------ M54 HEALTH : 7 jours glissants
+// ------------------------------------------------------------------ M53 HEALTH : 7 jours glissants
 // Nuits (coucher → réveil), puis tableau quotidien : réveil, coucher, sommeil, pas, minutes actives, temps d'écran,
 // déverrouillages ; moyennes sur 7 jours ; pas en barres. Sources : DAYREC (réveil/coucher), STEPS, HEALTH (APK).
 function health7() {
@@ -3794,62 +3897,63 @@ const todOf = ts => { const d = new Date(ts * 1000); return d.getHours() * 3600 
 const avgOf = a => { const v = a.filter(x => x != null); return v.length ? v.reduce((p, q) => p + q, 0) / v.length : null; };
 const avgTod = (a, pivot) => { const v = a.filter(x => x != null).map(x => (todOf(x) - pivot + 86400) % 86400); return v.length ? (v.reduce((p, q) => p + q, 0) / v.length + pivot) % 86400 : null; };
 const todTxt = s => s == null ? '—' : pad2(Math.floor(s / 3600)) + ':' + pad2(Math.floor(s % 3600 / 60));
-PAGES.M54 = { code: 'M54', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1,
+PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1,
   draw(scr, r) {
     const D = health7(), first = D[0], last = D[6];
     const dm = e => e.dd + '/' + pad2(new Date(e.m * 1000 + 43200000).getMonth() + 1);
     const ir = W.panel(scr, r, this.code, this.name, '7 DAYS · ' + dm(first) + ' → ' + dm(last), t.TD);
     let y = ir.y;
-    // nuits : barre du coucher au réveil sur 20:00 → 12:00
-    sub(scr, ir.x, y++, ir.w, 'NIGHTS · BED → WAKE', 'SLEEP', t.D);
-    const cx0 = ir.x + 7, cw = ir.w - 13;
-    D.forEach((e, i) => {
-      if (y >= ir.b) return;
-      scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
-      W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < 6 * 3600 ? t.RB : t.N) : t.F);
-      const A0 = e.m - 4 * 3600, A1 = e.m + 12 * 3600, yy = y;
-      scr.vector(cx0, yy, cw, 1, (c, b) => {
-        const X = tt => b.x + Math.max(0, Math.min(1, (tt - A0) / (A1 - A0))) * b.w, mid = b.y + b.ch * 0.5, hh = b.ch * 0.36;
-        c.fillStyle = COL.K; c.fillRect(b.x, mid - 0.5 * b.d, b.w, b.d);
-        c.strokeStyle = COL.K; c.lineWidth = b.d; dash(c, b.d, 1, 3); c.beginPath(); c.moveTo(X(e.m), b.y); c.lineTo(X(e.m), b.y + b.ch); c.stroke(); dash(c, b.d, 0);
-        if (e.bed && e.wake) { c.fillStyle = e.today ? COL.N : COL.D; c.fillRect(X(e.bed), mid - hh, Math.max(2 * b.d, X(e.wake) - X(e.bed)), 2 * hh); }
-        if (e.wake) { c.fillStyle = COL.N; c.fillRect(X(e.wake) - b.d, mid - hh * 1.4, 2 * b.d, hh * 2.8); }
-      });
-      y++;
-    });
-    if (y < ir.b) { for (let hgt = 0; hgt <= 16; hgt += 4) { const lab = pad2((20 + hgt) % 24) + 'h', x = cx0 + Math.round(hgt / 16 * (cw - 1)); scr.put(Math.max(cx0, Math.min(cx0 + cw - 3, x - 1)), y, lab, t.F); } y++; }
-    // tableau : une ligne par jour (même ordre que les nuits) + moyennes ; cumuls du jour = jusqu'ici
     const full = D.slice(0, 6), avg = {
       wake: avgTod(D.map(e => e.wake), 0), bed: avgTod(D.map(e => e.bed), 12 * 3600), sleep: avgOf(D.map(e => e.sleep)),
       steps: avgOf(full.map(e => e.steps)), act: avgOf(full.map(e => e.act)), scr: avgOf(full.map(e => e.scr)), un: avgOf(full.map(e => e.un)) };
-    const COLS = [['WAKE', 12, e => e.wake ? todTxt(todOf(e.wake)) : '—', a => todTxt(a.wake)], ['BED', 18, e => e.bed ? todTxt(todOf(e.bed)) : '—', a => todTxt(a.bed)],
-      ['SLP', 23, e => e.sleep != null ? durHM(e.sleep) : '—', a => a.sleep != null ? durHM(a.sleep) : '—'], ['STEP', 28, e => fSteps(e.steps), a => fSteps(a.steps != null ? Math.round(a.steps) : null)],
-      ['ACT', 33, e => fMin(e.act), a => fMin(a.act)], ['SCR', 38, e => e.scr != null ? durHM(e.scr) : '—', a => a.scr != null ? durHM(a.scr) : '—'],
-      ['UNL', 42, e => e.un != null ? String(e.un) : '—', a => a.un != null ? String(Math.round(a.un)) : '—']].filter(c => c[1] <= ir.w);
+    // NIGHTS : jour · coucher · barre 20h → 12h · réveil · durée
+    const xB = ir.x + 7, xC = ir.x + 13, xW = ir.r - 11, cw = Math.max(8, xW - 1 - xC);
+    sub(scr, ir.x, y++, ir.w, 'NIGHTS', 'BED → WAKE · SLEEP', t.D);
+    D.forEach(e => {
+      if (y >= ir.b) return;
+      const st = e.today ? t.B : t.N;
+      scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
+      scr.put(xB, y, e.bed ? todTxt(todOf(e.bed)) : '  —  ', e.bed ? st : t.F);
+      scr.put(xW, y, e.wake ? todTxt(todOf(e.wake)) : '  —  ', e.wake ? st : t.F);
+      W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < 6 * 3600 ? t.RB : st) : t.F);
+      const A0 = e.m - 4 * 3600, A1 = e.m + 12 * 3600;
+      scr.vector(xC, y, cw, 1, (c, b) => {
+        const X = tt => b.x + Math.max(0, Math.min(1, (tt - A0) / (A1 - A0))) * b.w, mid = b.y + b.ch * 0.5, hh = b.ch * 0.3;
+        c.fillStyle = COL.K; c.fillRect(b.x, mid - 0.5 * b.d, b.w, b.d);
+        c.fillStyle = COL.K; c.fillRect(X(e.m) - 0.5 * b.d, b.y + b.ch * 0.15, b.d, b.ch * 0.7);           // minuit
+        if (e.bed && e.wake) { c.fillStyle = e.today ? COL.N : COL.D; c.fillRect(X(e.bed), mid - hh, Math.max(2 * b.d, X(e.wake) - X(e.bed)), 2 * hh); }
+        else if (e.wake) { c.fillStyle = COL.N; c.fillRect(X(e.wake) - b.d, mid - hh * 1.3, 2 * b.d, hh * 2.6); }
+      });
+      y++;
+    });
+    if (y < ir.b) { [['20', 0], ['00', 0.25], ['04', 0.5], ['08', 0.75], ['12', 1]].forEach(([l, f]) => scr.put(Math.min(xC + cw - 2, xC + Math.round(f * (cw - 1)) - (f ? 1 : 0)), y, l, t.F)); y++; }
+    if (y < ir.b) {
+      scr.put(ir.x, y, 'AVG', t.B); scr.put(xB, y, todTxt(avg.bed), avg.bed != null ? t.B : t.F); scr.put(xW, y, todTxt(avg.wake), avg.wake != null ? t.B : t.F);
+      W.rjust(scr, ir.r, y, avg.sleep != null ? durHM(avg.sleep) : '—', t.B); y++;
+    }
+    // DAYS : pas, minutes actives, temps d'écran, déverrouillages (colonnes espacées)
     y++;
     if (y + 3 < ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'DAILY', 'TODAY = SO FAR', t.F);
-      COLS.forEach(([lab, xe]) => scr.put(ir.x + xe - slen(lab), y, lab, t.D)); y++;
+      const C = [['STEPS', 15, e => fSteps(e.steps), a2 => fSteps(a2.steps != null ? Math.round(a2.steps) : null)], ['ACTIVE', 24, e => fMin(e.act), a2 => fMin(a2.act)],
+        ['SCREEN', 33, e => e.scr != null ? durHM(e.scr) : '—', a2 => a2.scr != null ? durHM(a2.scr) : '—'], ['UNLOCKS', ir.w, e => e.un != null ? String(e.un) : '—', a2 => a2.un != null ? String(Math.round(a2.un)) : '—']];
+      sub(scr, ir.x, y++, ir.w, 'DAYS', 'TODAY = SO FAR', t.D);
+      C.forEach(([lab, xe]) => scr.put(ir.x + xe - slen(lab), y, lab, t.F)); y++;
       for (const e of D) {
         if (y >= ir.b) break;
         scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
-        COLS.forEach(([, xe, f]) => { const v = f(e); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : (e.today ? t.B : t.N)); });
+        C.forEach(([, xe, f]) => { const v = f(e); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : (e.today ? t.B : t.N)); });
         y++;
       }
-      if (y < ir.b) { scr.put(ir.x, y, 'AVG', t.B); COLS.forEach(([, xe, , g]) => { const v = g(avg); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : t.B); }); y++; }
-      for (const l of ['SLP SLEEP · STEP STEPS · ACT MINUTES MOVING', 'SCR SCREEN ON · UNL UNLOCKS']) if (y < ir.b) scr.put(ir.x, y++, clip(l, ir.w), t.F);
+      if (y < ir.b) { scr.put(ir.x, y, 'AVG 6 D', t.B); C.forEach(([, xe, , g]) => { const v = g(avg); scr.put(ir.x + xe - slen(v), y, v, v === '—' ? t.F : t.B); }); y++; }
     }
-    const ast = avg.steps;
-    // pas en barres
-    if (ir.b - y >= 7) {
+    // pas en barres (si la place le permet)
+    if (ir.b - y >= 8) {
       y++;
       const vals = D.map(e => e.steps || 0), top = Math.max(1000, ...vals), vmax = [2000, 5000, 8000, 10000, 15000, 20000, 30000].find(v => v >= top * 1.08) || Math.ceil(top / 5000) * 5000;
-      sub(scr, ir.x, y++, ir.w, 'STEPS · 7 DAYS', ast != null ? 'AVG ' + fSteps(Math.round(ast)) : '', t.D);
-      const bw = Math.max(1, Math.floor((ir.w - 12) / 7) - 2);
-      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: 0, vmax, bw, gap: 2, labels: D.map(e => e.dow), fmt: v => fSteps(Math.round(v)),
-        styles: D.map(e => e.today ? t.D : t.N) });
-    }
-    if (!APK && y < ir.b) scr.put(ir.x, ir.b - 1, clip('STEPS · ACTIVE · SCREEN: GRAFIT APK ONLY', ir.w), t.F);
+      sub(scr, ir.x, y++, ir.w, 'STEPS', avg.steps != null ? 'AVG ' + fSteps(Math.round(avg.steps)) : '', t.D);
+      W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: 0, vmax, bw: Math.max(1, Math.floor((ir.w - 12) / 7) - 2), gap: 2, labels: D.map(e => e.dow), fmt: v => fSteps(Math.round(v)), styles: D.map(e => e.today ? t.D : t.N) });
+    } else if (!APK && y < ir.b) scr.put(ir.x, ir.b - 1, clip('STEPS · ACTIVE · SCREEN: GRAFIT APK ONLY', ir.w), t.F);
+
   } };
 
 // ---------------------------------------------------------------------------------------- briefing du matin
@@ -3871,7 +3975,7 @@ function briefLines() {
   const ev = AGENDA.occ.filter(o => o.stop > T && o.start < end.getTime() / 1000);
   if (!ev.length) L.push(['—', AGENDA.src === 'NONE' ? 'NO AGENDA SOURCE' : 'NO EVENT TODAY']);
   ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
-  if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('M51')]);
+  if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('M52')]);
   L.push(['', ''], ['STATUS', '']);
   const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
   L.push(['FAULTS', fs.open + ' ACTIVE · ' + (fs.ucrit + fs.ucaut) + ' UNACK' + (fa ? ' · ' + fa.msg : '')]);
@@ -3991,12 +4095,12 @@ function app_hit(x, y, w, h, fn) { if (APP) APP.hits.push({ x, y, w, h, fn }); }
 const LOGO = {
   blades: ['M34.1,73.9 45.2,99.7 46.9,99.8 47.0,99.9 48.5,99.9 48.6,100.0 52.5,100.0 52.6,99.9 54.1,99.9 54.2,99.8 56.8,99.6 56.9,99.5 58.1,99.4 60.6,98.9 64.3,97.9 69.4,96.0 73.0,94.3 77.5,91.7 77.3,91.5 76.1,91.1 75.6,90.8 73.4,90.0 72.9,89.7 71.2,89.1 70.7,88.8 69.0,88.2 68.5,87.9 66.3,87.1 65.8,86.8 64.1,86.2 63.6,85.9 61.9,85.3 61.4,85.0 59.2,84.2 58.7,83.9 57.0,83.3 56.5,83.0 54.3,82.2 53.8,81.9 52.1,81.3 51.6,81.0 49.9,80.4 49.4,80.1 47.2,79.3 46.7,79.0 45.0,78.4 44.5,78.1 42.8,77.5 42.3,77.2Z',
     'M98.8,60.1 96.0,61.2 92.7,62.7 92.0,62.9 88.7,64.4 88.0,64.6 84.7,66.1 84.0,66.3 80.7,67.8 80.0,68.0 76.7,69.5 76.0,69.7 72.7,71.2 72.0,71.4 55.9,78.3 81.6,88.8 83.8,86.9 88.2,82.4 91.1,78.7 92.9,75.9 94.8,72.3 96.3,68.7 97.5,65.1Z',
-    'M21.8,55.8 11.4,81.8 15.9,86.4 18.2,88.4 21.3,90.8 25.3,93.4 29.3,95.5 32.1,96.7 35.6,97.9 40.1,99.0 40.0,98.5 37.4,92.6 37.2,91.9 34.9,86.7 34.7,86.0 32.4,80.8 32.2,80.1 29.9,74.9 29.7,74.2 27.4,69.0 27.2,68.3 24.9,63.1 21.9,55.8Z',
+    'M23.8,55.8 11.4,81.8 15.9,86.4 18.2,88.4 21.3,90.8 25.3,93.4 29.3,95.5 32.1,96.7 35.6,97.9 40.1,99.0 40.0,98.5 37.4,92.6 37.2,91.9 34.9,86.7 34.7,86.0 32.4,80.8 32.2,80.1 29.9,74.9 29.7,74.2 27.4,69.0 27.2,68.3 24.9,63.1 21.9,55.8Z',
     'M25.9,34.3 20.7,36.4 18.3,37.5 17.6,37.7 15.2,38.8 14.5,39.0 12.1,40.1 11.4,40.3 10.9,40.6 10.2,40.8 7.8,41.9 7.1,42.1 4.7,43.2 4.0,43.4 3.5,43.7 2.8,43.9 0.2,45.1 0.1,47.7 0.0,47.8 0.1,53.9 0.2,54.0 0.2,55.0 0.3,55.1 0.3,56.0 0.4,56.1 0.6,58.1 1.4,61.9 2.8,66.4 4.0,69.4 5.9,73.3 8.4,77.5 9.4,74.8 9.7,74.3 10.9,71.1 11.2,70.6 12.4,67.4 12.7,66.9 13.9,63.7 14.2,63.2 15.2,60.5 15.5,60.0 16.7,56.8 17.0,56.3 18.2,53.1 18.5,52.6 19.7,49.4 20.0,48.9 21.0,46.2 21.3,45.7 22.5,42.5 22.8,42.0 24.0,38.8 24.3,38.3Z',
     'M91.7,22.6 91.4,23.1 90.4,25.8 90.1,26.3 88.9,29.5 88.6,30.0 87.4,33.2 87.1,33.7 86.1,36.4 85.8,36.9 84.6,40.1 84.3,40.6 83.1,43.8 82.8,44.3 81.6,47.5 81.3,48.0 80.3,50.7 80.0,51.2 78.8,54.4 78.5,54.9 77.3,58.1 77.0,58.6 75.8,61.8 75.5,62.3 74.1,65.8 99.8,54.8 99.9,48.3 99.8,48.2 99.7,45.2 99.6,45.1 99.6,44.2 99.5,44.1 99.5,43.3 99.4,43.2 99.2,41.2 98.2,36.6 97.1,33.1 95.7,29.7 93.8,26.0Z',
-    'M44.1,21.8 41.6,20.7 39.4,19.9 38.9,19.6 37.2,19.0 36.7,18.7 35.5,18.3 35.0,18.0 33.3,17.4 32.8,17.1 28.9,15.6 28.4,15.3 26.7,14.7 26.2,14.4 24.5,13.8 24.0,13.5 22.3,12.9 21.8,12.6 20.1,12.0 19.6,11.7 18.4,11.3 13.4,16.2 11.4,18.4 8.8,21.7 7.1,24.3 4.9,28.5 4.0,30.6 2.3,35.6 1.2,40.0Z',
+    'M42.1,21.8 41.6,20.7 39.4,19.9 38.9,19.6 37.2,19.0 36.7,18.7 35.5,18.3 35.0,18.0 33.3,17.4 32.8,17.1 28.9,15.6 28.4,15.3 26.7,14.7 26.2,14.4 24.5,13.8 24.0,13.5 22.3,12.9 21.8,12.6 20.1,12.0 19.6,11.7 18.4,11.3 13.4,16.2 11.4,18.4 8.8,21.7 7.1,24.3 4.9,28.5 4.0,30.6 2.3,35.6 1.2,40.0Z',
     'M59.9,0.9 78.2,44.3 88.6,18.5 88.6,18.2 83.7,13.2 82.1,11.8 78.5,9.0 75.6,7.1 73.7,6.0 70.5,4.4 67.9,3.3 63.2,1.7Z',
-    'M22.5,8.4 65.9,25.9 54.8,0.1 48.1,0.0 48.0,0.1 45.1,0.2 45.0,0.3 44.1,0.3 44.0,0.4 43.3,0.4 43.2,0.5 40.7,0.8 37.1,1.6 33.8,2.6 30.0,4.1 25.9,6.2Z'],
+    'M24.5,8.4 65.9,25.9 54.8,0.1 48.1,0.0 48.0,0.1 45.1,0.2 45.0,0.3 44.1,0.3 44.0,0.4 43.3,0.4 43.2,0.5 40.7,0.8 37.1,1.6 33.8,2.6 30.0,4.1 25.9,6.2Z'],
   star: 'M28.1,42.5 39.7,51.0 41.7,52.6 36.5,68.3 50.1,58.6 50.4,58.7 51.1,59.3 63.8,68.3 60.3,58.0 60.3,57.7 58.6,52.8 58.6,52.5 72.2,42.5 55.4,42.5 50.1,26.5 49.2,29.2 49.2,29.5 47.3,35.0 47.3,35.3 45.5,40.5 45.5,40.8 45.0,42.3 44.8,42.5Z',
 };
 let LOGO_P = null;
@@ -4083,10 +4187,10 @@ class App {
   }
   say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; this.msgN = (this.msgN || 0) + 1; }
   // ---------------------------------------------------------- commandes : une seule grammaire pour tous les formats
-  //   <FORMAT>                  2.3 · M42 · M41 · WEATHER                    navigation
+  //   <FORMAT>                  2.3 · M41 · M43 · WEATHER                    navigation
   //   *n                        action n du format affiché (comme * puis n au pavé)
   //   <ACTION> [ARG]            ACK 2 · SIM ON · HDG OFF                     format affiché, sinon groupe, sinon Grafit
-  //   <FORMAT> <ACTION|n> [ARG] FAIL ACK ALL · WX REFRESH · M53 3            action d'un autre format, qui s'affiche
+  //   <FORMAT> <ACTION|n> [ARG] FAIL ACK ALL · WX REFRESH · M81 3            action d'un autre format, qui s'affiche
   //   HELP [FORMAT|ALL]
   // Une action d'un autre format s'exécute si elle est unique (ou si toutes ses occurrences font la même chose).
   static norm(x) { return String(x).toUpperCase().replace(/−/g, '-').replace(/[^A-Z0-9+\-]/g, ''); }
@@ -4155,9 +4259,9 @@ class App {
   help(arg) {
     if (arg === 'ALL' || arg === 'COMMANDS') {
       this.helpOv = { t: now(), title: 'COMMANDS', rt: 'ALL FORMATS', lines: [
-        ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['M42 · M41', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
+        ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['M41 · M43', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
         ['ACTIONS', 'SAME GRAMMAR ON EVERY FORMAT'], ['*n', 'ACTION n OF THIS FORMAT'], ['ACK 2', 'ACTION + ARGUMENT'],
-        ['FAIL ACK ALL', 'FORMAT + ACTION + ARG'], ['M53 3', 'FORMAT + ACTION NUMBER'], ['', 'ELSEWHERE: IF UNIQUE'], ['', ''],
+        ['FAIL ACK ALL', 'FORMAT + ACTION + ARG'], ['M81 3', 'FORMAT + ACTION NUMBER'], ['', 'ELSEWHERE: IF UNIQUE'], ['', ''],
         ['COMMON', ''], ['ACK [n|ALL]', 'ACKNOWLEDGE FAULTS'], ['CLEAR [n|ALL]', "ERASE ACK'D ENDED FAULTS"], ['SEL [n|+|-]', 'SELECT ITEM'],
         ['LAMP', 'LAMP TEST'], ['REFRESH', 'RELOAD FEED OF THE GROUP'], ['SIM AUTO|ON|OFF', 'SIMULATION'], ['WAKE · HDG', '[ON|OFF] TOGGLES'],
         ['TIMER m:ss', 'COUNTDOWN'], ['ZOOM +|-|%', 'SCALE'], ['HELP [FORMAT]', 'ACTIONS OF A FORMAT']] };
@@ -4268,7 +4372,7 @@ class App {
     const checks = [['ORIENT', 'orient'], ['MOTION', 'motion'], ['GNSS', 'geo'], ['BATTERY', 'batt'], ['NETWORK', 'net'], ['BAROMETER', 'baro'], ['WEATHER', 'wx'], ['ALARMS', null]];
     checks.forEach(([n, kk], i) => {
       if (el < 0.4 + i * 0.18) return;
-      const st = kk ? tag(kk) : 'ONLINE', w = Math.min(32, Wd - 4), x = cx - Math.floor(w / 2);
+      const st = kk ? tagx(kk) : 'ONLINE', w = Math.min(36, Wd - 4), x = cx - Math.floor(w / 2);
       W.kv(scr, x, y + i, w, n, st, t.D, st === 'LIVE' || st === 'ONLINE' ? t.B : (st === 'SIM' ? t.INVN : t.F));
     });
     y += checks.length + 1;
@@ -4291,7 +4395,7 @@ class App {
     scr.put(x, 0, DOW[dn.getDay()] + ' ' + pad2(dn.getDate()) + '/' + pad2(dn.getMonth() + 1) + '/' + pad2(dn.getFullYear() % 100), t.T);
     const right = new Date().toTimeString().slice(0, 8) + ' ВКЛ ';
     W.rjust(scr, Wd - 2, 0, right, t.T); scr.put(Wd - 2, 0, '●', t.TR);
-    // MET : temps écoulé depuis le réveil (M52 DAY) ; à défaut, depuis le lancement de Grafit
+    // MET : temps écoulé depuis le réveil (M51 DAY) ; à défaut, depuis le lancement de Grafit
     const aw = awakeSecs(), up = Math.floor(aw != null ? aw : now() - this.t0), d = Math.floor(up / 86400), rest = up % 86400;
     scr.put(6, 1, 'MET T+' + (aw != null ? pad2(up / 3600) + ':' + pad2(up % 3600 / 60) + ':' + pad2(up % 60) : d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60)), t.TD);
     const sim = SOURCES.some(([k]) => SRC[k].mode === 'sim');
@@ -4307,7 +4411,7 @@ class App {
   }
   // pupitre : onglets d'affichage (groupes, formats du groupe), espace, pavé de touches (+ et − : format suivant / précédent)
   drawConsole(scr, x0, y0, Wd) {
-    const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', WEATHER: 'WX', COMMS: 'COMM' };
+    const SHORT = { STATUS: 'STAT', SYSTEMS: 'SYST', ALARMS: 'ALRM', WEATHER: 'WX', COMMS: 'COMM', UTILITY: 'UTIL' };
     const codes = GROUPS[this.gi][3], ng = GROUPS.length, nf = codes.length, AW = 0;
     const bx = (i, n, a, b) => a + Math.round(i * (b - a) / n);
     const boxes = [];                                   // onglets : [xa, ya, xb, yb, id]
@@ -4340,7 +4444,7 @@ class App {
     for (const [k, [c, rr, cs, rs]] of Object.entries(KEYS)) {
       const xa = bx(c, 4, 0, Wd), xb = bx(c + cs, 4, 0, Wd);
       const on = k === String(this.gi + 1) || k === pend || (k === '/' && !!this.lampT0);
-      // touches chiffres selon le mode : groupe (1-8), puis après * l'action n du format, après . le format n du groupe
+      // touches chiffres selon le mode : groupe (1-9), puis après * l'action n du format, après . le format n du groupe
       let tail = lab[k], dead = /^[89]$/.test(k) && +k > ng;
       if (/^\d$/.test(k) && pend === '*') { const a = (this.page.keys || []).find(x => x[0] === k); tail = a ? a[1] : ''; dead = !a; }
       else if (/^\d$/.test(k) && pend === '.') { const c = GROUPS[this.gi][3][(+k || 10) - 1]; tail = c || ''; dead = !c; }
@@ -4490,7 +4594,10 @@ const BGL = { on: null, last: 0, alt: null, pending: false, waitT: 0, n: 0, prev
 try { const j = JSON.parse(localStorage.getItem('grafit.bg') || 'null'); if (j) Object.assign(BGL, j, { pending: false }); } catch (e) { /* */ }
 function bgSave() { try { localStorage.setItem('grafit.bg', JSON.stringify({ on: BGL.on, last: BGL.last, alt: BGL.alt, n: BGL.n, prev: BGL.prev, ev: BGL.ev })); } catch (e) { /* */ } }
 const bgWaiting = () => BGL.pending && now() - BGL.waitT < 6;
-function bgRequest() { if (APK && nativeCmd({ cmd: 'bgRead', since: BGL.last || 0 })) { BGL.pending = true; BGL.waitT = now(); } }
+function bgRequest(replay = false) {
+  const since = replay ? Math.min(BGL.last || 0, Date.now() - 24 * 3600000) : (BGL.last || 0);
+  if (APK && nativeCmd({ cmd: 'bgRead', since })) { BGL.pending = true; BGL.waitT = now(); }
+}
 function bgSet(app, on) {
   if (!APK) return app && app.say('BACKGROUND LOG: GRAFIT APK ONLY', true);
   nativeCmd({ cmd: 'bglog', on }); BGL.on = on; bgSave(); log('SYS', 'BACKGROUND LOG ' + (on ? 'ON' : 'OFF'));
@@ -4551,11 +4658,23 @@ function healthSample(ts, act, steps) {
   }
   S.ts = ts; if (steps != null) S.st = steps;
 }
+// valeurs d'un relevé dans les courbes (une case par minute ; une case déjà remplie n'est pas réécrite)
+function bgHist(r) {
+  const ts = r[0] / 1000, [, , p, batt, chg, bt, , , , dbm, rtt, , act] = r;
+  if (p != null) HIST.press.put(BGL.alt != null ? qnhOf(p, BGL.alt) : p, ts);
+  if (batt != null) { HIST.batt.put(batt, ts); HIST.chg.put(chg ? 1 : 0, ts); }
+  if (bt != null) HIST.bt.put(bt, ts);
+  if (dbm != null) HIST.sig.put(dbm, ts);
+  if (act != null) HIST.act.put(act, ts);
+  if (rtt != null && rtt >= 0) HIST.rtt.put(rtt, ts);
+}
 // lignes : [ms, 'S', p hPa (station), batt %, charge 0/1, batt °C, santé, thermique, pas, dBm] · [ms, 'E', UNLOCK|OFF|ON]
 function bgIngest(d) {
   BGL.pending = false;
   if (d.on != null) BGL.on = !!d.on;
-  const rows = (d.rows || []).filter(r => r[0] > (BGL.last || 0)).sort((a, b) => a[0] - b[0]);
+  const all = (d.rows || []).slice().sort((a, b) => a[0] - b[0]);
+  for (const r of all) if (r[0] <= (BGL.last || 0) && r[1] === 'S') bgHist(r);         // relecture : courbes seulement
+  const rows = all.filter(r => r[0] > (BGL.last || 0));
   if (!rows.length) { bgSave(); return; }
   const P = BGL.prev; let ns = 0, ne = 0;
   for (const r of rows) {
@@ -4563,9 +4682,9 @@ function bgIngest(d) {
     if (r[1] === 'E') { bgEvent(ts, r[2]); ne++; continue; }
     ns++;
     const [, , p, batt, chg, bt, health, therm, steps, dbm, rtt, net, act, amax] = r;
+    bgHist(r);
     if (p != null) {
       const q = BGL.alt != null ? qnhOf(p, BGL.alt) : p;
-      HIST.press.put(q, ts);
       if ((TREND_SRC === 'BARO' || !TREND_SRC) && ms > TREND_T) {
         TREND_SRC = 'BARO'; const before = TREND.level, pa = Math.round(q * 100);
         trendBridge(pa, ms, ts); PT.update(TREND, PTC, pa, ms); TREND_T = ms;
@@ -4573,7 +4692,7 @@ function bgIngest(d) {
       }
     }
     if (batt != null) {
-      HIST.batt.put(batt, ts); HIST.chg.put(chg ? 1 : 0, ts);
+      
       if (P.chg != null && !!chg !== !!P.chg) logAt(ts, 'PWR', (chg ? 'CHARGER PLUGGED · ' : 'UNPLUGGED · ') + batt + ' %');
       if (!chg && P.batt != null) for (const lim of [AL.BattLowCaut, AL.BattLowCrit]) if (P.batt >= lim && batt < lim) logAt(ts, 'PWR', 'BATT LOW · ' + batt + ' % < ' + lim + ' %', true);
       P.batt = batt; P.chg = chg;
@@ -4582,12 +4701,9 @@ function bgIngest(d) {
     if (therm != null) { if (P.therm != null && therm !== P.therm) logAt(ts, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[therm], therm >= 3); P.therm = therm; }
     if (health != null) { if (P.health != null && health !== P.health && health !== 2) logAt(ts, 'PWR', 'BATT HEALTH ' + (BATT_HEALTH[health] || health), true); P.health = health; }
     if (steps != null) stepsFeed(steps, ts, true);
-    if (bt != null) HIST.bt.put(bt, ts);
-    if (dbm != null) HIST.sig.put(dbm, ts);
-    if (act != null) HIST.act.put(act, ts);
+
     if (amax != null && amax >= AL.GLoadCaut) logAt(ts, 'MOT', 'SHOCK ' + amax.toFixed(1) + ' g (BACKGROUND)', amax >= AL.GLoadCrit);
     if (rtt != null) {                                    // latence d'arrière-plan ; pertes d'Internet notées au journal
-      if (rtt >= 0) HIST.rtt.put(rtt, ts);
       const lost = rtt < 0; P.lostN = lost ? (P.lostN || 0) + 1 : 0;
       if (P.lostN === 3) logAt(ts, 'NET', 'INTERNET LOST (BACKGROUND)', true);
       if (!lost && P.wasLost) logAt(ts, 'NET', 'INTERNET BACK · ' + Math.round(rtt) + ' ms' + (net ? ' · ' + ({ W: 'WI-FI', C: 'MOBILE', E: 'ETHERNET' }[net] || net) : ''));
@@ -4609,15 +4725,18 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // ---------------------------------------------------------------------------------------- persistance
 // Ce qui doit survivre à la fermeture de l'App : historiques batterie et pression (avec trou marqué), dernière
 // météo (affichée « CACHED » jusqu'au prochain flux, 12 h au plus), dernier TLE, chrono et minuteur.
+// Chaque clé est écrite à part (une clé trop grosse n'empêche plus les autres) ; un refus est noté une fois au journal.
+// Les courbes ont une seconde source : le fichier du journal continu (APK), relu au démarrage (bgRequest(true)).
 function persistSave() {
-  try {
-    if (live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null && SRC.geo.v.acc < 100) { BGL.alt = Math.round(SRC.geo.v.alt); bgSave(); }   // altitude pour le QNH hors GNSS
-    localStorage.setItem('grafit.hist', JSON.stringify({ batt: HIST.batt.dump(), chg: HIST.chg.dump(), press: HIST.press.dump(), src: TREND_SRC,
-      rtt: HIST.rtt.dump(), act: HIST.act.dump(), bt: HIST.bt.dump(), sig: HIST.sig.dump() }));
-    localStorage.setItem('grafit.health', JSON.stringify(HEALTH));
-    localStorage.setItem('grafit.chr', JSON.stringify(CHR));
-    if (SRC.wx.mode === 'live' && SRC.wx.v.at && SRC.wx.v.at !== persistSave.wxAt) { localStorage.setItem('grafit.wx', JSON.stringify(SRC.wx.v)); persistSave.wxAt = SRC.wx.v.at; }
-  } catch (e) { /* stockage plein */ }
+  const put = (k, v) => { try { localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v)); } catch (e) { if (!persistSave.err) { persistSave.err = 1; log('SYS', 'STORAGE REFUSED ' + k.toUpperCase() + ' · ' + String(e.name || e).toUpperCase(), true); } } };
+  if (live('geo') && SRC.geo.mode === 'live' && SRC.geo.v.alt != null && SRC.geo.v.acc < 100) { BGL.alt = Math.round(SRC.geo.v.alt); bgSave(); }   // altitude pour le QNH hors GNSS
+  put('grafit.hist', { batt: HIST.batt.dump(0), chg: HIST.chg.dump(0), press: HIST.press.dump(2), src: TREND_SRC,
+    rtt: HIST.rtt.dump(0), act: HIST.act.dump(3), bt: HIST.bt.dump(1), sig: HIST.sig.dump(0) });
+  put('grafit.health', HEALTH);
+  put('grafit.chr', CHR);
+  if (SRC.wx.mode === 'live' && SRC.wx.v.at && SRC.wx.v.at !== persistSave.wxAt) { put('grafit.wx', SRC.wx.v); persistSave.wxAt = SRC.wx.v.at; }
+  daySave(); bgSave(); logDirty = true; logSave();
+  try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
 }
 function persistLoad() {
   const get = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
@@ -4637,7 +4756,7 @@ window.addEventListener('pagehide', persistSave);
 
 function boot() {
   loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); persistLoad(); dayTick(true);
-  if (APK) setTimeout(bgRequest, 300);
+  if (APK) setTimeout(() => bgRequest(true), 300);
   if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); }
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);

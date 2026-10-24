@@ -19,11 +19,15 @@ Le journal est conservé sur l'appareil (2 000 événements, plusieurs jours), p
 arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargements/Grafit/grafit-log-AAAAMMJJ-HHMM.txt`
 (APK) ou le télécharge (web), avec l'état des sources au moment de l'export.
 
-## Groupes et codes (1.8.1)
+## Groupes et codes (1.10)
 
-Code de format = M + adresse : 1 STATUS (M11) · 2 SYSTEMS (M21 POWER, M22 MOTION, M23 BARO, M24 TEMPS) ·
-3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 FORECAST, M42 WEATHER, M43 WEEK) ·
-5 DAY (M51 AGENDA, M52 DAY, M53 CHRONO) · 6 COMMS (M61–M64) · 7 NAV (M71–M75) · 8 CMD (M81 QUICK SET).
+Code de format = M + adresse : 1 STATUS (M11 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
+3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 WEATHER, M42 RADAR, M43 FORECAST, M44 WEEK) ·
+5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM) · 7 NAV (M71–M75) ·
+8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
+
+Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
+fichier du journal continu de l'APK, relu au démarrage pour reconstituer 24 h de courbes.
 
 ## Alarmes (3.1)
 

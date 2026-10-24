@@ -165,6 +165,20 @@ class Probes implements SensorEventListener {
                     int t = b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
                     if (t != Integer.MIN_VALUE) d.put("battTemp", t / 10.0);
                     d.put("battHealth", b.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN));
+                    // batterie côté Android : la WebView n'expose pas toujours l'API Battery Status
+                    int lvl = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1), sc = b.getIntExtra(BatteryManager.EXTRA_SCALE, 100), stt = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                    if (lvl >= 0 && sc > 0) {
+                        JSONObject bt = new JSONObject();
+                        bt.put("level", lvl / (double) sc);
+                        bt.put("charging", stt == BatteryManager.BATTERY_STATUS_CHARGING || stt == BatteryManager.BATTERY_STATUS_FULL);
+                        bt.put("plugged", b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
+                        try {
+                            BatteryManager bm = (BatteryManager) act.getSystemService(Context.BATTERY_SERVICE);
+                            long full = bm != null ? bm.computeChargeTimeRemaining() : -1;
+                            if (full >= 0) bt.put("full", full / 1000);
+                        } catch (Exception e) { /* */ }
+                        d.put("batt", bt);
+                    }
                 }
                 if (pm != null) {
                     JSONObject th = new JSONObject();
@@ -185,7 +199,18 @@ class Probes implements SensorEventListener {
     static double round(double v, int n) { double k = Math.pow(10, n); return Math.round(v * k) / k; }
 
     // ------------------------------------------------------------------ GNSS brut
-    final LocationListener locL = loc -> { };
+    // position GNSS côté Android (secours si la géolocalisation de la WebView ne répond pas)
+    final LocationListener locL = loc -> {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("lat", loc.getLatitude()); o.put("lon", loc.getLongitude()); o.put("t", loc.getTime());
+            if (loc.hasAltitude()) o.put("alt", loc.getAltitude());
+            if (loc.hasAccuracy()) o.put("acc", loc.getAccuracy());
+            if (loc.hasSpeed()) o.put("spd", loc.getSpeed());
+            if (loc.hasBearing()) o.put("brg", loc.getBearing());
+            JSONObject d = new JSONObject(); d.put("loc", o); act.push(d);
+        } catch (Exception e) { /* */ }
+    };
 
     final GnssStatus.Callback gnssCb = new GnssStatus.Callback() {
         @Override public void onSatelliteStatusChanged(GnssStatus st) {
