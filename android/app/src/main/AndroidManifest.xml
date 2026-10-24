@@ -22,6 +22,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
@@ -55,6 +56,12 @@
                 android:value="Personal on-device sensor logger (barometer, battery) for the app graphs" />
         </service>
         <receiver android:name=".SampleReceiver" android:exported="false" />
+        <receiver android:name=".GrafitWidget" android:exported="true" android:label="Grafit">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_info" />
+        </receiver>
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

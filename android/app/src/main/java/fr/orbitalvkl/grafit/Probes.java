@@ -21,6 +21,10 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import android.location.LocationListener;
 import android.location.LocationManager;
 import android.net.Uri;
@@ -109,12 +113,14 @@ class Probes implements SensorEventListener {
         }
         h.post(fastR);
         h.post(cellR);
+        startLink();
         h.postDelayed(agendaR, 500);
     }
 
     void stop() {
         if (!running) return;
         running = false;
+        stopLink();
         h.removeCallbacksAndMessages(null);
         sm.unregisterListener(this);
         if (lm != null) {
@@ -389,6 +395,48 @@ class Probes implements SensorEventListener {
         l.clear();
         l.set(u.get(Calendar.YEAR), u.get(Calendar.MONTH), u.get(Calendar.DAY_OF_MONTH), 0, 0, 0);
         return l.getTimeInMillis();
+    }
+
+    // ------------------------------------------------------------------ lien local S-16 (UDP 47616, réseau local seulement)
+    // Le script tools/s16-link.ps1 du S-16 diffuse son état toutes les 5 s (et son historique chaque minute) sur le
+    // réseau local. Grafit écoute seulement au premier plan ; rien ne sort du téléphone.
+    static final int LINK_PORT = 47616;
+    DatagramSocket linkSock;
+    Thread linkT;
+    WifiManager.MulticastLock mlock;
+
+    void startLink() {
+        try {
+            WifiManager wm = (WifiManager) act.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) { mlock = wm.createMulticastLock("grafit-s16"); mlock.setReferenceCounted(false); mlock.acquire(); }
+        } catch (Exception e) { mlock = null; }
+        linkT = new Thread(() -> {
+            try {
+                DatagramSocket ds = new DatagramSocket(null);
+                ds.setReuseAddress(true); ds.setBroadcast(true); ds.setSoTimeout(1000);
+                ds.bind(new InetSocketAddress(LINK_PORT));
+                linkSock = ds;
+                byte[] buf = new byte[16384];
+                while (running && !ds.isClosed()) {
+                    DatagramPacket pk = new DatagramPacket(buf, buf.length);
+                    try { ds.receive(pk); } catch (java.net.SocketTimeoutException te) { continue; }
+                    String txt = new String(pk.getData(), 0, pk.getLength(), java.nio.charset.StandardCharsets.UTF_8);
+                    try {
+                        JSONObject o = new JSONObject(txt);
+                        if (o.optInt("v") != 1 || !o.has("pc")) continue;
+                        o.put("ip", pk.getAddress().getHostAddress());
+                        JSONObject d = new JSONObject(); d.put("s16", o); act.push(d);
+                    } catch (Exception je) { /* paquet étranger */ }
+                }
+            } catch (Exception e) { /* port occupé ou réseau absent */ }
+        }, "grafit-s16");
+        linkT.setDaemon(true); linkT.start();
+    }
+
+    void stopLink() {
+        try { if (linkSock != null) linkSock.close(); } catch (Exception e) { /* */ }
+        linkSock = null;
+        try { if (mlock != null && mlock.isHeld()) mlock.release(); } catch (Exception e) { /* */ }
     }
 
     // ------------------------------------------------------------------ réseau actif (ConnectivityManager)

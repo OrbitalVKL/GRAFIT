@@ -27,6 +27,9 @@ body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color
 #wrap { position: fixed; top: env(safe-area-inset-top, 0px); bottom: max(env(safe-area-inset-bottom, 0px), 26px); left: 16px; right: 16px; }
 .apk #wrap { top: 0; bottom: 8px; left: 12px; right: 12px; }
 #scr { display: block; touch-action: none; }
+/* éclairage de nuit (mode nuit) : toute la console en rouge atténué, par un calque « multiply » au-dessus du canvas */
+#wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: rgb(178, 20, 0); mix-blend-mode: multiply; opacity: 0; transition: opacity 1.2s; }
+.night #wrap::after { opacity: 1; }
 #cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
 noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
 </style>
@@ -910,7 +913,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.10.0', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.0', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -934,7 +937,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
@@ -944,7 +947,7 @@ function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringif
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
   ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
-  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']],
+  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']],
   ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
@@ -1091,7 +1094,7 @@ function stepsFeed(c, ts = now(), bg = false) {
   if (STEPS.day !== day) { if (STEPS.day && day < STEPS.day) return; STEPS.day = day; STEPS.today = STEPS.hist[day] || 0; }
   if (STEPS.last != null) STEPS.today += c >= STEPS.last ? c - STEPS.last : (c < STEPS.last / 2 ? c : 0);   // forte baisse : téléphone redémarré
   STEPS.last = c; STEPS.lastT = ts; STEPS.hist[day] = STEPS.today;
-  const keys = Object.keys(STEPS.hist).sort(); while (keys.length > 14) delete STEPS.hist[keys.shift()];
+  const keys = Object.keys(STEPS.hist).sort(); while (keys.length > 35) delete STEPS.hist[keys.shift()];
   if (bg) return;
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
   feedLive('steps', { today: STEPS.today, total: c });
@@ -1111,6 +1114,10 @@ window.addEventListener('grafit-native', e => {
     if (UPD.state === 'error' && UPD.msg) log('SYS', UPD.msg, true);
   }
   if (d.logSaved) { log('SYS', 'LOG EXPORTED · ' + d.logSaved); APP && APP.say('LOG · ' + d.logSaved); }
+  if (d.fileSaved) { log('SYS', 'FILE SAVED · ' + d.fileSaved); APP && APP.say('SAVED · ' + d.fileSaved); }
+  if (d.fileError) { log('SYS', 'FILE FAILED · ' + String(d.fileError).toUpperCase(), true); APP && APP.say('FILE FAILED · ' + String(d.fileError).toUpperCase(), true); }
+  if (d.restore != null && typeof restoreText === 'function') restoreText(String(d.restore));
+  if (d.s16 && typeof s16Ingest === 'function') s16Ingest(d.s16);
   if (d.logError) { log('SYS', 'LOG EXPORT FAILED · ' + String(d.logError).toUpperCase(), true); APP && APP.say('LOG EXPORT FAILED', true); }
   if (d.resumed) visChange(true);
   if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
@@ -1321,6 +1328,10 @@ function rainWatch(force = false) {
   const T = now();
   if (!force && T - WX.rainT < 60) return;
   WX.rainT = T;
+  const nn = ncNow();
+  if (nn && nn.state === 'soon' && nn.mins <= 20 && !WX.rainOn && T - NC.alertT > 7200) {
+    NC.alertT = T; log('WX', 'RAIN IN ~' + nn.mins + ' MIN (RADAR) · ' + rainLabel(mmhOf(nn.peak)), true); haptic([60, 90, 60, 90, 60]);
+  }
   if (SRC.wx.mode !== 'live') { WX.rainOn = false; return; }
   const o = rainOutlook(SRC.wx.v);
   const on = !!o && (o.state === 'now' || (o.state === 'soon' && o.mins <= 30));
@@ -2137,14 +2148,29 @@ PAGES.M32 = { code: 'M32', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
   } };
 
 // ------------------------------------------------------------------ M33 FEED
-PAGES.M33 = { code: 'M33', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2, off: 0,
+// Filtre : FEED SCR, FEED NET, FEED PWR… (une catégorie), FEED WARN (avertissements), FEED ALL ; [*4] passe au suivant.
+const FEED_TAGS = ['SCR', 'NET', 'PWR', 'TMP', 'DAY', 'BARO', 'WX', 'MOT', 'VIB', 'S16', 'SYS', 'VIS', 'BRF', 'CAL', 'ACK', 'AUD', 'ISS', 'SAT', 'NAV', 'TMR'];
+const feedTags = () => { const n = {}; for (const e of FEED) n[e[1]] = (n[e[1]] || 0) + 1; return ['ALL', 'WARN'].concat(Object.keys(n).sort((a, b) => n[b] - n[a]).slice(0, 14)); };
+const feedRows = () => { const f = PAGES.M33.flt || 'ALL'; return f === 'ALL' ? FEED : FEED.filter(e => f === 'WARN' ? e[3] : e[1] === f); };
+PAGES.M33 = { code: 'M33', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2, off: 0, flt: 'ALL',
   keys: [['1', 'EXPORT', app => logExport(app), ['EXPORT', 'SAVE'], 'EXPORT (TXT FILE)'],
-    ['2', 'OLDER', function () { PAGES.M33.off = Math.min(Math.max(0, FEED.length - 5), PAGES.M33.off + (PAGES.M33.ph || 20)); }, ['OLDER', 'BACK']],
-    ['3', 'NEWEST', function () { PAGES.M33.off = 0; }, ['NEWEST', 'LATEST']]],
+    ['2', 'OLDER', function () { PAGES.M33.off = Math.min(Math.max(0, feedRows().length - 5), PAGES.M33.off + (PAGES.M33.ph || 20)); }, ['OLDER', 'BACK']],
+    ['3', 'NEWEST', function () { PAGES.M33.off = 0; }, ['NEWEST', 'LATEST']],
+    ['4', 'FILTER', (app, arg, wd) => {
+      const pg = PAGES.M33, w = wd && wd !== 'FILTER' ? wd : App.norm(arg || '');
+      if (app && app.page !== pg && wd && wd !== 'FILTER') { const hit = app.find(wd); if (hit && PAGES[GROUPS[hit[0]][3][hit[1]]] !== pg) return app.show(...hit); }   // MOT seul : le format MOTION
+      const tags = feedTags();
+      pg.flt = w && (w === 'ALL' || w === 'WARN' || FEED_TAGS.includes(w) || tags.includes(w)) ? w : tags[(tags.indexOf(pg.flt || 'ALL') + 1) % tags.length];
+      pg.off = 0;
+      if (app && app.page !== pg) { const h = app.findExact('M33'); if (h) app.show(...h); }
+      app && app.say('FEED · ' + (pg.flt === 'ALL' ? 'ALL EVENTS' : (pg.flt === 'WARN' ? 'WARNINGS ONLY' : pg.flt + ' ONLY')) + ' · ' + feedRows().length);
+    }, ['FILTER', 'ALL', 'WARN'].concat(FEED_TAGS), 'FILTER [ALL|WARN|SCR|NET|PWR…]']],
   draw(scr, r) {
-    const ir = W.panel(scr, r, this.code, this.name, FEED.length + ' EVENTS · ' + (this.off ? '−' + this.off : 'NEWEST FIRST'));
+    const src = feedRows(), flt = this.flt || 'ALL';
+    const ir = W.panel(scr, r, this.code, this.name, (flt === 'ALL' ? '' : flt + ' · ') + src.length + ' EVENTS · ' + (this.off ? '−' + this.off : 'NEWEST FIRST'), flt === 'ALL' ? t.TD : t.T);
     this.ph = ir.h;
-    const rows = FEED.slice(0, FEED.length - this.off).slice(-ir.h).reverse();
+    const rows = src.slice(0, src.length - this.off).slice(-ir.h).reverse();
+    if (!rows.length) scr.put(ir.x, ir.y, clip('NO ' + flt + ' EVENT · [*4] NEXT FILTER · FEED ALL', ir.w), t.F);
     let yy = ir.y, day = null;
     rows.forEach(([ts, tg, msg, warn], i) => {
       if (yy >= ir.b) return;
@@ -2999,10 +3025,20 @@ function radSimFrames() {
   return out;
 }
 function radFrames() {
-  if (RDR.sim) return radSimFrames();
-  const out = (RDR.meta ? RDR.meta.radar.past : []).map(f => ({ k: 'R', t: f.time, path: f.path }));
-  const tl = out.length ? out[out.length - 1].t : now() - 600;
-  if (RDR.fc && RDR.fc.key === RDR.fcKey) RDR.fc.times.forEach((t, j) => { if (t > tl + 120 && t <= now() + 2 * 3600 + 300) out.push({ k: 'F', t, j }); });
+  let out;
+  if (RDR.sim) out = radSimFrames();
+  else {
+    out = (RDR.meta ? RDR.meta.radar.past : []).map(f => ({ k: 'R', t: f.time, path: f.path }));
+    const tl = out.length ? out[out.length - 1].t : now() - 600;
+    if (RDR.fc && RDR.fc.key === RDR.fcKey) RDR.fc.times.forEach((t, j) => { if (t > tl + 120 && t <= now() + 2 * 3600 + 300) out.push({ k: 'F', t, j }); });
+  }
+  // nowcast : 6 images extrapolées (+10 … +60 min) à la place de la prévision du modèle sur cette heure
+  const iR = out.map(f => f.k).lastIndexOf('R'), n = NC.res;
+  if (iR >= 0 && n && n.spd != null && n.base === out[iR].t) {
+    const tl = out[iR].t, N = [];
+    for (let k = 1; k <= 6; k++) N.push({ k: 'N', t: tl + k * 600, dx: n.vx * k / 6, dy: n.vy * k / 6 });
+    out = out.slice(0, iR + 1).concat(N, out.slice(iR + 1).filter(f => f.k !== 'F' || f.t > tl + 3600 + 120));
+  }
   return out;
 }
 function radImg(url, cors) {
@@ -3028,8 +3064,8 @@ function radStats(dbz, S, R) {
   return { near, brg, here };
 }
 // image d'une date : canvas S × S recoloré couvrant ±R, ou null tant que les tuiles arrivent
-function radFrameCanvas(f) {
-  const h = here(), R = RDR.R, vk = h.lat.toFixed(3) + ',' + h.lon.toFixed(3) + ',' + R, key = (f.path || ('sim' + f.t)) + '|' + vk;
+function radFrameCanvas(f, R = RDR.R) {
+  const h = here(), vk = h.lat.toFixed(3) + ',' + h.lon.toFixed(3) + ',' + R, key = (f.path || ('sim' + f.t)) + '|' + vk;
   const hit = RDR.frames.get(key); if (hit) return hit;
   let S, dbz, raw = null;
   if (f.sim) {
@@ -3057,7 +3093,7 @@ function radFrameCanvas(f) {
     const cv = document.createElement('canvas'); cv.width = cv.height = S;
     const g = cv.getContext('2d'), im = g.createImageData(S, S);
     for (let i = 0; i < S * S; i++) rainPx(dbz[i], im.data, i * 4);
-    g.putImageData(im, 0, 0); out = { cv, raw: false, st: radStats(dbz, S, R) };
+    g.putImageData(im, 0, 0); out = { cv, raw: false, st: radStats(dbz, S, R), grid: R === NC_R ? ncGridOf(dbz, S) : null };
   }
   RDR.frames.set(key, out);
   if (RDR.frames.size > 60) RDR.frames.delete(RDR.frames.keys().next().value);
@@ -3089,6 +3125,110 @@ function radTrend(frames) {
   const num = p.reduce((a, q) => a + (q[0] - mx) * (q[1] - my), 0), den = p.reduce((a, q) => a + (q[0] - mx) ** 2, 0);
   return den ? num / den : null;
 }
+// ---- nowcast : déplacement des échos sur les 3 dernières images radar, extrapolé jusqu'à +60 min
+// Grilles de 2 km sur ±60 km (maximum des pixels de chaque maille). Pour chaque couple d'images successives, le
+// décalage (±12 mailles, soit ±144 km/h à 10 min) qui minimise l'écart quadratique, affiné entre mailles ; les deux
+// couples sont moyennés s'ils concordent. Pluie au-dessus du téléphone au délai τ : maille d'origine (position −
+// déplacement × τ), cercle élargi avec τ (incertitude), ≥ 17 dBZ (~0,4 mm/h).
+const NC_R = 60, NC_G = 60, NC_KM = 2 * NC_R / NC_G, NC_MAX = 12;
+const NC = { key: '', res: null, tryT: 0, alertT: 0 };
+function ncGridOf(dbz, S) {
+  const G = NC_G, g = new Float32Array(G * G), k = G / S;
+  for (let y = 0; y < S; y++) {
+    const ry = Math.min(G - 1, Math.floor(y * k)) * G;
+    for (let x = 0; x < S; x++) { const v = dbz[y * S + x]; if (v >= RAIN_DBZ) { const i = ry + Math.min(G - 1, Math.floor(x * k)); if (v > g[i]) g[i] = v; } }
+  }
+  return g;
+}
+// décalage (mailles) qui amène A sur B : B(x, y) ≈ A(x − dx, y − dy) ; pluie de A sortie du cadre non comptée
+function ncShift(A, B) {
+  const G = NC_G, M = NC_MAX, W2 = 2 * M + 1, sc = new Float64Array(W2 * W2);
+  let nA = 0, nB = 0; for (let i = 0; i < G * G; i++) { if (A[i]) nA++; if (B[i]) nB++; }
+  if (nA < 6 || nB < 6) return null;
+  let best = 0, bi = -1;
+  for (let dy = -M; dy <= M; dy++) for (let dx = -M; dx <= M; dx++) {
+    let s = 0;
+    for (let y = 0; y < G; y++) {
+      const ya = y - dy, rb = y * G;
+      if (ya < 0 || ya >= G) { for (let x = 0; x < G; x++) { const b = B[rb + x]; s += b * b; } continue; }
+      const ra = ya * G;
+      for (let x = 0; x < G; x++) { const xa = x - dx, a = xa >= 0 && xa < G ? A[ra + xa] : 0, b = B[rb + x]; if (a || b) { const d = a - b; s += d * d; } }
+    }
+    s += 4 * (dx * dx + dy * dy);                         // à écart égal, le plus petit déplacement
+    const i = (dy + M) * W2 + dx + M; sc[i] = s;
+    if (bi < 0 || s < best) { best = s; bi = i; }
+  }
+  const by = Math.floor(bi / W2) - M, bx = bi % W2 - M;
+  const at = (x, y) => Math.abs(x) <= M && Math.abs(y) <= M ? sc[(y + M) * W2 + x + M] : null;
+  const par = (m, c, p) => { if (m == null || p == null) return 0; const den = m - 2 * c + p; return den > 0 ? Math.max(-0.5, Math.min(0.5, (m - p) / (2 * den))) : 0; };
+  const s0 = sc[M * W2 + M];
+  return { dx: bx + par(at(bx - 1, by), best, at(bx + 1, by)), dy: by + par(at(bx, by - 1), best, at(bx, by + 1)),
+    gain: s0 > 0 ? 1 - best / s0 : 0, edge: Math.abs(bx) === M || Math.abs(by) === M, nA, nB };
+}
+function ncMaxAt(G, px, py, rad) {
+  let m = 0;
+  for (let y = Math.floor(py - rad); y <= Math.floor(py + rad); y++) for (let x = Math.floor(px - rad); x <= Math.floor(px + rad); x++) {
+    if (x < 0 || y < 0 || x >= NC_G || y >= NC_G || (x + 0.5 - px) ** 2 + (y + 0.5 - py) ** 2 > rad * rad + 0.5) continue;
+    const v = G[y * NC_G + x]; if (v > m) m = v;
+  }
+  return m;
+}
+function ncCompute() {
+  const R = radFrames().filter(f => f.k === 'R'); if (R.length < 3) return null;
+  const L = R.slice(-3), h = here(), key = L.map(f => f.t).join(',') + '|' + h.lat.toFixed(2) + ',' + h.lon.toFixed(2);
+  if (NC.key === key && NC.res) return NC.res;
+  const fr = L.map(f => radFrameCanvas(f, NC_R));
+  if (fr.some(x => !x)) return null;                                  // tuiles en cours de chargement
+  NC.key = key;
+  if (fr.some(x => !x.grid)) return (NC.res = { base: L[2].t, raw: true });     // tuiles sans CORS : pas de valeurs
+  const g = fr.map(x => x.grid), c = NC_G / 2, ok = q => q && !q.edge && q.gain > 0.15;
+  const s1 = ncShift(g[0], g[1]), s2 = ncShift(g[1], g[2]), dt1 = (L[1].t - L[0].t) / 60, dt2 = (L[2].t - L[1].t) / 60;
+  const v1 = ok(s1) && dt1 > 0 ? [s1.dx / dt1, s1.dy / dt1] : null, v2 = ok(s2) && dt2 > 0 ? [s2.dx / dt2, s2.dy / dt2] : null;   // mailles / min
+  let u = v2 || v1, conf = 'LOW';
+  if (v1 && v2) { const dd = Math.hypot(v1[0] - v2[0], v1[1] - v2[1]) * NC_KM * 60; if (dd < 25) { u = [(v1[0] + v2[0]) / 2, (v1[1] + v2[1]) / 2]; conf = dd < 12 ? 'HIGH' : 'MED'; } }
+  const res = { base: L[2].t, conf, wet: g[2].reduce((a, v) => a + (v >= NEAR_DBZ ? 1 : 0), 0), prof: [] };
+  if (u) { res.vx = u[0] * NC_KM * 60; res.vy = -u[1] * NC_KM * 60; res.spd = Math.hypot(res.vx, res.vy); res.dir = A.norm360(Math.atan2(res.vx, res.vy) * DEG); }
+  for (let tau = 0; tau <= (u ? 60 : 0); tau += 5) res.prof.push(ncMaxAt(g[2], c - (u ? u[0] * tau : 0), c - (u ? u[1] * tau : 0), 1.2 + tau / 30));
+  NC.res = res;
+  const n = ncNow(), wetN = !!n && (n.state === 'soon' || n.state === 'now');
+  if (wetN && !NC.wetN) log('WX', 'NOWCAST · ' + ncText(n) + (res.spd != null ? ' · ECHOES ' + card(res.dir) + ' ' + Math.round(res.spd) + ' km/h' : ''));
+  NC.wetN = wetN;
+  return res;
+}
+// état du nowcast à l'instant présent (l'image de base date de 5 à 15 min)
+function ncNow() {
+  const r = NC.res; if (!r) return null;
+  if (r.raw) return { state: 'na', r };
+  const lag = (now() - r.base) / 60; if (lag > 35) return { state: 'stale', r };
+  const P = r.prof, wet = k => P[k] != null && P[k] >= NEAR_DBZ, k0 = r.spd == null ? 0 : Math.min(P.length - 1, Math.max(0, Math.round(lag / 5)));
+  const run = k => { let e = k, pk = 0; while (e < P.length && wet(e)) { pk = Math.max(pk, P[e]); e++; } return [e, pk]; };
+  if (wet(k0)) { const [e, pk] = run(k0); return { state: 'now', r, peak: pk, until: r.spd != null && e < P.length ? r.base + e * 300 : null }; }
+  if (r.spd == null) return { state: r.wet ? 'nomotion' : 'dry', r, hzn: 0 };
+  for (let k = k0 + 1; k < P.length; k++) if (wet(k)) { const at = r.base + k * 300; return { state: 'soon', r, at, mins: Math.max(0, Math.round((at - now()) / 60)), peak: run(k)[1] }; }
+  return { state: 'dry', r, hzn: Math.max(0, Math.round(60 - lag)) };
+}
+function ncText(n = ncNow()) {
+  if (!n) return null;
+  const r = n.r;
+  switch (n.state) {
+    case 'now': return 'RAIN NOW · ' + rainLabel(mmhOf(n.peak)) + (n.until ? ' · ENDS ~' + hhmm(n.until) : '');
+    case 'soon': return 'RAIN IN ~' + n.mins + ' MIN · ' + rainLabel(mmhOf(n.peak));
+    case 'dry': return r.wet ? 'DRY NEXT ' + n.hzn + ' MIN' : 'NO RAIN WITHIN ' + NC_R + ' km';
+    case 'nomotion': return 'ECHOES · MOTION UNCLEAR';
+    case 'stale': return 'RADAR TOO OLD';
+    default: return 'N/A · TILES WITHOUT CORS';
+  }
+}
+const ncMotion = r => r && r.spd != null ? (r.spd < 5 ? 'STATIONARY' : '→ ' + card(r.dir) + ' · ' + Math.round(r.spd) + ' km/h') : null;
+// toutes les 20 s, Grafit affiché : images radar (RainViewer, 10 min) puis nowcast si une nouvelle image est arrivée
+function ncTick() {
+  if (document.visibilityState === 'hidden') return;
+  const T = now(); if (T - NC.tryT < 20) return; NC.tryT = T;
+  try { radTick(); ncCompute(); } catch (e) { console.error(e); }
+}
+// image extrapolée : dernière image radar sur ±60 km (la pluie qui arrive de plus loin entre dans le cadre), décalée
+function ncFrame(base, f) { const b = base && radFrameCanvas(base, NC_R); return b ? { cv: b.cv, raw: b.raw, st: null, E: NC_R, off: [f.dx, f.dy] } : null; }
+
 // Fond de carte. Par défaut Esri Dark Gray Canvas (sans clé ; base sous la pluie, noms de lieux au-dessus).
 // Avec une clé CARTO personnelle (MAPKEY <clé>, gratuite en usage non commercial, demandée par toi) : CARTO dark @2x.
 const MAPP = {
@@ -3129,22 +3269,22 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     i = Math.max(0, Math.min(F.length - 1, (i < 0 ? 0 : i) + dd)); RDR.pick = F[i].t;
   },
   draw(scr, r) {
-    radTick();
+    radTick(); ncTick();
     const F = radFrames(), T = now(), iNow = F.map(f => f.k).lastIndexOf('R');
     // image affichée : lecture en boucle (passé → futur, pause sur maintenant et à la fin) ou choix fixe
     let fi = iNow;
     if (RDR.play && F.length) { const seq = []; F.forEach((_, i) => { seq.push(i); if (i === iNow || i === F.length - 1) seq.push(i, i); }); fi = seq[Math.floor((Date.now() - RDR.playT0) / 450) % seq.length]; }
     else if (RDR.pick != null) { const k = F.findIndex(f => f.t === RDR.pick); fi = k >= 0 ? k : iNow; }
-    const f = F[fi], fr = !f ? null : (f.k === 'R' ? radFrameCanvas(f) : radFcCanvas(f));
+    const f = F[fi], fr = !f ? null : (f.k === 'R' ? radFrameCanvas(f) : (f.k === 'N' ? ncFrame(F[iNow], f) : radFcCanvas(f)));
     const src = RDR.sim ? 'SIM' : (RDR.meta ? 'RAINVIEWER ' + hhmm(RDR.meta.radar.past.slice(-1)[0].time) : (RDR.metaErr ? 'RADAR UNREACHABLE' : 'LOADING'));
     const ir = W.panel(scr, r, this.code, this.name, src + ' · ±' + RDR.R + ' km', RDR.sim ? t.T : (RDR.meta ? t.TD : t.TF));
     let y = ir.y;
     // ligne d'état de l'image
     if (f) {
       const dm = Math.round((f.t - T) / 60), rel = (dm >= 0 ? '+' : '−') + Math.floor(Math.abs(dm) / 60) + ':' + pad2(Math.abs(dm) % 60);
-      scr.put(ir.x, y, f.k === 'R' ? 'RADAR' : 'FCST', f.k === 'R' ? t.INV : t.INVN);
+      scr.put(ir.x, y, { R: 'RADAR', N: 'NOWC', F: 'FCST' }[f.k], f.k === 'F' ? t.INVN : t.INV);
       scr.put(ir.x + 6, y, hhmm(f.t) + ' · ' + (fi === iNow ? 'LATEST' : rel), t.B);
-      W.rjust(scr, ir.r, y, f.k === 'R' ? 'OBSERVED' : 'MODEL · OPEN-METEO', f.k === 'R' ? t.D : t.F);
+      W.rjust(scr, ir.r, y, { R: 'OBSERVED', N: 'RADAR EXTRAPOLATED', F: 'MODEL · OPEN-METEO' }[f.k], f.k === 'F' ? t.F : t.D);
     } else scr.put(ir.x, y, RDR.metaErr ? 'RADAR FEED UNREACHABLE · [*5] RETRY' : 'LOADING RADAR FRAMES …', RDR.metaErr ? t.RB : t.D);
     y++;
     // carte : carré (largeur du format, hauteur corrigée du rapport des cellules)
@@ -3164,6 +3304,7 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
         c.save(); c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
         if (fr.raw) c.globalAlpha = 0.7;
         if (fr.fc) { const E = fr.E * k; c.drawImage(fr.cv, cx - E, cy - E, 2 * E, 2 * E); }
+        else if (fr.off) { const E = fr.E * k; c.beginPath(); c.rect(b.x, b.y, b.w, b.h); c.clip(); c.drawImage(fr.cv, cx - E + fr.off[0] * k, cy - E - fr.off[1] * k, 2 * E, 2 * E); }
         else c.drawImage(fr.cv, b.x, b.y, b.w, b.h);
         c.restore();
       }
@@ -3199,6 +3340,7 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
         F.forEach((g, i) => {
           const x = X(g.t), hgt = (i === fi ? 0.42 : 0.26) * b.ch;
           if (g.k === 'R') { c.fillStyle = i === fi ? COL.N : COL.D; c.fillRect(x - 1.5 * d, yy - hgt, 3 * d, 2 * hgt); }
+          else if (g.k === 'N') { c.fillStyle = i === fi ? COL.N : COL.D; c.beginPath(); c.arc(x, yy, (i === fi ? 2.6 : 1.8) * d, 0, 2 * Math.PI); c.fill(); }
           else { c.strokeStyle = i === fi ? COL.N : COL.F; c.lineWidth = d; c.strokeRect(x - 1.5 * d, yy - hgt, 3 * d, 2 * hgt); }
         });
         c.strokeStyle = COL.RR; c.lineWidth = 1.2 * d; c.beginPath(); c.moveTo(X(T), b.y); c.lineTo(X(T), b.y + b.ch); c.stroke();
@@ -3222,11 +3364,14 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
       const txt = here0 ? 'OVERHEAD · ' + rainLabel(mmhOf(st.here)) + ' ' + mmhOf(st.here).toFixed(1) + ' mm/h'
         : (st.near != null ? Math.round(st.near) + ' km ' + card(st.brg) : 'NONE WITHIN ' + R + ' km');
       kv('NEAREST RAIN', txt, here0 ? t.B : (st.near != null && st.near < 10 ? t.B : t.N));
-      if (!here0 && st.near != null && tr != null) {
+      const nn = ncNow(), mv = nn && ncMotion(nn.r);
+      if (mv) kv('ECHO MOTION', mv + ' · ' + nn.r.conf, t.N);
+      else if (!here0 && st.near != null && tr != null) {
         if (tr < -4) kv('MOTION', 'APPROACHING ~' + Math.round(-tr) + ' km/h · ETA ~' + Math.max(5, Math.round(st.near / -tr * 60 / 5) * 5) + ' MIN', t.B);
         else if (tr > 4) kv('MOTION', 'MOVING AWAY ~' + Math.round(tr) + ' km/h', t.D);
         else kv('MOTION', 'NO CLEAR APPROACH', t.D);
       }
+      kv('NOWCAST · 1 H', nn ? ncText(nn) : 'COMPUTING …', nn && (nn.state === 'now' || nn.state === 'soon') ? t.B : (nn ? t.N : t.F));
     } else if (iNow >= 0 && !RDR.sim && !RDR.cors) kv('NEAREST RAIN', 'N/A · TILES WITHOUT CORS', t.F);
     // ici, d'après la prévision
     const fcF = F.filter(g => g.k === 'F');
@@ -3237,7 +3382,7 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
       else if (first) txt = 'RAIN FROM ~' + hhmm(Math.max(T, first.t - 900)) + ' (MODEL)';
       kv('HERE · NEXT 2 H', txt, first ? t.B : t.N);
     } else if (!RDR.sim) kv('HERE · NEXT 2 H', RDR.fcErr ? 'MODEL UNREACHABLE' : 'LOADING …', t.F);
-    if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] ZOOM [*4] MAP', ir.w), t.F);
+    if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] ZOOM [*4] MAP · ● NOWC', ir.w), t.F);
     if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP ' + (SET.mapKey ? 'CARTO' : 'ESRI') : ''), ir.w), t.F);
   } };
 
@@ -3281,7 +3426,8 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
     ['5', 'FEEDS', cmdFeeds, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
     ['8', 'ARM', cmdArm, ['ARM', 'ARMSENSORS']],
-    ['9', 'UPDATE', app => updCmd(app), ['UPDATE', 'UPGRADE'], 'UPDATE (APK)']],
+    ['9', 'UPDATE', app => updCmd(app), ['UPDATE', 'UPGRADE'], 'UPDATE (APK)'],
+    ['0', 'NIGHT', (app, arg) => cmdNight(app, arg), ['NIGHT', 'NIGHTMODE', 'REDLIGHT'], 'NIGHT [AUTO|ON|OFF]']],
   cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
@@ -3291,7 +3437,8 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     const rows = [['*1', 'SIMULATION', SET.sim, SET.sim === 'ON' ? t.B : t.N], ['*2', 'SCREEN KEEP-ON', SET.wake ? 'ON' : 'OFF', SET.wake ? t.B : t.N],
       ['*3', 'FULLSCREEN', (APK ? SET.immersive : !!document.fullscreenElement) ? 'ON' : 'OFF', t.N], ['*4', 'HAPTICS', SET.haptics ? 'ON' : 'OFF', t.N],
       ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'ZOOM − / +', Math.round(SET.scale * 100) + ' %', t.N],
-      ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', 'APK UPDATE ' + (UPD.current || ''), upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)]];
+      ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', 'APK UPDATE ' + (UPD.current || ''), upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)],
+      ['*0', 'NIGHT LIGHTING', SET.night + (SET.night === 'AUTO' ? (SRC.light.mode === 'live' ? ' · LIGHT' : ' · DUSK') : '') + (NIGHT.on ? ' · RED' : ''), NIGHT.on ? t.B : t.N]];
     for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
     y++;
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SOURCES', SOURCES.filter(([k]) => SRC[k].mode === 'live').length + ' LIVE · SEE ' + pageAddr('M34'), t.D, t.N);
@@ -3309,15 +3456,20 @@ const ageTxt = s => s < 60 ? Math.round(s) + 's' : (s < 3600 ? Math.round(s / 60
 PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES', 'SOURCE', 'SRC'], fps: 1,
   keys: [['1', 'ARM', cmdArm, ['ARM', 'PERMS']],
     ['2', 'REFRESH', cmdFeeds, ['REFRESH', 'FEEDS']],
-    ['3', 'BG LOG', (app, arg) => bgSet(app, arg === 'ON' ? true : (arg === 'OFF' ? false : BGL.on === false)), ['BGLOG', 'BACKGROUND'], 'BGLOG [ON|OFF]']],
+    ['3', 'BG LOG', (app, arg) => bgSet(app, arg === 'ON' ? true : (arg === 'OFF' ? false : BGL.on === false)), ['BGLOG', 'BACKGROUND'], 'BGLOG [ON|OFF]'],
+    ['4', 'BACKUP', app => cmdBackup(app), ['BACKUP', 'SAUVEGARDE'], 'BACKUP (JSON FILE)'],
+    ['5', 'RESTORE', app => cmdRestore(app), ['RESTORE', 'RESTAURE'], 'RESTORE (TAP TWICE)'],
+    ['6', 'CSV', app => cmdCsv(app), ['CSV', 'EXPORTCSV'], 'CSV (SAMPLES + HEALTH)'],
+    ['7', 'VIBE', (app, arg) => cmdVibe(app, arg), ['VIBE', 'VIBRATE', 'BGALERTS'], 'VIBE [ON|OFF]']],
   draw(scr, r) {
+    this.keys[4][1] = now() - RST.armT < 5 ? 'CONFIRM' : 'RESTORE';
     const nl = SOURCES.filter(([k]) => SRC[k].mode === 'live').length, ns = SOURCES.filter(([k]) => SRC[k].mode === 'sim').length;
     const ir = W.panel(scr, r, this.code, this.name, nl + ' LIVE' + (ns ? ' · ' + ns + ' SIM' : ''), ns ? t.T : t.TD);
     let y = ir.y;
     sub(scr, ir.x, y++, ir.w, 'SOURCE', 'STATE · AGE · FIX', t.F);
     const T = now();
     for (const [k, n, desc] of SOURCES) {
-      if (y >= ir.b - 3) break;
+      if (y >= ir.b - (APK ? 7 : 5)) break;
       const s = SRC[k], m = k === 'tle' ? (TLE_SRC === 'CELESTRAK' ? 'live' : (TLE_SRC === 'CACHED' ? 'sim' : s.mode)) : s.mode;
       const st = ({ live: 'LIVE', sim: k === 'tle' ? 'CACHE' : 'SIM', na: 'N/A', wait: 'WAIT', off: 'OFF' })[m] || m.toUpperCase();
       const apkOnly = / · APK$/.test(desc);
@@ -3331,6 +3483,11 @@ PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES
     if (y < ir.b - 1) {
       y++;
       W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG [*3]', bgState() + (APK && BGL.last ? ' · LAST ' + hhmm(BGL.last / 1000) + ' · ' + (BGL.n || 0) + ' SAMPLES' : ''), t.D, BGL.on ? t.B : (APK ? t.RB : t.F));
+      const st = BGL.stat;
+      if (APK && st && st.day && y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'SERVICE TODAY', st.n + ' SAMPLES · CPU ' + Math.round(st.awake / 1000) + ' s · STILL ' + (st.n ? Math.round(100 * st.still / st.n) : 0) + ' % · ' + (st.bytes / 1048576).toFixed(1) + ' MB · ' + st.mode, t.D, t.N);
+      if (APK && y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'VIBE ALERTS [*7]', SET.vibe ? 'ON · BATT HEAT SHOCK PRESS RAIN' : 'OFF', t.D, SET.vibe ? t.N : t.F);
+      if (y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'BACKUP [*4]', SET.backupT ? 'LAST ' + DOW3[new Date(SET.backupT * 1000).getDay()] + ' ' + pad2(new Date(SET.backupT * 1000).getDate()) + ' ' + hhmm(SET.backupT) : 'NONE YET', t.D, SET.backupT && now() - SET.backupT < 30 * 86400 ? t.N : t.B);
+      if (y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'RESTORE [*5] · CSV [*6]', APK ? 'DOWNLOAD/GRAFIT' : 'DOWNLOADS', t.D, t.F);
     }
     if (y < ir.b) scr.put(ir.x, y, clip(REAL ? 'AUTO: PHONE SENSORS LIVE · NOTHING SIMULATED' : 'AUTO: NO PHONE SENSOR · MISSING SOURCES SIMULATED', ir.w), t.F);
   } };
@@ -3639,8 +3796,7 @@ function daySetWake(ts, src) {
   DAYREC.wake = ts; DAYREC.src = src;
   const d = ymdOf(ts), h = DAYREC.hist.find(x => x.d === d);
   if (h) { h.wake = ts; h.src = src; } else DAYREC.hist.push({ d, wake: ts, src, bed: prevBed });
-  if (!h && DAYREC.hist.length > 1 && prevBed) DAYREC.hist[DAYREC.hist.length - 2].bed = prevBed;   // coucher de la veille
-  DAYREC.hist = DAYREC.hist.slice(-14);
+  DAYREC.hist = DAYREC.hist.slice(-35);
   daySave(); log('DAY', 'WAKE ' + hhmm(ts) + ' · ' + src);
   if (src !== 'MANUAL' && DAYREC.briefD !== d) BRIEF.pending = true;     // briefing au premier réveil du jour
 }
@@ -3880,9 +4036,10 @@ PAGES.M51 = { code: 'M51', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE'
 // ------------------------------------------------------------------ M53 HEALTH : 7 jours glissants
 // Nuits (coucher → réveil), puis tableau quotidien : réveil, coucher, sommeil, pas, minutes actives, temps d'écran,
 // déverrouillages ; moyennes sur 7 jours ; pas en barres. Sources : DAYREC (réveil/coucher), STEPS, HEALTH (APK).
-function health7() {
+function health7() { return healthN(7); }
+function healthN(n) {
   const out = [], t0 = new Date(); t0.setHours(0, 0, 0, 0);
-  for (let k = 6; k >= 0; k--) {
+  for (let k = n - 1; k >= 0; k--) {
     const d0 = new Date(t0); d0.setDate(t0.getDate() - k); const m = d0.getTime() / 1000, d = ymdOf(m + 3600);
     const h = DAYREC.hist.find(x => x.d === d), hs = HEALTH[d] || null;
     const wake = h ? h.wake : null, bed = h && h.bed ? h.bed : null, sl = wake && bed && wake - bed > 2 * 3600 && wake - bed < 16 * 3600 ? wake - bed : null;
@@ -3891,14 +4048,61 @@ function health7() {
   }
   return out;
 }
+// sommeil : régularité (écart type des heures de coucher et de lever, en minutes) et dette sur les nuits connues
+function sleepStats(D) {
+  const goal = (SET.sleepGoal || 8) * 3600, sd = (arr, pivot) => {
+    const v = arr.filter(x => x != null).map(x => (todOf(x) - pivot + 86400) % 86400); if (v.length < 3) return null;
+    const m = v.reduce((a, b) => a + b, 0) / v.length; return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length) / 60;
+  };
+  const nights = D.filter(e => e.sleep != null);
+  return { goal, n: nights.length, sdBed: sd(D.map(e => e.bed), 12 * 3600), sdWake: sd(D.map(e => e.wake), 0),
+    debt: nights.length ? nights.reduce((a, e) => a + (goal - e.sleep), 0) : null, short: nights.filter(e => e.sleep < goal - 3600).length };
+}
+const regTxt = m => m == null ? '—' : '±' + Math.round(m) + ' MIN';
+const debtTxt = s => s == null ? '—' : (s >= 0 ? 'DEBT ' : 'SURPLUS ') + durHM(Math.abs(s));
 const fSteps = v => v == null ? '—' : (v >= 10000 ? Math.round(v / 1000) + 'k' : (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v)));
 const fMin = v => v == null ? '—' : (v < 60 ? Math.round(v) + 'm' : durHM(v * 60));
 const todOf = ts => { const d = new Date(ts * 1000); return d.getHours() * 3600 + d.getMinutes() * 60; };
 const avgOf = a => { const v = a.filter(x => x != null); return v.length ? v.reduce((p, q) => p + q, 0) / v.length : null; };
 const avgTod = (a, pivot) => { const v = a.filter(x => x != null).map(x => (todOf(x) - pivot + 86400) % 86400); return v.length ? (v.reduce((p, q) => p + q, 0) / v.length + pivot) % 86400 : null; };
 const todTxt = s => s == null ? '—' : pad2(Math.floor(s / 3600)) + ':' + pad2(Math.floor(s % 3600 / 60));
-PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1,
+PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1, view: '7',
+  keys: [['1', '7D/30D', (app, arg, wd) => { PAGES.M53.view = wd === '30D' ? '30' : (wd === '7D' ? '7' : (PAGES.M53.view === '7' ? '30' : '7')); app && app.say('HEALTH · ' + PAGES.M53.view + ' DAYS'); }, ['VIEW', '7D', '30D', '30']],
+    ['2', 'GOAL', (app, arg) => { const v = parseFloat(String(arg).replace('H', '.').replace(',', '.')); if (v >= 4 && v <= 12) { SET.sleepGoal = Math.round(v * 4) / 4; saveSettings(); app.say('SLEEP GOAL · ' + durHM(SET.sleepGoal * 3600)); } else app.say('GOAL 7.5 · SLEEP GOAL IN HOURS (4–12)', true); }, ['GOAL', 'SLEEPGOAL'], 'GOAL <HOURS>']],
+  draw30(scr, r) {
+    const D = healthN(30), dm = e => e.dd + '/' + pad2(new Date(e.m * 1000 + 43200000).getMonth() + 1), goal = (SET.sleepGoal || 8) * 3600;
+    const ir = W.panel(scr, r, this.code, this.name, '30 DAYS · ' + dm(D[0]) + ' → ' + dm(D[29]), t.TD);
+    let y = ir.y;
+    const xl = {}; D.forEach((e, i) => { if ((29 - i) % 7 === 0) xl[i] = e.dd; });
+    const bw = Math.max(1, Math.floor((ir.w - 6) / 30));
+    sub(scr, ir.x, y++, ir.w, 'SLEEP h · 30 NIGHTS', 'GOAL ' + durHM(goal), t.D);
+    W.bars(scr, new Rect(ir.x, y, ir.w, 7), D.map(e => e.sleep != null ? e.sleep / 3600 : 0), { vmin: 0, vmax: 12, bw, gap: 0, xlab: xl, fmt: v => String(Math.round(v)),
+      styles: D.map(e => e.sleep != null && e.sleep < goal - 3600 ? t.D : t.N) });
+    y += 8;
+    const st = D.map(e => e.steps || 0), top = Math.max(2000, ...st), vmax = [5000, 10000, 15000, 20000, 30000].find(v => v >= top * 1.05) || 40000;
+    sub(scr, ir.x, y++, ir.w, 'STEPS · 30 DAYS', 'AVG ' + fSteps(avgOf(D.slice(0, 29).map(e => e.steps)) != null ? Math.round(avgOf(D.slice(0, 29).map(e => e.steps))) : null), t.D);
+    W.bars(scr, new Rect(ir.x, y, ir.w, 6), st, { vmin: 0, vmax, bw, gap: 0, xlab: xl, fmt: v => fSteps(Math.round(v)), styles: D.map(e => e.today ? t.D : t.N) });
+    y += 7;
+    // semaines (moyennes) : 4 blocs de 7 jours, le plus récent en bas
+    if (y + 6 < ir.b) {
+      sub(scr, ir.x, y++, ir.w, 'WEEKS · AVERAGES', '', t.D);
+      const C = [['SLEEP', 13], ['BED', 20], ['WAKE', 27], ['STEPS', 34], ['ACTIVE', ir.w]];
+      C.forEach(([l, xe]) => scr.put(ir.x + xe - slen(l), y, l, t.F)); y++;
+      for (let w = 3; w >= 0; w--) {
+        if (y >= ir.b) break;
+        const B = D.slice(29 - 7 * w - 6, 29 - 7 * w + 1), full = B.filter(e => !e.today);
+        const v = [avgOf(B.map(e => e.sleep)), avgTod(B.map(e => e.bed), 12 * 3600), avgTod(B.map(e => e.wake), 0), avgOf(full.map(e => e.steps)), avgOf(full.map(e => e.act))];
+        scr.put(ir.x, y, w ? 'W−' + w : 'LAST 7', w ? t.D : t.B);
+        [v[0] != null ? durHM(v[0]) : '—', todTxt(v[1]), todTxt(v[2]), fSteps(v[3] != null ? Math.round(v[3]) : null), fMin(v[4])].forEach((x, k) => scr.put(ir.x + C[k][1] - slen(x), y, x, x === '—' ? t.F : (w ? t.N : t.B)));
+        y++;
+      }
+    }
+    const s30 = sleepStats(D);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(s30.sdBed) + ' · WAKE ' + regTxt(s30.sdWake), t.D);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BALANCE', debtTxt(s30.debt) + ' · ' + s30.short + '/' + s30.n + ' SHORT', t.D, s30.debt != null && s30.debt > 10 * 3600 ? t.RB : t.N);
+  },
   draw(scr, r) {
+    if (this.view === '30') return this.draw30(scr, r);
     const D = health7(), first = D[0], last = D[6];
     const dm = e => e.dd + '/' + pad2(new Date(e.m * 1000 + 43200000).getMonth() + 1);
     const ir = W.panel(scr, r, this.code, this.name, '7 DAYS · ' + dm(first) + ' → ' + dm(last), t.TD);
@@ -3931,6 +4135,9 @@ PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
       scr.put(ir.x, y, 'AVG', t.B); scr.put(xB, y, todTxt(avg.bed), avg.bed != null ? t.B : t.F); scr.put(xW, y, todTxt(avg.wake), avg.wake != null ? t.B : t.F);
       W.rjust(scr, ir.r, y, avg.sleep != null ? durHM(avg.sleep) : '—', t.B); y++;
     }
+    const ss = sleepStats(D);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(ss.sdBed) + ' · WAKE ' + regTxt(ss.sdWake), t.D, (ss.sdBed || 0) > 45 || (ss.sdWake || 0) > 45 ? t.B : t.N);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'GOAL ' + durHM(ss.goal) + ' · [*2]', ss.n ? debtTxt(ss.debt) + ' · ' + ss.n + ' NIGHTS' : '—', t.D, ss.debt != null && ss.debt > 5 * 3600 ? t.RB : t.N);
     // DAYS : pas, minutes actives, temps d'écran, déverrouillages (colonnes espacées)
     y++;
     if (y + 3 < ir.b) {
@@ -3959,27 +4166,52 @@ PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
 // ---------------------------------------------------------------------------------------- briefing du matin
 // Au premier réveil du jour (automatique ou déverrouillage), puis à la demande : BRIEF ou DAY [*2].
 function briefLines() {
-  const L = [], w = SRC.wx.v, T = now(), h = DAYREC.hist.find(x => x.d === ymdOf(T));
-  L.push(['WOKE UP', DAYREC.wake ? hhmm(DAYREC.wake) + ' · ' + DAYREC.src + (h && h.bed ? ' · NIGHT ' + durHM(DAYREC.wake - h.bed) : '') : 'NOT SET · WAKE 7:15']);
-  L.push(['', ''], ['WEATHER', '']);
+  const L = [], w = SRC.wx.v, T = now(), h = DAYREC.hist.find(x => x.d === ymdOf(T)), goal = (SET.sleepGoal || 8) * 3600;
+  // nuit : coucher → réveil, durée face à l'objectif, bilan 7 nuits
+  L.push(['NIGHT', 'GOAL ' + durHM(goal)]);
+  if (DAYREC.wake) {
+    const bed = h && h.bed ? h.bed : null, sl = bed && DAYREC.wake - bed > 2 * 3600 && DAYREC.wake - bed < 16 * 3600 ? DAYREC.wake - bed : null;
+    L.push(['WOKE UP', hhmm(DAYREC.wake) + ' · ' + DAYREC.src + (bed ? ' · BED ' + hhmm(bed) : '')]);
+    if (sl) L.push(['SLEEP', durHM(sl) + (sl >= goal ? ' · GOAL MET' : ' · ' + durHM(goal - sl) + ' SHORT')]);
+    const ss = sleepStats(health7());
+    if (ss.n >= 3) L.push(['7 NIGHTS', debtTxt(ss.debt) + ' · REG ' + regTxt(ss.sdWake)]);
+  } else L.push(['WOKE UP', 'NOT SET · WAKE 7:15']);
+  // météo : maintenant, tranches du jour (comme 4.3), pluie (prévision puis radar)
+  L.push(['', ''], ['WEATHER', live('wx') ? wxHead(w) : '']);
   if (live('wx')) {
     const d0 = w.days && w.days[0];
-    L.push(['NOW', w.temp.toFixed(1) + ' °C · ' + (WMO[w.code] || '') + (d0 ? ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C' : '')]);
+    L.push(['NOW', w.temp.toFixed(1) + ' °C · ' + WMO_S(w.code) + (d0 ? ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C' : '')]);
+    if (w.hms) {
+      const m0 = dayOfMs(Date.now()), sl0 = Math.max(1, Math.floor(new Date().getHours() / 6));
+      for (let sl = sl0; sl <= 3; sl++) {
+        const a = m0 + sl * 6 * 3600000, sp = wxSpan(w, a, a + 6 * 3600000); if (!sp) continue;
+        L.push([PERIOD_N[sl], WMO_S(sp.code) + ' ' + tRange(sp.tmin, sp.tmax) + ' · ' + (sp.pop ?? 0) + '%' + (sp.mm >= 0.1 ? ' ' + sp.mm.toFixed(1) + 'mm' : '') + (sp.gust != null && sp.gust >= 40 ? ' · G' + Math.round(sp.gust) : '')]);
+      }
+    }
     L.push(['RAIN', rainText(rainOutlook(w))]);
     L.push(['WIND', Math.round(w.wind) + ' km/h ' + card(w.dir) + ' · GUSTS ' + Math.round(w.gust)]);
   } else L.push(['—', 'NO WEATHER FEED']);
+  const nn = ncNow();
+  if (nn && nn.state !== 'na' && nn.state !== 'stale') L.push(['RADAR', ncText(nn) + (nn.r.wet && ncMotion(nn.r) ? ' · ' + ncMotion(nn.r).replace(' · ', ' ') : '')]);
   const pr = pressure(); if (pr) L.push(['PRESSURE', pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level]]);
   try { const hh = here(), si = A.sunInfo(T, hh.lat, hh.lon); if (si.rise && si.set) L.push(['SUN', 'RISE ' + hhmm(si.rise) + ' · SET ' + hhmm(si.set)]); } catch (e) { /* */ }
+  // agenda du jour
   L.push(['', ''], ['TODAY', '']);
   const end = new Date(); end.setHours(23, 59, 59, 0);
   const ev = AGENDA.occ.filter(o => o.stop > T && o.start < end.getTime() / 1000);
   if (!ev.length) L.push(['—', AGENDA.src === 'NONE' ? 'NO AGENDA SOURCE' : 'NO EVENT TODAY']);
   ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
   if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('M52')]);
+  // état : défauts, batterie (vitesse), S-16, pas
   L.push(['', ''], ['STATUS', '']);
   const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
   L.push(['FAULTS', fs.open + ' ACTIVE · ' + (fs.ucrit + fs.ucaut) + ' UNACK' + (fa ? ' · ' + fa.msg : '')]);
-  if (live('batt')) { const b = SRC.batt.v; L.push(['BATTERY', Math.round(b.level * 100) + ' %' + (b.charging ? ' · CHARGING' : ' · ' + durHM(b.tEmpty) + ' LEFT')]); }
+  if (live('batt')) {
+    const b = SRC.batt.v, rt = battRate(), pct = Math.round(b.level * 100);
+    L.push(['BATTERY', pct + ' %' + (b.charging ? ' · CHARGING' : '') + (rt != null && Math.abs(rt) >= 0.3 ? ' · ' + (rt > 0 ? '+' : '−') + Math.abs(rt).toFixed(1) + ' %/h' : '')
+      + (!b.charging && rt != null && rt < -0.3 ? ' · ~' + durHM(pct / -rt * 3600) + ' LEFT' : '')]);
+  }
+  if (S16.st) { const o = S16.st; L.push(['S-16', s16Online() ? 'CPU ' + (o.cpu && o.cpu.t != null ? Math.round(o.cpu.t) + '°' : '—') + ' GPU ' + (o.gpu && o.gpu.t != null ? Math.round(o.gpu.t) + '°' : '—') + (Object.values(S16.al).some(Boolean) ? ' · CHECK ' + pageAddr('M64') : ' · OK') : 'OFFLINE · ' + ageTxt(T - S16.t)]); }
   if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
   return L;
 }
@@ -4287,7 +4519,7 @@ class App {
     for (const [k, d] of lines) {
       if (y >= ir.b - 1) break;
       if (!k && !d) { y++; continue; }
-      if (k && (!d || ['ACTIONS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
+      if (k && (!d || ['ACTIONS'].includes(k) || (o.code === 'BRF' && ['NIGHT', 'WEATHER'].includes(k)))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
       scr.put(ir.x, y, clip(k, kw - 1), t.B); scr.put(ir.x + kw, y++, clip(d, ir.w - kw), d.startsWith('=') ? t.F : t.D);
     }
     scr.put(ir.x, ir.b - 1, clip('ESC CLOSE · ↵ COMMAND', ir.w), t.F);
@@ -4536,8 +4768,9 @@ function slowTick() {                                   // 1 Hz : alarmes, tenda
   if (live('geo')) HIST.acc.push(SRC.geo.v.acc);
   const T = now();
   if (T - WX.tryT > (WX.failed ? 300 : 900) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
-  rainWatch();
-  agendaTick();
+  ncTick(); rainWatch();
+  agendaTick(); nightTick(); s16Tick();
+  bgCfgTick(); widgetTick();
   if (T - DAYT >= 60) { DAYT = T; dayTick(); persistSave(); }
 }
 let DAYT = 0;
@@ -4605,6 +4838,7 @@ function bgSet(app, on) {
 }
 const bgState = () => !APK ? 'APK ONLY' : (BGL.on === false ? 'OFF' : (BGL.on ? 'ON' : '…'));
 function bgEvent(ts, k) {
+  if (String(k).startsWith('VIB:')) return vibEvent(ts, String(k));
   if (k === 'UNLOCK') logAt(ts, 'SCR', 'UNLOCK'); else if (k === 'OFF') logAt(ts, 'SCR', 'SCREEN OFF');
   healthScreen(ts, k);
   BGL.ev.push([ts, k]);
@@ -4638,7 +4872,7 @@ function bgWake() {
 // ≥ 0,08 g rms ou ≥ 30 pas/min). Le réveil, le coucher et les pas viennent de DAYREC et STEPS. 15 jours gardés.
 const HEALTH = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.health') || '{}'); return j && typeof j === 'object' ? j : {}; } catch (e) { return {}; } })();
 const hDay = ts => { const d = ymdOf(ts); return HEALTH[d] || (HEALTH[d] = { un: 0, scr: 0, act: 0 }); };
-function hPrune() { const k = Object.keys(HEALTH).filter(x => x !== '_').sort(); while (k.length > 15) delete HEALTH[k.shift()]; }
+function hPrune() { const k = Object.keys(HEALTH).filter(x => x !== '_').sort(); while (k.length > 35) delete HEALTH[k.shift()]; }
 function healthScreen(ts, k) {
   const S = HEALTH._ || (HEALTH._ = {});
   if (k === 'UNLOCK') hDay(ts).un++;
@@ -4672,6 +4906,7 @@ function bgHist(r) {
 function bgIngest(d) {
   BGL.pending = false;
   if (d.on != null) BGL.on = !!d.on;
+  if (d.stat) BGL.stat = d.stat;
   const all = (d.rows || []).slice().sort((a, b) => a[0] - b[0]);
   for (const r of all) if (r[0] <= (BGL.last || 0) && r[1] === 'S') bgHist(r);         // relecture : courbes seulement
   const rows = all.filter(r => r[0] > (BGL.last || 0));
@@ -4722,6 +4957,198 @@ function bgIngest(d) {
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') bgRequest(); });
 
 
+// ---------------------------------------------------------------------------------------- éclairage de nuit
+// AUTO : pièce sombre d'après le capteur de lumière (< 3 lx pendant 20 s ; retour > 15 lx pendant 20 s) ; sans
+// capteur, soleil sous −4°. ON / OFF forcés (9.1 [*0], NIGHT AUTO|ON|OFF). Toute la console passe en rouge atténué.
+const NIGHT = { on: false, darkT: 0, liteT: 0 };
+function nightTick() {
+  const T = now(); let on = SET.night === 'ON';
+  if (SET.night === 'AUTO') {
+    if (SRC.light.mode === 'live' && T - SRC.light.liveT < 30) {
+      const lx = +SRC.light.v.lux;
+      if (lx < 3) { NIGHT.liteT = 0; if (!NIGHT.darkT) NIGHT.darkT = T; } else if (lx > 15) { NIGHT.darkT = 0; if (!NIGHT.liteT) NIGHT.liteT = T; } else NIGHT.darkT = NIGHT.liteT = 0;
+      on = NIGHT.on ? !(NIGHT.liteT && T - NIGHT.liteT >= 20) : !!(NIGHT.darkT && T - NIGHT.darkT >= 20);
+    } else { try { const h = here(); on = A.sunInfo(T, h.lat, h.lon).el < -4; } catch (e) { on = false; } }
+  }
+  if (on !== NIGHT.on) { NIGHT.on = on; document.body.classList.toggle('night', on); log('SYS', 'NIGHT LIGHTING ' + (on ? 'ON' : 'OFF') + (SET.night === 'AUTO' ? ' · AUTO' : '')); }
+}
+function cmdNight(app, arg) {
+  SET.night = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : ({ AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.night] || 'AUTO');
+  saveSettings(); NIGHT.darkT = NIGHT.liteT = 0; nightTick();
+  app && app.say('NIGHT LIGHTING ' + SET.night + (SET.night === 'AUTO' ? (SRC.light.mode === 'live' ? ' · DARK ROOM (LIGHT SENSOR)' : ' · AFTER DUSK') : ''));
+}
+
+// ---------------------------------------------------------------------------------------- alertes vibrées (APK)
+// Jugées par le journal continu, Grafit fermé, sans notification : BATT ≤ 10 %, chaleur, choc, chute de pression
+// (règle ALERT), pluie dans la demi-heure (modèle au quart d'heure, dernière position connue). Motifs : long ×3
+// (BATT, HEAT, SHOCK), court ×2 (PRESS), bref ×3 (RAIN). La page transmet l'option et la position.
+const BGC = { t: 0, lat: null, lon: null };
+function bgCfgTick(force = false) {
+  if (!APK) return;
+  const T = now(), g = live('geo') && SRC.geo.mode === 'live' ? SRC.geo.v : null;
+  const moved = g && (BGC.lat == null || A.dist(BGC.lat, BGC.lon, g.lat, g.lon) > 2);
+  if (!force && !(moved && T - BGC.t > 60) && T - BGC.t < 1800) return;
+  BGC.t = T; const o = { cmd: 'bgCfg', vibe: !!SET.vibe };
+  if (g) { BGC.lat = g.lat; BGC.lon = g.lon; o.lat = +g.lat.toFixed(3); o.lon = +g.lon.toFixed(3); }
+  else if (BGC.lat == null) { o.lat = CFG.HOME.lat; o.lon = CFG.HOME.lon; }
+  nativeCmd(o);
+}
+function cmdVibe(app, arg) {
+  if (!APK) return app && app.say('VIBE ALERTS · GRAFIT APK ONLY', true);
+  SET.vibe = onOff(arg, SET.vibe); saveSettings(); bgCfgTick(true); log('SYS', 'VIBE ALERTS ' + (SET.vibe ? 'ON' : 'OFF'));
+  if (SET.vibe) haptic([140, 110, 140]);
+  app && app.say('VIBE ALERTS ' + (SET.vibe ? 'ON · BATT ≤10 % · HEAT · SHOCK · PRESSURE · RAIN' : 'OFF'));
+}
+const VIB_TXT = { BATT: v => 'BATTERY ' + v + ' %', HEAT: v => 'HEAT · ' + (v[0] === 'T' ? 'THERMAL ' + THERM_NAMES[+v.slice(1)] : v + ' °C'), SHOCK: v => 'SHOCK ' + v + ' g',
+  PRESS: v => 'PRESSURE −' + v + ' hPa / 3 H', RAIN: v => 'RAIN SOON · ' + v + ' mm/h' };
+function vibEvent(ts, k) {                                 // VIB:<type>:<valeur>[:FG|:OFF]
+  const [, ty, v, how] = k.split(':'), f = VIB_TXT[ty];
+  logAt(ts, 'VIB', (f ? f(v || '') : ty) + (how === 'FG' ? ' · GRAFIT OPEN' : (how === 'OFF' ? ' · VIBE OFF' : ' · VIBRATED')), ty !== 'RAIN');
+}
+
+// ---------------------------------------------------------------------------------------- sauvegarde / restauration
+// BACKUP : un fichier JSON avec toutes les données de Grafit sur l'appareil (courbes, santé, journal, réglages,
+// réveils, tendance…) dans Téléchargements/Grafit. RESTORE (deux appuis) le relit, après une réinstallation par
+// exemple, et relance la page. CSV : tableau santé par jour et, APK, tous les relevés du journal continu.
+const stamp = () => { const d = new Date(); return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()); };
+function saveText(app, name, text, mime) {
+  if (APK && nativeCmd({ cmd: 'saveFile', name, text })) { app && app.say('WRITING ' + name); return true; }
+  try {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: mime })); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove(); app && app.say('SAVED · ' + name); return true;
+  } catch (e) { app && app.say('SAVE FAILED · ' + name, true); return false; }
+}
+function cmdBackup(app) {
+  persistSave(); SET.backupT = now(); saveSettings();
+  const keys = {}; let n = 0;
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('grafit.')) { keys[k] = localStorage.getItem(k); n++; } } }
+  catch (e) { return app && app.say('BACKUP · STORAGE UNREADABLE', true); }
+  const txt = JSON.stringify({ app: 'grafit-mobile', format: 1, version: CFG.VERSION, t: now(), keys }), name = 'grafit-backup-' + stamp() + '.json';
+  if (saveText(app, name, txt, 'application/json')) log('SYS', 'BACKUP · ' + n + ' KEYS · ' + Math.round(txt.length / 1024) + ' KB · ' + name);
+}
+const RST = { armT: 0 };
+function cmdRestore(app) {
+  if (now() - RST.armT > 5) { RST.armT = now(); haptic(40); return app && app.say('RESTORE ARMED · REPLACES ALL GRAFIT DATA · [*5] AGAIN'); }
+  RST.armT = 0; haptic([40, 60, 40]);
+  if (APK && nativeCmd({ cmd: 'restore' })) return app && app.say('RESTORE · PICK grafit-backup-….json IN DOWNLOAD/GRAFIT');
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) f.text().then(restoreText).catch(() => APP && APP.say('RESTORE · FILE UNREADABLE', true)); };
+  inp.click();
+}
+function restoreText(txt) {
+  let j = null; try { j = JSON.parse(txt); } catch (e) { /* */ }
+  if (!j || j.app !== 'grafit-mobile' || !j.keys || typeof j.keys !== 'object') { log('SYS', 'RESTORE REFUSED · NOT A GRAFIT BACKUP', true); return APP && APP.say('RESTORE · NOT A GRAFIT BACKUP', true); }
+  const ks = Object.keys(j.keys).filter(k => k.startsWith('grafit.') && typeof j.keys[k] === 'string');
+  if (!ks.length) return APP && APP.say('RESTORE · EMPTY BACKUP', true);
+  try {
+    const old = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('grafit.')) old.push(k); }
+    old.forEach(k => localStorage.removeItem(k)); ks.forEach(k => localStorage.setItem(k, j.keys[k]));
+    const L = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
+    L.push([now(), 'SYS', 'RESTORED · BACKUP OF ' + ymdOf(j.t || now()) + ' ' + hhmm(j.t || now()) + ' · ' + ks.length + ' KEYS · GRAFIT ' + (j.version || '?'), false]);
+    localStorage.setItem(LOG_KEY, JSON.stringify(L.slice(-LOG_MAX)));
+  } catch (e) { log('SYS', 'RESTORE FAILED · ' + String(e.name || e).toUpperCase(), true); return APP && APP.say('RESTORE FAILED · ' + String(e.name || e).toUpperCase(), true); }
+  // plus aucune écriture jusqu'au rechargement : les sauvegardes de fermeture écraseraient la restauration
+  try { Storage.prototype.setItem = function () {}; Storage.prototype.removeItem = function () {}; } catch (e) { /* */ }
+  if (APK && BGL.on !== false) nativeCmd({ cmd: 'bgCfg', vibe: !!(JSON.parse(j.keys['grafit.set'] || '{}').vibe ?? true) });
+  APP && APP.say('RESTORED · ' + ks.length + ' KEYS · RELOADING');
+  setTimeout(() => location.reload(), 700);
+}
+function cmdCsv(app) {
+  const st = stamp(), D = healthN(35), tt = ts => ts ? hhmm(ts) : '', H = ['date,wake,bed,sleep_min,steps,active_min,screen_min,unlocks'];
+  D.forEach(e => H.push([e.d.slice(0, 4) + '-' + e.d.slice(4, 6) + '-' + e.d.slice(6), tt(e.wake), tt(e.bed), e.sleep != null ? Math.round(e.sleep / 60) : '',
+    e.steps ?? '', e.act != null ? Math.round(e.act) : '', e.scr != null ? Math.round(e.scr / 60) : '', e.un ?? ''].join(',')));
+  saveText(app, 'grafit-health-' + st + '.csv', H.join('\n') + '\n', 'text/csv');
+  if (APK) { nativeCmd({ cmd: 'exportCsv', name: 'grafit-samples-' + st + '.csv' }); app && app.say('CSV · HEALTH + ALL SAMPLES · DOWNLOAD/GRAFIT'); }
+  log('SYS', 'CSV EXPORT · grafit-health-' + st + '.csv' + (APK ? ' · grafit-samples-' + st + '.csv' : ''));
+}
+
+// ---------------------------------------------------------------------------------------- widget (APK)
+// Pluie (nowcast radar si pluie dans l'heure, sinon prévision), 3 prochains rendez-vous datés (le widget prend le
+// premier à venir), température ; la batterie et l'heure viennent du journal continu.
+const WG = { k: '', t: 0 };
+function widgetTick(force = false) {
+  if (!APK) return;
+  const T = now(); if (!force && T - WG.t < 60) return; WG.t = T;
+  const nn = ncNow(), ro = live('wx') ? rainOutlook(SRC.wx.v) : null;
+  const rain = nn && nn.state === 'soon' ? 'RAIN ~' + hhmm(nn.at) + ' · ' + rainLabel(mmhOf(nn.peak)) + ' (RADAR)'
+    : (nn && nn.state === 'now' ? 'RAINING · ' + rainLabel(mmhOf(nn.peak)) + (nn.until ? ' · ENDS ~' + hhmm(nn.until) : '') + ' (RADAR)' : (ro ? rainText(ro) : 'NO FORECAST'));
+  const ev = AGENDA.occ.filter(o => o.start > T && !o.allDay).slice(0, 3).map(o => [o.start * 1000, o.title.toUpperCase()]);
+  const extra = live('wx') ? Math.round(SRC.wx.v.temp) + ' °C ' + WMO_S(SRC.wx.v.code) : '';
+  const k = rain + '|' + JSON.stringify(ev) + '|' + extra; if (k === WG.k && !force) return; WG.k = k;
+  nativeCmd({ cmd: 'widget', rain, event: AGENDA.src === 'NONE' ? 'NO AGENDA SOURCE' : 'NO UPCOMING EVENT', extra, evs: JSON.stringify(ev) });
+}
+
+// ---------------------------------------------------------------------------------------- 6.4 S-16 : lien local avec le PC
+// tools/s16-link.ps1, sur le S-16, diffuse l'état du PC en UDP sur le réseau local (port 47616) toutes les 5 s et son
+// historique de 2 h chaque minute ; l'APK écoute au premier plan. Rien ne passe par Internet, aucun port n'est ouvert
+// sur le PC. Seuils (affichage et journal, pas d'alarme Grafit) : CPU 85 °C, GPU 83 °C, RAM 90 %, disque < 10 % libre.
+const S16 = { st: null, t: 0, ip: '', h: null, n: 0, up: false, al: {} };
+const S16_LIM = { cpu: 85, gpu: 83, ram: 90, disk: 10 };
+const s16Online = () => !!S16.t && now() - S16.t < 30;
+const arrOf = v => Array.isArray(v) ? v : (v == null ? [] : [v]);
+function s16Ingest(o) {
+  if (!o || +o.v !== 1) return;
+  if (o.k === 'h') { S16.h = { t0: +o.t0, step: +o.step || 60, ct: arrOf(o.ct), gt: arrOf(o.gt), cl: arrOf(o.cl), gl: arrOf(o.gl) }; return; }
+  if (o.k !== 's') return;
+  let dk = arrOf(o.disk); if (dk.length && !Array.isArray(dk[0])) dk = [dk]; o.disk = dk;
+  S16.st = o; S16.t = now(); S16.ip = o.ip || ''; S16.n++;
+  if (!S16.up) { S16.up = true; log('S16', 'LINK UP · ' + String(o.pc || 'PC').toUpperCase() + ' · ' + S16.ip); }
+  const ct = o.cpu && o.cpu.t, gt = o.gpu && o.gpu.t, ram = o.ram && o.ram.t ? 100 * o.ram.u / o.ram.t : null, low = dk.filter(d => d[1] <= S16_LIM.disk).map(d => d[0]);
+  const chk = (k, on, msg) => { if (on && !S16.al[k]) log('S16', msg, true); S16.al[k] = on; };
+  chk('cpu', ct != null && ct >= S16_LIM.cpu, 'S-16 CPU HOT · ' + Math.round(ct) + ' °C');
+  chk('gpu', gt != null && gt >= S16_LIM.gpu, 'S-16 GPU HOT · ' + Math.round(gt) + ' °C');
+  chk('ram', ram != null && ram >= S16_LIM.ram, 'S-16 RAM ' + Math.round(ram) + ' % USED');
+  chk('disk', low.length > 0, 'S-16 DISK ' + low.join(' ') + ' < ' + S16_LIM.disk + ' % FREE');
+}
+function s16Tick() {
+  if (S16.up && !s16Online() && document.visibilityState === 'visible' && now() - VIS.fg > 40) { S16.up = false; log('S16', 'LINK LOST · NO PACKET FOR 30 S'); }
+}
+const upTxt = s => s == null ? '—' : (s >= 86400 ? Math.floor(s / 86400) + 'd ' : '') + durHM(s % 86400);
+PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGON', 'COMPUTER', 'S16LINK'], fps: 1, g: 'T',
+  keys: [['1', 'TEMP/LOAD', app => { PAGES.M64.g = PAGES.M64.g === 'T' ? 'L' : 'T'; app && app.say('S-16 GRAPH · ' + (PAGES.M64.g === 'T' ? 'TEMPERATURES' : 'LOADS')); }, ['GRAPH', 'TEMPLOAD', 'LOADS']]],
+  draw(scr, r) {
+    const o = S16.st, on = s16Online(), pc = o ? String(o.pc || 'PC').toUpperCase() : '';
+    const ir = W.panel(scr, r, this.code, this.name, !o ? (APK ? 'NO LINK' : 'APK ONLY') : (on ? pc + ' · ' + S16.ip : 'LINK LOST · ' + ageTxt(now() - S16.t)), on ? t.TD : (o ? t.TR : t.TF));
+    let y = ir.y;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (!o) {
+      const L = [['SET UP', 'ONCE, ON THE S-16'], ['1 ▸', 'COPY tools/s16-link.ps1 (GRAFIT REPO)'], ['2 ▸', 'POWERSHELL IN ITS FOLDER :'], ['', 'Unblock-File .\\s16-link.ps1'],
+        ['', 'powershell -ExecutionPolicy Bypass'], ['', '  -File .\\s16-link.ps1 -Install'], ['', 'STARTS AT EACH LOGON, HIDDEN'], ['', 'CHECK FIRST: .\\s16-link.ps1 -Test'], ['3 ▸', 'CPU °C : HWINFO64 · SENSORS · CPU'],
+        ['', 'TCTL/TDIE · REPORT VALUE IN GADGET'], ['4 ▸', 'PHONE ON THE SAME WI-FI, GRAFIT OPEN'], ['', ''], ['PRIVACY', 'UDP 47616 · LOCAL BROADCAST ONLY'], ['', 'NOTHING SENT TO INTERNET'], ['', 'NO PORT OPENED ON THE PC']];
+      for (const [k, v] of L) { if (y >= ir.b) break; if (k === 'SET UP' || k === 'PRIVACY') { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; } scr.put(ir.x, y, k, t.B); scr.put(ir.x + 5, y++, clip(v, ir.w - 5), /^[A-Z0-9 ·:,()'\/−–-]+$/.test(v) ? t.D : t.N); }
+      return;
+    }
+    const ct = o.cpu ? o.cpu.t : null, gt = o.gpu ? o.gpu.t : null, [hw, x2] = twoUp(ir), vs = on ? t.N : t.D;
+    W.readout(scr, ir.x, y, hw, 'CPU', ct != null ? Math.round(ct) : '', '°C', vs, ct != null && ct >= S16_LIM.cpu, true, 3);
+    W.readout(scr, x2, y, hw, 'GPU', gt != null ? Math.round(gt) : '', '°C', vs, gt != null && gt >= S16_LIM.gpu, true, 3);
+    y += 6;
+    if (ct == null && y < ir.b) scr.put(ir.x, y++, clip('CPU °C · HWINFO64: REPORT VALUE IN GADGET', ir.w), t.F);
+    sub(scr, ir.x, y++, ir.w, 'LOAD', on ? 'LIVE · ' + ageTxt(now() - S16.t) : 'LAST KNOWN · ' + ageTxt(now() - S16.t), on ? t.D : t.R);
+    const bar = (lab, frac, txt, al, red) => {
+      if (y >= ir.b) return;
+      scr.put(ir.x, y, lab, al ? t.RB : t.D); W.segBar(scr, ir.x + 7, y, Math.max(4, ir.w - 7 - 15), frac, red, al); W.rjust(scr, ir.r, y, txt, al ? t.RB : vs); y++;
+    };
+    if (o.cpu && o.cpu.l != null) bar('CPU', o.cpu.l / 100, Math.round(o.cpu.l) + ' %', false, null);
+    if (o.gpu && o.gpu.l != null) bar('GPU', o.gpu.l / 100, Math.round(o.gpu.l) + ' %', false, null);
+    if (o.gpu && o.gpu.mt) bar('VRAM', o.gpu.mu / o.gpu.mt, (o.gpu.mu / 1024).toFixed(1) + '/' + Math.round(o.gpu.mt / 1024) + ' GB', false, null);
+    if (o.ram && o.ram.t) { const f = o.ram.u / o.ram.t; bar('RAM', f, (+o.ram.u).toFixed(1) + '/' + Math.round(o.ram.t) + ' GB', f * 100 >= S16_LIM.ram, S16_LIM.ram / 100); }
+    for (const [dl, free] of o.disk || []) bar('DISK ' + dl, 1 - free / 100, free + ' % FREE', free <= S16_LIM.disk, 1 - S16_LIM.disk / 100);
+    y++;
+    kv('UPTIME', upTxt(o.up));
+    if (o.gpu && o.gpu.p != null) kv('GPU POWER', Math.round(o.gpu.p) + ' W');
+    kv('LINK', 'RX ' + S16.n + ' · ' + (on ? 'EVERY 5 S · LAN' : 'SILENT ' + ageTxt(now() - S16.t)), on ? t.N : t.RB);
+    const H = S16.h;
+    if (H && H.ct.length > 2 && ir.b - y >= 7) {
+      y++;
+      const g = this.g, a = g === 'T' ? H.ct : H.cl, b = g === 'T' ? H.gt : H.gl, tEnd = H.t0 + a.length * H.step;
+      sub(scr, ir.x, y++, ir.w, (g === 'T' ? '°C' : 'LOAD %') + ' · ' + Math.round(a.length * H.step / 3600) + 'h', 'CPU · GPU DIM · [*1]', t.D);
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[a, t.N], [b, t.D]], g === 'T'
+        ? { auto: true, minSpan: 10, step: H.step, fit: true, area: false, fmt: v => String(Math.round(v)), limits: [[S16_LIM.cpu, 0, 'HOT']], tEnd, xfmt: sec => hhmm(tEnd - sec) }
+        : { vmin: 0, vmax: 100, step: H.step, fit: true, area: false, fmt: v => String(Math.round(v)), tEnd, xfmt: sec => hhmm(tEnd - sec) });
+    } else if (y < ir.b - 1) { y++; noData(scr, ir.x, y, ir.w, 'HISTORY · WITHIN A MINUTE OF THE LINK'); }
+  } };
+
+
 // ---------------------------------------------------------------------------------------- persistance
 // Ce qui doit survivre à la fermeture de l'App : historiques batterie et pression (avec trou marqué), dernière
 // météo (affichée « CACHED » jusqu'au prochain flux, 12 h au plus), dernier TLE, chrono et minuteur.
@@ -4757,7 +5184,7 @@ window.addEventListener('pagehide', persistSave);
 function boot() {
   loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); persistLoad(); dayTick(true);
   if (APK) setTimeout(() => bgRequest(true), 300);
-  if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); }
+  if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); setTimeout(() => bgCfgTick(true), 4000); setTimeout(() => widgetTick(true), 9000); }
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
   R.measure(); relayout();

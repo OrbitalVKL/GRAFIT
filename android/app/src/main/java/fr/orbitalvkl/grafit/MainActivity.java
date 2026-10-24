@@ -50,7 +50,8 @@ public class MainActivity extends Activity {
     static final String HOST = "appassets.androidplatform.net";
     static final String ORIGIN = "https://" + HOST;
     static final String START = ORIGIN + "/assets/www/index.html";
-    static final int REQ_PERMS = 7;
+    static final int REQ_PERMS = 7, REQ_RESTORE = 8;
+    static volatile boolean resumed = false;
     static final String[] PERMS = {
         Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
         Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_CALENDAR, Manifest.permission.ACTIVITY_RECOGNITION,
@@ -197,6 +198,29 @@ public class MainActivity extends Activity {
                     LoggerService.setEnabled(this, on);
                     bgPush(-1);
                     break;
+                case "bgCfg": {                                   // alertes vibrées d'arrière-plan + dernière position (pluie)
+                    android.content.SharedPreferences.Editor ed = getSharedPreferences(LoggerService.PREFS, MODE_PRIVATE).edit();
+                    if (o.has("vibe")) ed.putBoolean("vibe", o.optBoolean("vibe", true));
+                    if (o.has("lat")) ed.putFloat("lat", (float) o.optDouble("lat")).putFloat("lon", (float) o.optDouble("lon"));
+                    ed.apply();
+                    bgPush(-1);
+                    break;
+                }
+                case "widget":
+                    GrafitWidget.set(this, o.optString("rain"), o.optString("event"), o.optString("extra"), o.optString("evs", "[]"));
+                    break;
+                case "saveFile":
+                    saveFile(o.optString("name"), o.optString("text"));
+                    break;
+                case "exportCsv":
+                    exportCsv(o.optString("name"));
+                    break;
+                case "restore": {
+                    Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*");
+                    pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json", "text/plain", "application/octet-stream"});
+                    startActivityForResult(pick, REQ_RESTORE);
+                    break;
+                }
                 case "netReset":
                     // le bouton « Réinitialiser Internet » est en haut de la page Internet (Android 12+ : action Wi-Fi)
                     try { startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)); }
@@ -230,21 +254,73 @@ public class MainActivity extends Activity {
         JSONObject d = new JSONObject();
         try {
             if (!name.matches("grafit-log-[0-9]{8}-[0-9]{4}\\.txt")) throw new IllegalArgumentException("BAD NAME");
-            ContentValues v = new ContentValues();
-            v.put(MediaStore.Downloads.DISPLAY_NAME, name);
-            v.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
-            v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Grafit");
-            Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
-            if (u == null) throw new IllegalStateException("MEDIASTORE REFUSED");
-            try (OutputStream os = getContentResolver().openOutputStream(u)) {
-                if (os == null) throw new IllegalStateException("NO STREAM");
-                os.write(text.getBytes(StandardCharsets.UTF_8));
-            }
+            write(name, "text/plain", text.getBytes(StandardCharsets.UTF_8));
             d.put("logSaved", "DOWNLOAD/GRAFIT/" + name);
         } catch (Exception e) {
             try { d.put("logError", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ }
         }
         push(d);
+    }
+
+    /** Sauvegarde / export de la page : grafit-(backup|health|samples)-AAAAMMJJ-HHMM.(json|csv) dans Téléchargements/Grafit. */
+    void saveFile(String name, String text) {
+        JSONObject d = new JSONObject();
+        try {
+            if (!name.matches("grafit-(backup|health|samples)-[0-9]{8}-[0-9]{4}\\.(json|csv)")) throw new IllegalArgumentException("BAD NAME");
+            write(name, name.endsWith(".json") ? "application/json" : "text/csv", text.getBytes(StandardCharsets.UTF_8));
+            d.put("fileSaved", "DOWNLOAD/GRAFIT/" + name);
+        } catch (Exception e) {
+            try { d.put("fileError", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ }
+        }
+        push(d);
+    }
+
+    /** Relevés du journal continu (une semaine) en CSV lisible : heure locale + colonnes nommées. */
+    void exportCsv(String name) {
+        new Thread(() -> {
+            StringBuilder b = new StringBuilder("time,epoch_ms,pressure_station_hpa,battery_pct,charging,battery_c,battery_health,thermal_status,steps_counter,cell_dbm,rtt_ms,network,movement_g_rms,movement_peak_g\n");
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT);
+            org.json.JSONArray rows = LoggerService.readSince(this, 0, 20000);
+            for (int i = 0; i < rows.length(); i++) {
+                org.json.JSONArray r = rows.optJSONArray(i);
+                if (r == null || !"S".equals(r.optString(1))) continue;
+                b.append(f.format(new java.util.Date(r.optLong(0)))).append(',').append(r.optLong(0));
+                for (int k = 2; k < 14; k++) b.append(',').append(r.isNull(k) ? "" : r.opt(k));
+                b.append('\n');
+            }
+            saveFile(name, b.toString());
+        }).start();
+    }
+
+    void write(String name, String mime, byte[] data) throws Exception {
+        {
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+            v.put(MediaStore.Downloads.MIME_TYPE, mime);
+            v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Grafit");
+            Uri u = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (u == null) throw new IllegalStateException("MEDIASTORE REFUSED");
+            try (OutputStream os = getContentResolver().openOutputStream(u)) {
+                if (os == null) throw new IllegalStateException("NO STREAM");
+                os.write(data);
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_RESTORE || res != RESULT_OK || data == null || data.getData() == null) return;
+        Uri u = data.getData();
+        new Thread(() -> {
+            JSONObject d = new JSONObject();
+            try (java.io.InputStream is = getContentResolver().openInputStream(u)) {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(); byte[] buf = new byte[65536]; int n;
+                while (is != null && (n = is.read(buf)) > 0) { bo.write(buf, 0, n); if (bo.size() > 16_000_000) throw new IllegalStateException("FILE TOO LARGE"); }
+                d.put("restore", bo.toString("UTF-8"));
+            } catch (Exception e) { try { d.put("fileError", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ } }
+            push(d);
+        }).start();
     }
 
     /** Journal continu vers la page : état, et lignes postérieures à since (since < 0 : état seul). Lecture hors du fil principal. */
@@ -253,6 +329,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject b = new JSONObject();
                 b.put("on", LoggerService.enabled(this));
+                b.put("stat", LoggerService.stats(this));
                 if (since >= 0) b.put("rows", LoggerService.readSince(this, since, 15000));
                 JSONObject d = new JSONObject(); d.put("bglog", b);
                 push(d);
@@ -270,6 +347,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         web.onResume();
         if (loaded) {
             probes.start(); probes.pushAll();
@@ -280,6 +358,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        resumed = false;
         probes.stop();
         web.onPause();
         super.onPause();

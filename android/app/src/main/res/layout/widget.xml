@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Widget Grafit : console sombre, police à chasse fixe, même palette que la page. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="10dp"
+    android:background="@drawable/widget_bg">
+    <TextView android:id="@+id/w_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:text="ГРАФИТ" android:textColor="#9E4A4A" android:textSize="11sp" android:fontFamily="monospace" android:textStyle="bold" />
+    <TextView android:id="@+id/w_date" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="#CFD2D4" android:textSize="15sp" android:fontFamily="monospace" android:textStyle="bold" android:maxLines="1" />
+    <TextView android:id="@+id/w_rain" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="#CFD2D4" android:textSize="12sp" android:fontFamily="monospace" android:maxLines="1" android:ellipsize="end" />
+    <TextView android:id="@+id/w_event" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="#8A8D8F" android:textSize="12sp" android:fontFamily="monospace" android:maxLines="1" android:ellipsize="end" />
+    <TextView android:id="@+id/w_batt" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="#8A8D8F" android:textSize="12sp" android:fontFamily="monospace" android:maxLines="1" android:ellipsize="end" />
+</LinearLayout>

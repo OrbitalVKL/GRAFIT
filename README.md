@@ -23,7 +23,7 @@ arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargemen
 
 Code de format = M + adresse : 1 STATUS (M11 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
 3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 WEATHER, M42 RADAR, M43 FORECAST, M44 WEEK) ·
-5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM) · 7 NAV (M71–M75) ·
+5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71–M75) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
 
 Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
@@ -62,3 +62,29 @@ seulement : l'oscilloscope 10 s de 2.2 (`*1` LIVE), le niveau du micro (6.4, jam
 
 5.4 HEALTH : 7 jours glissants — nuits (coucher → réveil), réveil, coucher, sommeil, pas, minutes actives, temps
 d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événements d'écran (coups d'œil nocturnes écartés).
+
+## 1.11.0
+
+- **Briefing du matin** (5.1 `*2`, automatique au premier réveil) : nuit (coucher → réveil, durée face à l'objectif,
+  bilan 7 nuits), météo du jour par tranches comme 4.3, pluie (prévision et radar), vent, pression, soleil, agenda,
+  défauts, batterie et sa vitesse, état du S-16.
+- **5.3 HEALTH** : `*1` vue 7 j / 30 j (nuits et pas en barres, moyennes par semaine), `*2 GOAL 7.5` objectif de
+  sommeil ; régularité (écart type des heures de coucher et de lever) et dette ou avance de sommeil. 35 jours gardés.
+- **Éclairage de nuit** (9.1 `*0`, `NIGHT AUTO|ON|OFF`) : console en rouge atténué ; AUTO = pièce sombre
+  (capteur de lumière < 3 lx pendant 20 s), sans capteur après le crépuscule.
+- **Alertes vibrées** (3.4 `*7`, APK, sans notification) : batterie ≤ 10 %, chaleur, choc, chute de pression
+  (règle ALERT), pluie dans la demi-heure ; motifs distincts ; chaque alerte est notée au journal (`FEED VIB`).
+- **Nowcast radar** (4.2) : déplacement des échos mesuré sur les 3 dernières images radar, extrapolé jusqu'à
+  +60 min (images « NOWC », points sur la frise) ; « RAIN IN ~15 MIN » et vibration dans l'appli.
+- **Sauvegarde** (3.4) : `*4 BACKUP` (un fichier JSON dans Téléchargements/Grafit), `*5 RESTORE` (deux appuis,
+  après une réinstallation), `*6 CSV` (santé par jour et tous les relevés du journal continu).
+- **6.4 S-16** : état du PC (températures CPU/GPU, charges, VRAM, RAM, disques, historique 2 h) reçu sur le Wi-Fi
+  local depuis `tools/s16-link.ps1` (diffusion UDP 47616 ; rien vers Internet, aucun port ouvert sur le PC).
+  Sur le S-16 : `powershell -ExecutionPolicy Bypass -File .\s16-link.ps1 -Test` puis `-Install`. Température CPU :
+  HWiNFO64 → ligne CPU (Tctl/Tdie ou Package) → « Report value in Gadget ».
+- **Journal continu allégé** : un relevé toutes les 5 min quand le téléphone est immobile écran éteint ; coût réel
+  du service affiché en 3.4 (relevés, temps de calcul, données).
+- **3.3 FEED filtrable** : `FEED SCR`, `FEED NET`, `FEED PWR`, `FEED WARN`, `FEED ALL`, `*4` catégorie suivante.
+- **Widget d'écran d'accueil** : date, pluie à venir, prochain rendez-vous, batterie ; toucher ouvre Grafit.
+- Correction : le coucher de la veille n'est plus écrasé par celui de la nuit suivante (sommeil manquant en 5.3).
+

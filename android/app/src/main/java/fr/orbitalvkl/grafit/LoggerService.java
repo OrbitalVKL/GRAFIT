@@ -163,6 +163,7 @@ public class LoggerService extends Service implements SensorEventListener {
         screenRx = new BroadcastReceiver() {
             @Override public void onReceive(Context c, Intent i) {
                 String a = i.getAction();
+                if (!Intent.ACTION_SCREEN_OFF.equals(a)) { boolean wasStill = still >= 3; still = 0; if (wasStill && System.currentTimeMillis() - lastSampleT > 30_000L) sample(); }
                 if (Intent.ACTION_USER_PRESENT.equals(a)) event("UNLOCK");
                 else if (Intent.ACTION_SCREEN_OFF.equals(a)) event("OFF");
                 else if (Intent.ACTION_SCREEN_ON.equals(a)) event("ON");
@@ -215,9 +216,18 @@ public class LoggerService extends Service implements SensorEventListener {
     public IBinder onBind(Intent i) { return null; }
 
     // ------------------------------------------------------------------ relevé
-    void schedule() {
+    // Économie : écran éteint et téléphone immobile (mouvement < 0,02 g, < 5 pas) trois relevés de suite → un relevé
+    // toutes les 5 min ; tout mouvement, allumage ou déverrouillage de l'écran ramène à 1 min.
+    static final long STILL_MS = 300_000L;
+    int still = 0;
+    long sampleT0 = 0, lastSampleT = 0;
+    Long prevSteps = null;
+
+    void schedule() { schedule(still >= 3 ? STILL_MS : PERIOD_MS); }
+
+    void schedule(long period) {
         if (am == null) return;
-        long at = System.currentTimeMillis() + PERIOD_MS;
+        long at = System.currentTimeMillis() + period;
         PendingIntent pi = alarmIntent(this);
         try {
             if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi);
@@ -231,6 +241,7 @@ public class LoggerService extends Service implements SensorEventListener {
         schedule();
         if (sampling) return;
         sampling = true;
+        sampleT0 = SystemClock.elapsedRealtime(); lastSampleT = System.currentTimeMillis();
         if (wl == null) { wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "grafit:log"); wl.setReferenceCounted(false); }
         wl.acquire(10_000L);
         pSum = 0; pN = 0; aSum2 = 0; aMax = 0; aN = 0; winDone = false; netDone = false; rtt = -2; tr = "N";
@@ -294,19 +305,24 @@ public class LoggerService extends Service implements SensorEventListener {
         sampling = false;
         h.removeCallbacks(winR); h.removeCallbacks(finishR);
         sm.unregisterListener(this);
-        StringBuilder b = new StringBuilder("S,").append(System.currentTimeMillis()).append(',');
-        if (pN > 0) b.append(String.format(Locale.ROOT, "%.2f", pSum / pN));
+        long now = System.currentTimeMillis();
+        StringBuilder b = new StringBuilder("S,").append(now).append(',');
+        Double pr = pN > 0 ? pSum / pN : null, bt = null, act = null, amx = null;
+        Integer batt = null; boolean chg = false;
+        if (pr != null) b.append(String.format(Locale.ROOT, "%.2f", pr));
         b.append(',');
         Intent bi = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (bi != null) {
             int lvl = bi.getIntExtra(BatteryManager.EXTRA_LEVEL, -1), sc = bi.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
             int st = bi.getIntExtra(BatteryManager.EXTRA_STATUS, -1), tp = bi.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, Integer.MIN_VALUE);
-            if (lvl >= 0 && sc > 0) b.append(Math.round(lvl * 100f / sc));
-            b.append(',').append(st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL ? 1 : 0).append(',');
-            if (tp != Integer.MIN_VALUE) b.append(String.format(Locale.ROOT, "%.1f", tp / 10.0));
+            chg = st == BatteryManager.BATTERY_STATUS_CHARGING || st == BatteryManager.BATTERY_STATUS_FULL;
+            if (lvl >= 0 && sc > 0) { batt = Math.round(lvl * 100f / sc); b.append(batt); }
+            b.append(',').append(chg ? 1 : 0).append(',');
+            if (tp != Integer.MIN_VALUE) { bt = tp / 10.0; b.append(String.format(Locale.ROOT, "%.1f", bt)); }
             b.append(',').append(bi.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)).append(',');
         } else b.append(",,,,");
-        b.append(pm.getCurrentThermalStatus()).append(',');
+        int therm = pm.getCurrentThermalStatus();
+        b.append(therm).append(',');
         if (steps != null) b.append(steps);
         b.append(',');
         Integer dbm = dbm();
@@ -314,10 +330,42 @@ public class LoggerService extends Service implements SensorEventListener {
         b.append(',');
         if (rtt >= -1) b.append(rtt);
         b.append(',').append(tr).append(',');
-        if (aN > 0) b.append(String.format(Locale.ROOT, "%.3f,%.2f", Math.sqrt(aSum2 / aN) / SensorManager.GRAVITY_EARTH, aMax / SensorManager.GRAVITY_EARTH));
-        else b.append(',');
+        if (aN > 0) {
+            act = Math.sqrt(aSum2 / aN) / SensorManager.GRAVITY_EARTH; amx = aMax / SensorManager.GRAVITY_EARTH;
+            b.append(String.format(Locale.ROOT, "%.3f,%.2f", act, amx));
+        } else b.append(',');
         append(b.toString());
+        // immobilité (écran éteint) → cadence réduite ; coût du journal compté par jour
+        boolean st = !pm.isInteractive() && act != null && act < 0.02 && (steps == null || prevSteps == null || steps - prevSteps < 5);
+        still = st ? still + 1 : 0; prevSteps = steps;
+        schedule();
+        stat(SystemClock.elapsedRealtime() - sampleT0);
+        try { Alerts.check(this, now, pr, batt, chg, bt, therm, amx); } catch (Exception e) { /* */ }
+        try { if (batt != null) GrafitWidget.battery(this, batt, chg); } catch (Exception e) { /* */ }
         release();
+    }
+
+    /** Coût du journal, par jour : relevés, temps éveillé (ms), relevés en cadence réduite, octets de l'appli. */
+    void stat(long awakeMs) {
+        android.content.SharedPreferences sp = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String day = new java.text.SimpleDateFormat("yyyyMMdd", Locale.ROOT).format(new java.util.Date());
+        android.content.SharedPreferences.Editor ed = sp.edit();
+        long rx = android.net.TrafficStats.getUidRxBytes(android.os.Process.myUid()), tx = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid());
+        if (!day.equals(sp.getString("st_day", ""))) ed.putString("st_day", day).putInt("st_n", 0).putLong("st_awake", 0).putInt("st_still", 0).putLong("st_b0", rx + tx);
+        else ed.putInt("st_n", sp.getInt("st_n", 0) + 1).putLong("st_awake", sp.getLong("st_awake", 0) + awakeMs).putInt("st_still", sp.getInt("st_still", 0) + (still >= 3 ? 1 : 0));
+        ed.putLong("st_b", rx + tx).apply();
+    }
+
+    static org.json.JSONObject stats(Context c) {
+        org.json.JSONObject o = new org.json.JSONObject();
+        android.content.SharedPreferences sp = c.getSharedPreferences(PREFS, MODE_PRIVATE);
+        try {
+            o.put("day", sp.getString("st_day", "")); o.put("n", sp.getInt("st_n", 0)); o.put("awake", sp.getLong("st_awake", 0));
+            o.put("still", sp.getInt("st_still", 0)); o.put("bytes", Math.max(0, sp.getLong("st_b", 0) - sp.getLong("st_b0", 0)));
+            o.put("vibe", Alerts.enabled(c));
+            LoggerService s = instance; o.put("mode", s != null && s.still >= 3 ? "STILL" : "ACTIVE");
+        } catch (Exception e) { /* */ }
+        return o;
     }
 
     Integer dbm() {
