@@ -103,7 +103,12 @@ class Probes implements SensorEventListener {
                 // le moteur GNSS doit tourner pour décrire les satellites
                 if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER))
                     lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 2000, 0, locL, Looper.getMainLooper());
-            } catch (SecurityException e) { /* permission retirée */ }
+                // position aussi à l'intérieur (Wi-Fi, réseau) : sans elle, le GPS seul ne donne rien sous un toit
+                if (Build.VERSION.SDK_INT >= 31 && lm.isProviderEnabled(LocationManager.FUSED_PROVIDER))
+                    lm.requestLocationUpdates(LocationManager.FUSED_PROVIDER, 5000, 0, locL, Looper.getMainLooper());
+                else if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+                    lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 5000, 0, locL, Looper.getMainLooper());
+            } catch (Exception e) { /* permission retirée ou fournisseur absent */ }
         }
         if (act.has(Manifest.permission.READ_CALENDAR)) {
             calObs = new ContentObserver(h) {

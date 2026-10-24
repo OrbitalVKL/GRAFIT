@@ -345,7 +345,7 @@ W.vtape = (scr, x, y, h, frac, value = '', label = '', alert = false, marks = []
 };
 
 // Barre horizontale encadrée (3 lignes)
-W.hbar = (scr, x, y, w, frac, alert = false, marks = [], ticks = 4, center0 = false) => {
+W.hbar = (scr, x, y, w, frac, alert = false, marks = [], ticks = 4, center0 = false, low = false) => {
   const iw = w - 2;
   if (iw < 2) return;
   frac = frac01(frac);
@@ -364,13 +364,15 @@ W.hbar = (scr, x, y, w, frac, alert = false, marks = [], ticks = 4, center0 = fa
   }
   scr.put(x + iw + 1, y + 1, '│', t.L);
   marks = marks.slice().sort((a, b) => a - b);
-  const act = marks.map(m => frac >= m);
+  const act = marks.map(m => low ? frac <= m : frac >= m);            // low : seuils bas (zone rouge sous la marque)
   const tickCols = new Set(); for (let k = 1; k < ticks; k++) tickCols.add(Math.round(k / ticks * iw) - 1);
   const markCols = {}; marks.forEach((m, k) => { markCols[Math.round(m * iw) - 1] = k; });
   scr.put(x, y + 2, '└', t.L);
   for (let i = 0; i < iw; i++) {
     const f = (i + 0.5) / iw;
-    let z = null; for (let k = marks.length - 1; k >= 0; k--) if (f > marks[k]) { z = k; break; }
+    let z = null;
+    if (low) { for (let k = 0; k < marks.length; k++) if (f < marks[k]) { z = k; break; } }
+    else for (let k = marks.length - 1; k >= 0; k--) if (f > marks[k]) { z = k; break; }
     const st = z == null ? t.L : W.limStyle(act[z]);
     if (i in markCols) scr.put(x + 1 + i, y + 2, '┴', W.limStyle(act[markCols[i]]));
     else scr.put(x + 1 + i, y + 2, tickCols.has(i) ? '┴' : '─', st);
@@ -913,14 +915,14 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.0', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.1', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
   // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
   AL: { BattLowCaut: 20, BattLowCrit: 10, HystPct: 3, BattTempCaut: 40, BattTempCrit: 45, HystTemp: 3,
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
-    GnssLostSecs: 60, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
+    GnssLostSecs: 300, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
   WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
   WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
@@ -1011,17 +1013,16 @@ function logExport(app) {
 // ---------------------------------------------------------------------------------------- sources
 class Hist {
   constructor(cap, every, gaps = every >= 30) { this.v = []; this.cap = cap; this.every = every; this.t = 0; this.gaps = gaps; }
-  push(v, ts = now(), force = false) {
-    if (!force && ts - this.t < this.every) return;
-    if (this.t && this.gaps && ts - this.t >= 2 * this.every) {               // absence : un trou (null) par pas manqué
-      const miss = Math.min(this.cap, Math.floor((ts - this.t) / this.every) - 1); for (let i = 0; i < miss; i++) this.v.push(null);
-    }
+  push(v, ts = now(), force = false) {               // une valeur par case de temps (every s) ; cases manquées = trous
+    const s1 = Math.floor(ts / this.every), s0 = Math.floor(this.t / this.every);
+    if (!force && this.t && s1 <= s0) return;
+    if (this.t && this.gaps && s1 - s0 >= 2) { const miss = Math.min(this.cap, s1 - s0 - 1); for (let i = 0; i < miss; i++) this.v.push(null); }
     this.t = ts; this.v.push(v); while (this.v.length > this.cap) this.v.shift();
   }
   last() { return this.v.length ? this.v[this.v.length - 1] : null; }
   put(v, ts) {                                     // valeur datée : après la dernière, ajoutée ; avant, elle comble un trou
     if (!this.t || ts > this.t) return this.push(v, ts);
-    const k = this.v.length - 1 - Math.round((this.t - ts) / this.every);
+    const k = this.v.length - 1 - (Math.floor(this.t / this.every) - Math.floor(ts / this.every));
     if (k >= 0 && this.v[k] == null) this.v[k] = v;
   }
   dump(dec = 3) { const f = Math.pow(10, dec); return { v: this.v.map(x => x == null ? null : Math.round(x * f) / f), t: this.t }; }
@@ -1073,7 +1074,7 @@ const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist
 function feedLive(k, v) {
   const s = SRC[k];
   if (SET.sim === 'ON') return;                                      // tout simulé : on ignore les capteurs
-  if (s.mode !== 'live') { log('SYS', SRC_NAME[k] + ' LIVE'); if (k === 'baro') resetTrend('BARO LIVE'); }
+  if (s.mode !== 'live') log('SYS', SRC_NAME[k] + ' LIVE');      // changement de source de pression : géré par trendTick
   s.mode = 'live'; s.liveT = now(); s.t = now();
   Object.assign(s.v, v);
 }
@@ -1411,12 +1412,12 @@ function simTick() {
     const s = SRC[k];
     if (k === 'mic' && s.mode === 'off' && SET.sim !== 'ON') continue;
     const stale = s.mode === 'live' && (k === 'wx' || !settling()) && t - (k === 'wx' ? s.liveT : Math.max(s.liveT, VIS.fg)) > (k === 'wx' ? WX_MAX_AGE : (k === 'batt' ? 90 : (k === 'net' ? 10 : 20)));
-    const wantSim = SET.sim === 'ON' || (SET.sim === 'AUTO' && (s.mode === 'sim' || (s.mode === 'wait' && t - s.armed > 4) || (k === 'wx' && WX.failed && s.mode !== 'live')));
+    const wantSim = SET.sim === 'ON' || (SET.sim === 'AUTO' && !APK && (s.mode === 'sim' || (s.mode === 'wait' && t - s.armed > 4) || (k === 'wx' && WX.failed && s.mode !== 'live')));
     if (wantSim && s.mode !== 'live') {
       if (s.mode !== 'sim') { s.mode = 'sim'; if (k === 'baro') seedSimTrend(); }
       Object.assign(s.v, simValue(k, t)); s.t = t;
     } else if (SET.sim === 'OFF' && s.mode === 'sim') { s.mode = 'na'; s.v = {}; }
-    else if (s.mode === 'wait' && SET.sim === 'OFF' && t - s.armed > 4) s.mode = 'na';
+    else if (s.mode === 'wait' && (SET.sim === 'OFF' || APK) && t - s.armed > (APK ? 15 : 4)) s.mode = 'na';
     if (stale && k !== 'motion' && k !== 'orient') { s.mode = 'wait'; s.armed = t; }
   }
   if (SET.sim === 'ON') ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'].forEach(k => { if (SRC[k].mode !== 'sim') { SRC[k].mode = 'sim'; if (k === 'baro') seedSimTrend(); } });
@@ -1473,14 +1474,14 @@ let TREND = PT.reset({}), TREND_SRC = '';
 function resetTrend(why) { TREND = PT.reset({}); TREND_SRC = ''; if (why) log('BARO', 'P TREND RESET · ' + why); }
 function seedSimTrend() {                                       // 3 h d'historique simulé pour montrer la veille
   TREND = PT.reset({}); TREND_SRC = 'SIM';
-  const t1 = now() * 1000, t0 = t1 - 3 * 3600000;
-  HIST.press.v = [];
+  const t1 = now() * 1000, t0 = t1 - 3 * 3600000, real = HIST.press.v.some(v => v != null);   // jamais sur une vraie courbe
+  if (!real) HIST.press.v = [];
   for (let ms = t0; ms <= t1; ms += 5000) {
     const p = simValue('baro', ms / 1000).hpa;
     PT.update(TREND, PTC, Math.round(p * 100), ms);
-    if ((ms - t0) % 60000 === 0) HIST.press.v.push(p);
+    if (!real && (ms - t0) % 60000 === 0) HIST.press.v.push(p);
   }
-  HIST.press.t = now();
+  if (!real) HIST.press.t = now();
 }
 // Absence (arrière-plan, App fermée) : le firmware repartirait de zéro au-delà d'un bloc manqué. Jusqu'à 3 h, les
 // blocs manquants sont comblés par interpolation entre le dernier bloc et le relevé du retour (la pression varie lentement).
@@ -1498,11 +1499,12 @@ let TREND_T = 0;
 const trendStyle = () => TREND.level === PT.ALERT ? t.RB : (TREND.level === PT.WATCH ? t.R : t.N);   // ALERT rouge vif, WATCH rouge                                        // ms de la dernière mise à jour de la tendance
 function trendTick() {
   if (bgWaiting()) return;                                // retour au premier plan : d'abord les relevés d'arrière-plan
+  if (TREND_SRC === 'BARO' && SRC.baro.mode === 'wait') return;      // baromètre momentanément muet : on l'attend (pas de bascule météo)
   const pr = pressure();
   if (!pr) { if (TREND.primed && !settling()) resetTrend('NO PRESSURE SOURCE'); return; }
   if (pr.src !== 'SIM' && live('baro') && SRC.baro.mode === 'live' && now() - SRC.baro.liveT > 30) return;   // baromètre muet (arrière-plan) : rien de figé
   const srcKey = pr.src === 'SIM' ? 'SIM' : (pr.src.startsWith('PHONE') || pr.src.startsWith('STATION') ? 'BARO' : 'WX');
-  if (TREND_SRC && TREND_SRC !== srcKey) { resetTrend('SOURCE ' + srcKey); HIST.press.v = []; }
+  if (TREND_SRC && TREND_SRC !== srcKey) resetTrend('SOURCE ' + srcKey);      // la courbe (QNH) est gardée
   TREND_SRC = srcKey;
   const before = TREND.level;
   trendBridge(Math.round(pr.p * 100), Date.now());
@@ -1552,8 +1554,10 @@ const ANN = [
       D.weakT = D.weakT || T;
       return [c >= 1 || T - D.weakT >= AL.CellCautSecs ? 1 : 0, v.rsrp + ' dBm'];
     } },
-  { key: 'GNSS', lab: 'GNSS', tag: 'NAV', title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `CAUT ACC > ${AL.GnssAccCaut} m · CRIT NO FIX ${AL.GnssLostSecs} s`,
-    fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - Math.max(g.fixT, VIS.fg) > AL.GnssLostSecs) return settling() ? [c, 'RESUMING'] : [2, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc), '±' + Math.round(g.acc) + ' m']; } },
+  // GNSS : information seulement (blanc, sans vibration) : à l'intérieur la position est grossière ou absente, ce
+  // n'est pas une panne du téléphone. Allumé si précision > 50 m ou aucune position depuis 5 min au premier plan.
+  { key: 'GNSS', lab: 'GNSS', tag: 'NAV', info: true, title: 'GNSS FIX', act: 'MOVE OUTDOORS · ENABLE PRECISE LOCATION', lim: `INFO ACC > ${AL.GnssAccCaut} m · NO FIX ${AL.GnssLostSecs / 60} MIN`,
+    fn: c => { if (!live('geo')) return null; const g = SRC.geo.v; if (now() - Math.max(g.fixT, VIS.fg) > AL.GnssLostSecs) return settling() ? [c, 'RESUMING'] : [1, 'NO FIX']; return [hi(g.acc, c, AL.GnssAccCaut + 0.001, null, AL.HystAcc) ? 1 : 0, '±' + Math.round(g.acc) + ' m']; } },
   { key: 'COMPASS', lab: 'COMPASS', tag: 'NAV', info: true, title: 'HEADING REFERENCE', act: 'FIGURE-8 CALIBRATION · AWAY FROM METAL', lim: 'CAUT RELATIVE (NO NORTH)',
     fn: () => { if (!live('orient')) return null; return [SRC.orient.v.abs ? 0 : 1, SRC.orient.v.abs ? 'ABS' : 'REL']; } },
   // flux de mouvement : il s'arrête légitimement en arrière-plan / écran éteint. Contrôle suspendu tant que Grafit
@@ -1613,7 +1617,7 @@ const FAIL_DOC = {
     ['Check the phone for damage (screen, camera)', 'If unexpected: secure the mount / pocket', 'Acknowledge once checked']],
   NET: ['Round-trip time over the limit (CAUT) or no network at all (CRIT). Weather, TLE, satellites and towers feeds stall.',
     ['Check Wi-Fi / mobile data / airplane mode', 'Move to better coverage · see ' + pageAddr('M62') + ' TOWERS', 'Feeds retry by themselves (weather every 5 min)']],
-  GNSS: ['Position accuracy worse than the limit (CAUT) or no fix for ' + AL.GnssLostSecs + ' s (CRIT). NAV formats freeze on the last position.',
+  GNSS: ['Information only: position accuracy worse than ' + AL.GnssAccCaut + ' m or no fix for ' + AL.GnssLostSecs / 60 + ' min (normal indoors). NAV formats use the last position.',
     ['Go outdoors, clear view of the sky', 'Enable precise location for this app', 'See ' + pageAddr('M73') + ' SATS: satellites used and DOP']],
   COMPASS: ['Heading is relative: the browser gives no magnetic north reference. KURS, SKY and TOWERS bearings may be offset.',
     ['Figure-8 calibration away from metal', 'Use HDG UP off for a north-up display']],
@@ -1635,7 +1639,7 @@ function failRestore() {
   try {
     const j = JSON.parse(localStorage.getItem('grafit.fail') || 'null'); if (!j) return;
     FAIL.seq = j.seq || 0; FAIL.list = (j.list || []).filter(e => !/^FCU\.|^THERM$|^NOISE$/.test(e.key));     // 1.8.1 : FCU virtuel, THERM et NOISE retirés
-    FAIL.list.forEach(e => { if (ANN_INFO.has(e.key) && e.sev > 1) e.sev = 1; if (e.sev < 2 && !e.ack) { e.ack = true; e.ackT = e.t0; } });   // 1.9.0 : informations
+    FAIL.list.forEach(e => { if (ANN_INFO.has(e.key) && e.sev > 1) { e.sev = 1; e.msg = String(e.msg || '').replace(/ (CAUT|CRIT)\b/, ' INFO'); } if (e.sev < 2 && !e.ack) { e.ack = true; e.ackT = e.t0; } });   // 1.9.0 : informations (1.11.1 : GNSS)
     const t = now(); FAIL.list.forEach(e => { if (!e.tend) { e.tend = t; e.note = 'SESSION END'; } });  // l'état réel est réévalué au démarrage
   } catch (e) { /* */ }
 }
@@ -1895,7 +1899,7 @@ PAGES.M23 = { code: 'M23', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
     y += 6;
     const rate = battRate();
     if (live('batt')) {
-      W.hbar(scr, ir.x, y, ir.w, b.level, low, [AL.BattLowCrit / 100, AL.BattLowCaut / 100]); y += 3;
+      W.hbar(scr, ir.x, y, ir.w, b.level, low, [AL.BattLowCrit / 100, AL.BattLowCaut / 100], 4, false, true); y += 3;
       W.kv(scr, ir.x, y++, ir.w, 'STATE', b.charging ? (b.level >= 1 ? 'FULL · PLUGGED' : 'CHARGING') : 'ON BATTERY', t.D, b.charging ? t.B : t.N);
       let rt = 'MEASURING (≥ 20 MIN)';
       if (rate != null) {
@@ -1914,8 +1918,8 @@ PAGES.M23 = { code: 'M23', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
       const rg = this.rng || '12H', np = (ir.w - 10) * 2, hv = histView(HIST.batt, SPANS[rg], np), hc = histView(HIST.chg, SPANS[rg], np);
       sub(scr, ir.x, y++, ir.w, 'BATTERY % · ' + rg.toLowerCase(), '▮ PLUGGED · ' + logNote(), BGL.on === false || !APK ? t.F : t.D);
       W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y - 1), [[hv.v, t.N]], { vmin: 0, vmax: 100, step: hv.step, fit: true, area: false, band: hc.v, unit: '%', fmt: v => String(Math.round(v)),
-        limits: [[AL.BattLowCaut, 0, 'CAUT', 'lo'], [AL.BattLowCrit, 0, 'CRIT', 'lo']], yticks: [0, 25, 50, 75, 100], ...clockAxis() });
-      scr.put(ir.x, ir.b - 1, clip('[*1] RANGE 3 / 12 / 24 H', ir.w), t.F);
+        limits: [[AL.BattLowCaut, 0, AL.BattLowCaut + '%', 'lo'], [AL.BattLowCrit, 0, AL.BattLowCrit + '%', 'lo']], yticks: [0, 25, 50, 75, 100], ...clockAxis() });
+      scr.put(ir.x, ir.b - 1, clip('[*1] 3/12/24 H · RED ┄ = LOW-BATT ALARMS', ir.w), t.F);
     }
   } };
 
@@ -2259,9 +2263,12 @@ PAGES.M82 = { code: 'M82', name: 'LEVEL', ru: 'УРОВЕНЬ', words: ['LEVEL',
     const lv = m.flat ? Math.abs(m.x) <= tol && Math.abs(m.y) <= tol : Math.abs(m.e) <= tol;
     if (lv && !LVL.ok && !LVL.hold) haptic(25); LVL.ok = lv;
     const ir = W.panel(scr, r, this.code, this.name, (LVL.hold ? 'HOLD · ' : '') + (m.flat ? 'FLAT' : 'ON EDGE · ' + (m.land ? 'LANDSCAPE' : 'PORTRAIT')) + (m.zero ? ' · ZERO SET' : ''), LVL.hold ? t.T : t.TD);
-    let y = ir.y; const [hw, x2] = twoUp(ir), f1 = v => (Math.abs(v) < 0.05 ? 0 : v).toFixed(1);
-    if (m.flat) { W.readout(scr, ir.x, y, hw, 'X · °', f1(m.x), '', t.N, false, true, 5); W.readout(scr, x2, y, hw, 'Y · °', f1(m.y), '', t.N, false, true, 5); }
-    else { W.readout(scr, ir.x, y, hw, 'TILT · °', f1(m.e), '', t.N, false, true, 5); W.readout(scr, x2, y, hw, 'SLOPE · %', (Math.abs(m.e) < 0.05 ? 0 : Math.tan(m.e * RAD) * 100).toFixed(1), '', t.N, false, true, 5); }
+    // afficheurs : autant de chiffres que la case en contient (4 en général : −12.5, 173), jamais au-delà du cadre
+    let y = ir.y; const [hw, x2] = twoUp(ir), nd = Math.max(3, Math.min(4, Math.floor((hw - 3) / 4)));
+    const f1 = v => { v = Math.abs(v) < 0.05 ? 0 : v; const lim = Math.pow(10, nd - (v < 0 ? 1 : 0)) - 1; if (Math.abs(v) > lim) return (v < 0 ? '-' : '') + '9'.repeat(nd - (v < 0 ? 1 : 0));
+      const s1 = v.toFixed(1); return s1.replace('.', '').replace('-', '').length <= nd - (v < 0 ? 1 : 0) ? s1 : v.toFixed(0); };
+    if (m.flat) { W.readout(scr, ir.x, y, hw, 'X · °', f1(m.x), '', t.N, false, true, nd); W.readout(scr, x2, y, hw, 'Y · °', f1(m.y), '', t.N, false, true, nd); }
+    else { W.readout(scr, ir.x, y, hw, 'TILT · °', f1(m.e), '', t.N, false, true, nd); W.readout(scr, x2, y, hw, 'SLOPE · %', f1(Math.abs(m.e) < 0.05 ? 0 : Math.tan(m.e * RAD) * 100), '', t.N, false, true, nd); }
     y += 6;
     // voyant LEVEL (même rendu que les voyants d'alarme, en blanc)
     W.tileGrid(scr, ir.x + Math.floor((ir.w - 22) / 2), y, 1, 20, [[lv ? 'LEVEL ± ' + tol + '°' : 'NOT LEVEL', lv ? 'on' : 'nom']]); y += 4;
@@ -4630,7 +4637,7 @@ class App {
     // MET : temps écoulé depuis le réveil (M51 DAY) ; à défaut, depuis le lancement de Grafit
     const aw = awakeSecs(), up = Math.floor(aw != null ? aw : now() - this.t0), d = Math.floor(up / 86400), rest = up % 86400;
     scr.put(6, 1, 'MET T+' + (aw != null ? pad2(up / 3600) + ':' + pad2(up % 3600 / 60) + ':' + pad2(up % 60) : d + 'd ' + pad2(rest / 3600) + ':' + pad2(rest % 3600 / 60) + ':' + pad2(rest % 60)), t.TD);
-    const sim = SOURCES.some(([k]) => SRC[k].mode === 'sim');
+    const sim = SIMABLE.some(k => SRC[k].mode === 'sim');          // capteurs ou météo simulés (pas le TLE ni le catalogue en cache)
     let xr = Wd - 1;
     if (sim) { xr -= 5; scr.put(xr, 1, ' SIM ', t.INVN); xr -= 1; }
     let st, txt;
@@ -4829,7 +4836,7 @@ function bgSave() { try { localStorage.setItem('grafit.bg', JSON.stringify({ on:
 const bgWaiting = () => BGL.pending && now() - BGL.waitT < 6;
 function bgRequest(replay = false) {
   const since = replay ? Math.min(BGL.last || 0, Date.now() - 24 * 3600000) : (BGL.last || 0);
-  if (APK && nativeCmd({ cmd: 'bgRead', since })) { BGL.pending = true; BGL.waitT = now(); }
+  if (APK && nativeCmd({ cmd: 'bgRead', since })) { BGL.pending = true; BGL.waitT = now(); BGL.replay = replay; }
 }
 function bgSet(app, on) {
   if (!APK) return app && app.say('BACKGROUND LOG: GRAFIT APK ONLY', true);
@@ -4908,6 +4915,10 @@ function bgIngest(d) {
   if (d.on != null) BGL.on = !!d.on;
   if (d.stat) BGL.stat = d.stat;
   const all = (d.rows || []).slice().sort((a, b) => a[0] - b[0]);
+  if (BGL.replay && d.rows) {                             // démarrage : pression 24 h reconstruite depuis le fichier du journal
+    BGL.replay = false;
+    if (all.filter(r => r[1] === 'S' && r[2] != null).length >= 30) { HIST.press.v = []; HIST.press.t = 0; }
+  }
   for (const r of all) if (r[0] <= (BGL.last || 0) && r[1] === 'S') bgHist(r);         // relecture : courbes seulement
   const rows = all.filter(r => r[0] > (BGL.last || 0));
   if (!rows.length) { bgSave(); return; }
@@ -5168,7 +5179,7 @@ function persistSave() {
 function persistLoad() {
   const get = k => { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
   const h = get('grafit.hist');
-  if (h) { HIST.batt.load(h.batt); HIST.chg.load(h.chg); HIST.rtt.load(h.rtt); HIST.act.load(h.act); HIST.bt.load(h.bt); HIST.sig.load(h.sig); if (!h.src || h.src === TREND_SRC || !TREND_SRC) HIST.press.load(h.press); }
+  if (h) { HIST.batt.load(h.batt); HIST.chg.load(h.chg); HIST.rtt.load(h.rtt); HIST.act.load(h.act); HIST.bt.load(h.bt); HIST.sig.load(h.sig); if (h.src !== 'SIM') HIST.press.load(h.press); }
   const c = get('grafit.chr'); if (c) Object.assign(CHR, c);
   const w = get('grafit.wx');
   if (w && w.at && now() - w.at < 12 * 3600 && w.hms) {

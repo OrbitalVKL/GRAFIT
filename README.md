@@ -88,3 +88,14 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
 - **Widget d'écran d'accueil** : date, pluie à venir, prochain rendez-vous, batterie ; toucher ouvre Grafit.
 - Correction : le coucher de la veille n'est plus écrasé par celui de la nuit suivante (sommeil manquant en 5.3).
 
+## 1.11.1
+
+- **GNSS** : voyant d'information (blanc, sans vibration) au lieu d'une alarme : position grossière (> 50 m) ou
+  absente depuis 5 min. L'APK demande aussi la position « fusionnée » (Wi-Fi, réseau) pour en avoir une à l'intérieur.
+- **Voyant SIM** (en haut à droite) : allumé seulement si un capteur ou la météo est simulé. Dans l'APK, plus aucune
+  simulation automatique (source absente = N/A) ; le TLE et le catalogue de satellites en cache ne l'allument plus.
+- **Courbe de pression** : plus jamais effacée (changement de source, simulation de démarrage, rechargement) ;
+  au démarrage de l'APK, les 24 h sont reconstruites depuis le journal continu.
+- **5.2 LEVEL** : les valeurs restent dans leur afficheur (4 chiffres).
+- **2.3 POWER** : la zone rouge de la jauge est sous 20 % (elle était inversée) ; seuils du graphique libellés 20 % / 10 %.
+
