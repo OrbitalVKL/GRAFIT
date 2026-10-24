@@ -68,9 +68,9 @@ final class BisonFute {
                             case "situationRecord": {
                                 inRec = false;
                                 if ("suspended".equals(status)) break;
-                                boolean in = false;
-                                for (double[] p : pts) if (p[0] >= box[0] && p[0] <= box[2] && p[1] >= box[1] && p[1] <= box[3]) { in = true; break; }
-                                if (in && out.length() < 80) {
+                                boolean inBox = false;
+                                for (double[] p : pts) if (p[0] >= box[0] && p[0] <= box[2] && p[1] >= box[1] && p[1] <= box[3]) { inBox = true; break; }
+                                if (inBox && out.length() < 80) {
                                     JSONObject e = new JSONObject();
                                     e.put("type", type == null ? "" : type); e.put("sub", sub == null ? "" : sub); e.put("road", road == null ? "" : road.replaceAll("^([A-Z])0+", "$1"));
                                     e.put("txt", txt == null ? "" : (txt.length() > 90 ? txt.substring(0, 90) : txt).toUpperCase());
