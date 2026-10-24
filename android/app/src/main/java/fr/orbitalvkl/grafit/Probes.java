@@ -173,7 +173,7 @@ class Probes implements SensorEventListener {
                         bt.put("charging", stt == BatteryManager.BATTERY_STATUS_CHARGING || stt == BatteryManager.BATTERY_STATUS_FULL);
                         bt.put("plugged", b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0));
                         try {
-                            BatteryManager bm = (BatteryManager) act.getSystemService(Context.BATTERY_SERVICE);
+                            BatteryManager bm = (BatteryManager) Probes.this.act.getSystemService(Context.BATTERY_SERVICE);
                             long full = bm != null ? bm.computeChargeTimeRemaining() : -1;
                             if (full >= 0) bt.put("full", full / 1000);
                         } catch (Exception e) { /* */ }
@@ -208,7 +208,7 @@ class Probes implements SensorEventListener {
             if (loc.hasAccuracy()) o.put("acc", loc.getAccuracy());
             if (loc.hasSpeed()) o.put("spd", loc.getSpeed());
             if (loc.hasBearing()) o.put("brg", loc.getBearing());
-            JSONObject d = new JSONObject(); d.put("loc", o); act.push(d);
+            JSONObject d = new JSONObject(); d.put("loc", o); Probes.this.act.push(d);
         } catch (Exception e) { /* */ }
     };
 
