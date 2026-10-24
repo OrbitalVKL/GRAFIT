@@ -96,6 +96,6 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   simulation automatique (source absente = N/A) ; le TLE et le catalogue de satellites en cache ne l'allument plus.
 - **Courbe de pression** : plus jamais effacée (changement de source, simulation de démarrage, rechargement) ;
   au démarrage de l'APK, les 24 h sont reconstruites depuis le journal continu.
-- **5.2 LEVEL** : les valeurs restent dans leur afficheur (4 chiffres).
+- **8.2 LEVEL** : les valeurs restent dans leur afficheur (4 chiffres).
 - **2.3 POWER** : la zone rouge de la jauge est sous 20 % (elle était inversée) ; seuils du graphique libellés 20 % / 10 %.
 
