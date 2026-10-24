@@ -109,3 +109,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
 - **5.3 HEALTH** : en-têtes de colonnes (WOKE · BED · ASLEEP · WAKE · SLEPT), axe en heures, objectif et moyenne
   en tirets blancs sur les barres 30 jours (valeurs dans l'en-tête), semaines datées ; plus de rouge pour une nuit courte.
 
+## 1.11.3
+
+- **Luminosité** (commande, depuis n'importe quel format) : `BRIGHT 5…100` (%), `BRIGHT AUTO` (réglage d'Android),
+  `BRIGHT +` / `BRIGHT -` (±10), `BRIGHT NIGHT n|AUTO` (luminosité pendant l'éclairage rouge). APK : luminosité de
+  l'écran tant que Grafit est affiché, sans changer le réglage d'Android. Affichée en 9.1.
+- **Éclairage rouge** : en AUTO, seulement dans le noir d'après le capteur de lumière (plus jamais d'après l'heure) :
+  rouge sous 3 lx pendant 20 s, normal au-dessus de 15 lx pendant 20 s. `NIGHT LUX n` règle le seuil.
+

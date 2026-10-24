@@ -921,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.2', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.3', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -945,7 +945,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() {
   try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ }
   if (SET.zoomV !== 2) { SET.scale = 1; SET.zoomV = 2; saveSettings(); }     // 1.11.2 : sens du zoom inversé (+ = plus grand) → retour à 100 %
@@ -3448,8 +3448,8 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     ['5', 'FEEDS', cmdFeeds, ['FEEDS']], ['6', 'ZOOM−', () => zoom(-1), ['ZOOM-']], ['7', 'ZOOM+', () => zoom(1), ['ZOOM+']],
     ['8', 'ARM', cmdArm, ['ARM', 'ARMSENSORS']],
     ['9', 'UPDATE', app => updCmd(app), ['UPDATE', 'UPGRADE'], 'UPDATE (APK)'],
-    ['0', 'NIGHT', (app, arg) => cmdNight(app, arg), ['NIGHT', 'NIGHTMODE', 'REDLIGHT'], 'NIGHT [AUTO|ON|OFF]']],
-  cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.8, Math.min(1.1, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' % · TEXT SIZE'); }, 'ZOOM +|-|80…110']],
+    ['0', 'NIGHT', (app, arg) => cmdNight(app, arg), ['NIGHT', 'NIGHTMODE', 'REDLIGHT'], 'NIGHT [AUTO|ON|OFF] · NIGHT LUX n']],
+  cmds: [[['BRIGHT', 'BRIGHTNESS', 'LUMI', 'LUMINOSITE'], (app, arg) => cmdBright(app, arg), 'BRIGHT 5…100|AUTO|+|- · BRIGHT NIGHT n|AUTO'], [['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.8, Math.min(1.1, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' % · TEXT SIZE'); }, 'ZOOM +|-|80…110']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
     let y = ir.y;
@@ -3459,8 +3459,8 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
       ['*3', 'FULLSCREEN', (APK ? SET.immersive : !!document.fullscreenElement) ? 'ON' : 'OFF', t.N], ['*4', 'HAPTICS', SET.haptics ? 'ON' : 'OFF', t.N],
       ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'TEXT SIZE − / +', Math.round(SET.scale * 100) + ' %', SET.scale !== 1 ? t.B : t.N],
       ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', 'APK UPDATE ' + (UPD.current || ''), upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)],
-      ['*0', 'NIGHT LIGHTING', SET.night + (SET.night === 'AUTO' ? (SRC.light.mode === 'live' ? ' · LIGHT' : ' · DUSK') : '') + (NIGHT.on ? ' · RED' : ''), NIGHT.on ? t.B : t.N]];
-    for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
+      ['*0', 'NIGHT LIGHTING', nightTxt(), NIGHT.on ? t.B : t.N], ['', 'BRIGHTNESS', brightTxt(), SET.bright === 'AUTO' && SET.brightN === 'AUTO' ? t.N : t.B]];
+    for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (!k) { W.kv(scr, ir.x + 4, y++, ir.w - 4, lab, v, t.D, st); continue; } if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
     y++;
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SOURCES', SOURCES.filter(([k]) => SRC[k].mode === 'live').length + ' LIVE · SEE ' + pageAddr('M34'), t.D, t.N);
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG', bgState() + ' · ' + pageAddr('M34') + ' [*3]', t.D, BGL.on ? t.N : t.F);
@@ -4993,25 +4993,61 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 
 // ---------------------------------------------------------------------------------------- éclairage de nuit
-// AUTO : pièce sombre d'après le capteur de lumière (< 3 lx pendant 20 s ; retour > 15 lx pendant 20 s) ; sans
-// capteur, soleil sous −4°. ON / OFF forcés (9.1 [*0], NIGHT AUTO|ON|OFF). Toute la console passe en rouge atténué.
+// AUTO : seulement dans le noir, d'après le capteur de lumière (et non l'heure) : sous le seuil (3 lx par défaut,
+// NIGHT LUX n) pendant 20 s → rouge ; au-dessus de 5 × le seuil (10 lx au moins) pendant 20 s → normal. Sans capteur,
+// AUTO reste éteint ; capteur muet un moment (arrière-plan) : l'état ne change pas. ON / OFF forcés (9.1 [*0]).
 const NIGHT = { on: false, darkT: 0, liteT: 0 };
+const nightLo = () => Math.max(0.5, +SET.nightLux || 3), nightHi = () => Math.max(10, 5 * nightLo());
 function nightTick() {
   const T = now(); let on = SET.night === 'ON';
   if (SET.night === 'AUTO') {
     if (SRC.light.mode === 'live' && T - SRC.light.liveT < 30) {
       const lx = +SRC.light.v.lux;
-      if (lx < 3) { NIGHT.liteT = 0; if (!NIGHT.darkT) NIGHT.darkT = T; } else if (lx > 15) { NIGHT.darkT = 0; if (!NIGHT.liteT) NIGHT.liteT = T; } else NIGHT.darkT = NIGHT.liteT = 0;
+      if (lx < nightLo()) { NIGHT.liteT = 0; if (!NIGHT.darkT) NIGHT.darkT = T; } else if (lx > nightHi()) { NIGHT.darkT = 0; if (!NIGHT.liteT) NIGHT.liteT = T; } else NIGHT.darkT = NIGHT.liteT = 0;
       on = NIGHT.on ? !(NIGHT.liteT && T - NIGHT.liteT >= 20) : !!(NIGHT.darkT && T - NIGHT.darkT >= 20);
-    } else { try { const h = here(); on = A.sunInfo(T, h.lat, h.lon).el < -4; } catch (e) { on = false; } }
+    } else on = SRC.light.mode === 'na' || SRC.light.mode === 'off' ? false : NIGHT.on;      // pas de capteur : jamais ; capteur muet : on garde
   }
-  if (on !== NIGHT.on) { NIGHT.on = on; document.body.classList.toggle('night', on); log('SYS', 'NIGHT LIGHTING ' + (on ? 'ON' : 'OFF') + (SET.night === 'AUTO' ? ' · AUTO' : '')); }
+  if (on !== NIGHT.on) {
+    NIGHT.on = on; document.body.classList.toggle('night', on); brightApply();
+    log('SYS', 'NIGHT LIGHTING ' + (on ? 'ON' : 'OFF') + (SET.night === 'AUTO' ? ' · ' + (live('light') ? Math.round(SRC.light.v.lux * 10) / 10 + ' lx' : 'AUTO') : ''));
+  }
 }
 function cmdNight(app, arg) {
-  SET.night = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : ({ AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.night] || 'AUTO');
+  const a = String(arg || '').trim().split(/\s+/);
+  if (a[0] === 'LUX') {
+    const v = parseFloat(String(a[1] || '').replace(',', '.'));
+    if (!(v >= 0.5 && v <= 50)) return app && app.say('NIGHT LUX 0.5…50 · DARK THRESHOLD (NOW ' + nightLo() + ' lx)', true);
+    SET.nightLux = v; saveSettings(); NIGHT.darkT = NIGHT.liteT = 0;
+    return app && app.say('NIGHT · RED BELOW ' + nightLo() + ' lx · NORMAL ABOVE ' + nightHi() + ' lx');
+  }
+  SET.night = ['AUTO', 'ON', 'OFF'].includes(a[0]) ? a[0] : ({ AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.night] || 'AUTO');
   saveSettings(); NIGHT.darkT = NIGHT.liteT = 0; nightTick();
-  app && app.say('NIGHT LIGHTING ' + SET.night + (SET.night === 'AUTO' ? (SRC.light.mode === 'live' ? ' · DARK ROOM (LIGHT SENSOR)' : ' · AFTER DUSK') : ''));
+  app && app.say('NIGHT LIGHTING ' + SET.night + (SET.night === 'AUTO' ? (live('light') ? ' · DARK ROOM < ' + nightLo() + ' lx (NOW ' + Math.round(SRC.light.v.lux * 10) / 10 + ')' : ' · NO LIGHT SENSOR HERE') : ''));
 }
+const nightTxt = () => SET.night + (SET.night === 'AUTO' ? (live('light') ? ' · ' + Math.round(SRC.light.v.lux * 10) / 10 + ' lx' : ' · NO SENSOR') : '') + (NIGHT.on ? ' · RED' : '');
+
+// ---------------------------------------------------------------------------------------- luminosité
+// BRIGHT 5…100 (%) : luminosité de l'écran tant que Grafit est affiché (APK : celle de la fenêtre, sans toucher au
+// réglage d'Android ; web : assombrissement de la console). BRIGHT AUTO : réglage d'Android. BRIGHT + / − : ±10.
+// BRIGHT NIGHT n|AUTO : luminosité pendant l'éclairage rouge (AUTO : la même que le jour).
+const brightNow = () => NIGHT.on && SET.brightN !== 'AUTO' ? SET.brightN : SET.bright;
+function brightApply() {
+  const v = brightNow();
+  if (APK) nativeCmd({ cmd: 'bright', v: v === 'AUTO' ? -1 : v / 100 });
+  else if (R && R.cv) R.cv.style.filter = v === 'AUTO' ? '' : 'brightness(' + Math.max(0.15, v / 100) + ')';
+}
+function cmdBright(app, arg) {
+  const a = String(arg || '').trim().split(/\s+/), night = a[0] === 'NIGHT', w = night ? a[1] : a[0], key = night ? 'brightN' : 'bright';
+  const cur = SET[key] === 'AUTO' ? 50 : +SET[key];
+  let v;
+  if (!w) v = SET[key] === 'AUTO' ? 50 : 'AUTO';                                    // sans valeur : AUTO ↔ 50 %
+  else if (w === 'AUTO' || w === 'SYS') v = 'AUTO';
+  else if (w === '+' || w === '-') v = Math.max(5, Math.min(100, cur + (w === '+' ? 10 : -10)));
+  else { const n = parseInt(w, 10); if (!(n >= 1 && n <= 100)) return app && app.say('BRIGHT 5…100 | AUTO | + | − · BRIGHT NIGHT 5…100 | AUTO', true); v = Math.max(5, n); }
+  SET[key] = v; saveSettings(); brightApply();
+  app && app.say((night ? 'NIGHT BRIGHTNESS ' : 'BRIGHTNESS ') + (v === 'AUTO' ? (night ? 'AUTO · SAME AS DAY' : 'AUTO · ANDROID SETTING') : v + ' %') + (APK ? '' : ' · WEB: DIMS THE CONSOLE ONLY'));
+}
+const brightTxt = () => (SET.bright === 'AUTO' ? 'AUTO' : SET.bright + ' %') + ' · NIGHT ' + (SET.brightN === 'AUTO' ? 'SAME' : SET.brightN + ' %');
 
 // ---------------------------------------------------------------------------------------- alertes vibrées (APK)
 // Jugées par le journal continu, Grafit fermé, sans notification : BATT ≤ 10 %, chaleur, choc, chute de pression
@@ -5225,6 +5261,8 @@ function boot() {
   R.measure(); relayout();
   startSensors();
   if (SET.wake) wakeSet(true);
+  brightApply();
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') brightApply(); });
   setInterval(fastTick, 100); setInterval(slowTick, 1000);
   setTimeout(fetchWx, 1500); setTimeout(fetchTle, 2500); setTimeout(fetchSatCat, 3500); setInterval(() => fetchSatCat(), 6 * 3600 * 1000); setInterval(fetchTle, 6 * 3600 * 1000);
   // rendu : requestAnimationFrame quand le navigateur le fournit, plus une minuterie de secours

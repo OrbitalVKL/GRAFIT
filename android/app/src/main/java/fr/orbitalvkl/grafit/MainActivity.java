@@ -229,6 +229,13 @@ public class MainActivity extends Activity {
                 case "bgRead":
                     bgPush(o.optLong("since", 0));
                     break;
+                case "bright": {                                  // luminosité de la fenêtre Grafit : 0,01…1, ou -1 = réglage d'Android
+                    double v = o.optDouble("v", -1);
+                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+                    lp.screenBrightness = v < 0 ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE : (float) Math.max(0.01, Math.min(1.0, v));
+                    getWindow().setAttributes(lp);
+                    break;
+                }
                 case "keepOn":
                     if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
