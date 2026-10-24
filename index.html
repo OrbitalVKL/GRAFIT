@@ -28,8 +28,7 @@ body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color
 .apk #wrap { top: 0; bottom: 8px; left: 12px; right: 12px; }
 #scr { display: block; touch-action: none; }
 /* éclairage de nuit (mode nuit) : toute la console en rouge atténué, par un calque « multiply » au-dessus du canvas */
-#wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: rgb(178, 20, 0); mix-blend-mode: multiply; opacity: 0; transition: opacity 1.2s; }
-.night #wrap::after { opacity: 1; }
+.night #wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: rgb(178, 20, 0); mix-blend-mode: multiply; }
 #cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
 noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
 </style>
@@ -517,8 +516,12 @@ W.plot = (scr, r, series, o = {}) => {
     if (lx >= px0 - 1) scr.put(lx, yax + 1, lab, t.F);
   }
   const limAct = limits.map(([v, , , lo]) => last0 != null && (lo === 'lo' ? last0 <= v : last0 >= v));
-  limits.forEach(([v, , lab], k) => { if (lab) scr.put(px0 + pw + 1, r.y + rowOf(v), ' ' + lab, limAct[k] ? t.RR : t.RZ); });
-  const used = new Set(limits.filter(l => l[2]).map(l => rowOf(l[0])));
+  const used = new Set();
+  limits.forEach(([v, , lab], k) => {
+    if (!lab) return;
+    let row = rowOf(v); for (const c of [row, row + 1, row - 1, row + 2]) if (c >= 0 && c <= ph && !used.has(c)) { row = c; break; }
+    used.add(row); scr.put(px0 + pw + 1, r.y + row, ' ' + lab, limAct[k] ? t.RR : t.RZ);
+  });
   if (marker) series.forEach(([vs], n) => {
     if (!vs.length || vs[vs.length - 1] == null) return;
     const row0 = rowOf(vs[vs.length - 1]); let row = row0;
@@ -597,6 +600,8 @@ W.bars = (scr, r, values, o = {}) => {
   });
   const limAct = limits.map(([v, , , lo]) => cur != null && (lo === 'lo' ? cur <= v : cur >= v));
   limits.forEach(([v, , lab], k) => { if (lab) scr.put(ax + 2 + pw, y0 + rowOf(v), lab, limAct[k] ? t.RR : t.RZ); });
+  const refs = (o.refs || []).filter(([v]) => v != null && v > vmin && v < vmax);            // repères (objectif, moyenne) : tirets blancs
+  refs.forEach(([v, lab]) => { if (lab) scr.put(ax + 2 + pw, y0 + rowOf(v), lab, t.B); });
   scr.vector(ax + 1, y0, pw, ph + 1, (c, b) => {
     const d = b.d, Y = v => b.y + yRow(v) * b.ch, yb = Y(vmin);
     c.strokeStyle = COL.K; c.lineWidth = d; dash(c, d, 1, 3); c.beginPath();
@@ -608,6 +613,7 @@ W.bars = (scr, r, values, o = {}) => {
       c.fillStyle = gr; c.fillRect(Math.round(xx), Math.round(yt), Math.max(1, Math.round(ww)), Math.max(0, Math.round(yb - yt)));
     }
     limits.forEach(([v], k) => { c.strokeStyle = limAct[k] ? COL.RR : COL.RZ; c.lineWidth = 1.2 * d; dash(c, d, 4, 3); c.beginPath(); const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x - b.cw * 0.5, yy); c.lineTo(b.x + b.w, yy); c.stroke(); });
+    refs.forEach(([v]) => { c.strokeStyle = COL.N; c.lineWidth = 1.2 * d; dash(c, d, 4, 3); c.beginPath(); const yy = Math.round(Y(v)) + 0.5; c.moveTo(b.x, yy); c.lineTo(b.x + b.w, yy); c.stroke(); });
     dash(c, d, 0);
   });
   return pw + gw + 1;
@@ -915,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.1', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.2', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -940,7 +946,10 @@ const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
 const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
-function loadSettings() { try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ } }
+function loadSettings() {
+  try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ }
+  if (SET.zoomV !== 2) { SET.scale = 1; SET.zoomV = 2; saveSettings(); }     // 1.11.2 : sens du zoom inversé (+ = plus grand) → retour à 100 %
+}
 function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringify(SET)); } catch (e) { /* idem */ } }
 
 // groupes du pavé ; un changement de groupe ramène au format .1. 1.10 : 8 UTILITY (chrono, niveau, audio), 9 CMD ;
@@ -1897,11 +1906,16 @@ PAGES.M23 = { code: 'M23', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
     W.readout(scr, ir.x, y, hw, 'CHARGE', live('batt') ? Math.round(b.level * 100) : '', '%', t.N, low, true, 3);
     W.readout(scr, x2, y, hw, 'BATT T ' + tag('btemp'), live('btemp') ? SRC.btemp.v.c.toFixed(1) : '', '°C', t.N, live('btemp') && SRC.btemp.v.c >= AL.BattTempCaut, true, 3);
     y += 6;
-    const rate = battRate();
+    const rate = battRate(), roomy = ir.b - y >= 3 + 1 + 3 + 1 + 9;            // assez de lignes pour tout garder avec la courbe
     if (live('batt')) {
       W.hbar(scr, ir.x, y, ir.w, b.level, low, [AL.BattLowCrit / 100, AL.BattLowCaut / 100], 4, false, true); y += 3;
+      // graduations : 0, seuils d'alarme (rouge), 50, 100 %
+      const iw = ir.w - 2, gx = f => ir.x + 1 + Math.round(f * iw);
+      [['0', 0, t.F], [String(AL.BattLowCrit), AL.BattLowCrit / 100, t.R], [String(AL.BattLowCaut), AL.BattLowCaut / 100, t.R], ['50', 0.5, t.F], ['100 %', 1, t.F]]
+        .forEach(([l, f, st]) => scr.put(Math.max(ir.x, Math.min(ir.r - slen(l), gx(f) - (f === 0 ? 1 : Math.floor(slen(l) / 2)))), y, l, st));
+      y++;
       W.kv(scr, ir.x, y++, ir.w, 'STATE', b.charging ? (b.level >= 1 ? 'FULL · PLUGGED' : 'CHARGING') : 'ON BATTERY', t.D, b.charging ? t.B : t.N);
-      let rt = 'MEASURING (≥ 20 MIN)';
+      let rt = 'MEASURING · 20 MIN';
       if (rate != null) {
         const lv = b.level * 100;
         if (Math.abs(rate) < 0.5) rt = 'STABLE · ' + sgn(rate, 1) + ' %/h';
@@ -1910,16 +1924,16 @@ PAGES.M23 = { code: 'M23', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
       }
       W.kv(scr, ir.x, y++, ir.w, b.charging ? 'CHARGE RATE · 1 H' : 'DRAIN RATE · 1 H', rt, t.D, rate != null && rate < -8 ? t.RB : t.N);
     } else { noData(scr, ir.x, y++, ir.w, SRC.batt.mode === 'na' ? 'NO BATTERY STATUS API IN THIS BROWSER' : 'WAITING FOR BATTERY STATUS'); y++; }
-    W.kv(scr, ir.x, y++, ir.w, 'THERMISTOR', live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C · ' + tag('btemp') : 'APK ONLY · NO WEB API', t.D, live('btemp') ? t.N : t.F);
-    W.kv(scr, ir.x, y++, ir.w, 'LIMITS', 'CAUT < ' + AL.BattLowCaut + ' % · CRIT < ' + AL.BattLowCrit + ' %', t.D, t.F);
-    y++;
-    if (ir.b - y >= 8) {
+    if (roomy) W.kv(scr, ir.x, y++, ir.w, 'THERMISTOR', live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C · ' + tag('btemp') : 'APK ONLY · NO WEB API', t.D, live('btemp') ? t.N : t.F);
+    W.kv(scr, ir.x, y++, ir.w, 'ALARMS', 'CAUT <' + AL.BattLowCaut + ' % · CRIT <' + AL.BattLowCrit + ' %', t.D, t.F);
+    if (roomy) y++;
+    if (ir.b - y >= 6) {
       // courbe = niveau de charge (%) ; bandes claires = branché ; axe en heures ; [*1] 3 / 12 / 24 h
       const rg = this.rng || '12H', np = (ir.w - 10) * 2, hv = histView(HIST.batt, SPANS[rg], np), hc = histView(HIST.chg, SPANS[rg], np);
       sub(scr, ir.x, y++, ir.w, 'BATTERY % · ' + rg.toLowerCase(), '▮ PLUGGED · ' + logNote(), BGL.on === false || !APK ? t.F : t.D);
       W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y - 1), [[hv.v, t.N]], { vmin: 0, vmax: 100, step: hv.step, fit: true, area: false, band: hc.v, unit: '%', fmt: v => String(Math.round(v)),
         limits: [[AL.BattLowCaut, 0, AL.BattLowCaut + '%', 'lo'], [AL.BattLowCrit, 0, AL.BattLowCrit + '%', 'lo']], yticks: [0, 25, 50, 75, 100], ...clockAxis() });
-      scr.put(ir.x, ir.b - 1, clip('[*1] 3/12/24 H · RED ┄ = LOW-BATT ALARMS', ir.w), t.F);
+      scr.put(ir.x, ir.b - 1, clip('[*1] 3/12/24 H · RED ┄ = ALARM LEVELS', ir.w), t.F);
     }
   } };
 
@@ -1974,12 +1988,12 @@ PAGES.M21 = { code: 'M21', name: 'BARO', ru: 'ДАВ', words: ['BARO', 'PRESSURE
     }
     y += 6;
     const span = PT.span_ms(TREND, PTC), drop = PT.drop(TREND, PTC) / 10, hrs = span / 3600000;
-    W.kv(scr, ir.x, y++, ir.w, 'P TREND (INFO)', PT.NAMES[TREND.level], t.D, trendStyle());
-    W.kv(scr, ir.x, y++, ir.w, 'DROP / WINDOW', (span ? sgn(-drop, 1) : '—') + ' hPa · ' + (span ? hrs.toFixed(1) + ' h' : 'WARMING'));
-    W.kv(scr, ir.x, y++, ir.w, 'RATE', span ? sgn(-drop / Math.max(hrs, 1e-6), 2) + ' hPa/h' : '—');
-    W.kv(scr, ir.x, y++, ir.w, 'BLOCKS', TREND.count + ' / ' + PTC.ring_len + ' · 5 MIN');
-    W.kv(scr, ir.x, y++, ir.w, 'WATCH · ALERT', '0.7/h&1.0 · 1.3/h&2.0', t.D, t.F);
-    W.kv(scr, ir.x, y++, ir.w, 'SENSOR', live('baro') ? SRC.baro.v.hpa.toFixed(1) + ' hPa ' + tag('baro') : 'APK ONLY · NO WEB API', t.D, live('baro') ? t.N : t.F);
+    // lignes de détail par priorité ; la courbe (au moins 9 lignes) passe avant les dernières
+    const rows = [['P TREND (INFO)', PT.NAMES[TREND.level], trendStyle()], ['DROP / WINDOW', (span ? sgn(-drop, 1) : '—') + ' hPa · ' + (span ? hrs.toFixed(1) + ' h' : 'WARMING'), t.N],
+      ['RATE', span ? sgn(-drop / Math.max(hrs, 1e-6), 2) + ' hPa/h' : '—', t.N], ['SENSOR', live('baro') ? SRC.baro.v.hpa.toFixed(1) + ' hPa ' + tag('baro') : 'APK ONLY · NO WEB API', live('baro') ? t.N : t.F],
+      ['BLOCKS', TREND.count + ' / ' + PTC.ring_len + ' · 5 MIN', t.N], ['WATCH · ALERT', '0.7/h&1.0 · 1.3/h&2.0', t.F]];
+    const nk = Math.max(2, Math.min(rows.length, ir.b - y - 10));
+    rows.slice(0, nk).forEach(([k, v, st]) => W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st));
     y++;
     if (ir.b - y >= 7) {
       const rg = this.rng || '12H', hv = histView(HIST.press, SPANS[rg], (ir.w - 10) * 2);
@@ -2981,7 +2995,7 @@ function rainPx(dbz, out, o) {
   out[o] = WHITE[0]; out[o + 1] = WHITE[1]; out[o + 2] = WHITE[2]; out[o + 3] = Math.round(45 + Math.min(1, (dbz - RAIN_DBZ) / 28) * 175);
 }
 
-const RDR = { meta: null, metaT: 0, metaTry: 0, metaErr: '', fc: null, fcT: 0, fcTry: 0, fcKey: '', fcErr: '', R: 30, map: true, play: false, playT0: 0,
+const RDR = { meta: null, metaT: 0, metaTry: 0, metaErr: '', fc: null, fcT: 0, fcTry: 0, fcKey: '', fcErr: '', R: 15, map: true, play: false, playT0: 0,
   pick: null, imgs: new Map(), frames: new Map(), cors: true, mapErr: 0, sim: false };
 const RAD_R = [15, 30, 60], RAD_RINGS = { 15: [5, 10], 30: [10, 25], 60: [25, 50] };
 const wxOf = lon => (lon + 180) / 360, wyOf = lat => { const s = Math.sin(lat * RAD); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); };
@@ -3260,7 +3274,7 @@ function radBase(c, b, h, R, lab = false) {
 }
 PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
   keys: [['1', 'PLAY', () => { RDR.play = !RDR.play; RDR.playT0 = Date.now(); if (RDR.play) RDR.pick = null; }, ['PLAY', 'PAUSE', 'LOOP'], 'PLAY · PAUSE'],
-    ['2', 'ZOOM', (app, arg) => { const v = parseInt(arg, 10); RDR.R = RAD_R.includes(v) ? v : RAD_R[(RAD_R.indexOf(RDR.R) + 1) % RAD_R.length]; RDR.frames.clear(); RDR.fcT = 0; app && app.say('RADAR · ±' + RDR.R + ' km'); }, ['ZOOM', 'RANGE'], 'ZOOM [15|30|60]'],
+    ['2', 'KM', (app, arg) => { const v = parseInt(arg, 10); RDR.R = RAD_R.includes(v) ? v : RAD_R[(RAD_R.indexOf(RDR.R) + 1) % RAD_R.length]; RDR.frames.clear(); RDR.fcT = 0; app && app.say('RADAR · ±' + RDR.R + ' km · FIRST RING ' + RAD_RINGS[RDR.R][0] + ' km'); }, ['KM', 'RADIUS', 'RADARZOOM'], 'KM [15|30|60]'],
     ['3', 'NOW', () => { RDR.play = false; RDR.pick = null; }, ['NOW']],
     ['4', 'MAP', app => { RDR.map = !RDR.map; app && app.say('RADAR · ' + (RDR.map ? 'DARK MAP' : 'GRID ONLY')); }, ['MAP', 'GRID', 'BASEMAP']],
     ['5', 'REFRESH', () => { RDR.metaT = 0; RDR.metaTry = 0; RDR.fcT = 0; RDR.fcTry = 0; RDR.frames.clear(); }, ['REFRESH', 'RELOAD']],
@@ -3389,7 +3403,7 @@ PAGES.M42 = { code: 'M42', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
       else if (first) txt = 'RAIN FROM ~' + hhmm(Math.max(T, first.t - 900)) + ' (MODEL)';
       kv('HERE · NEXT 2 H', txt, first ? t.B : t.N);
     } else if (!RDR.sim) kv('HERE · NEXT 2 H', RDR.fcErr ? 'MODEL UNREACHABLE' : 'LOADING …', t.F);
-    if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] ZOOM [*4] MAP · ● NOWC', ir.w), t.F);
+    if (y < ir.b - 1) scr.put(ir.x, ir.b - 2, clip('[*1] PLAY [*6]◂ [*7]▸ [*2] KM [*4] MAP · ● NOWC', ir.w), t.F);
     if (y < ir.b) scr.put(ir.x, ir.b - 1, clip(RDR.sim ? 'OFFLINE PREVIEW · NO RADAR FEED' : 'RADAR RAINVIEWER · MODEL OPEN-METEO' + (useMap ? ' · MAP ' + (SET.mapKey ? 'CARTO' : 'ESRI') : ''), ir.w), t.F);
   } };
 
@@ -3435,7 +3449,7 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     ['8', 'ARM', cmdArm, ['ARM', 'ARMSENSORS']],
     ['9', 'UPDATE', app => updCmd(app), ['UPDATE', 'UPGRADE'], 'UPDATE (APK)'],
     ['0', 'NIGHT', (app, arg) => cmdNight(app, arg), ['NIGHT', 'NIGHTMODE', 'REDLIGHT'], 'NIGHT [AUTO|ON|OFF]']],
-  cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.7, Math.min(1.5, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' %'); }, 'ZOOM +|-|80…150']],
+  cmds: [[['ZOOM'], (app, arg) => { if (arg === '+' || arg === '-') zoom(arg === '+' ? 1 : -1); else if (/^\d+%?$/.test(arg)) { SET.scale = Math.max(0.8, Math.min(1.1, parseInt(arg, 10) / 100)); saveSettings(); relayout(); } app.say('ZOOM ' + Math.round(SET.scale * 100) + ' % · TEXT SIZE'); }, 'ZOOM +|-|80…110']],
   draw(scr, r, app) {
     const ir = W.panel(scr, r, this.code, this.name, 'GRAFIT ' + CFG.VERSION + (APK ? ' · APK' : ' · PWA'), t.TD);
     let y = ir.y;
@@ -3443,7 +3457,7 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
       : (UPD.available ? 'INSTALL ' + UPD.latest : (UPD.state === 'checking' ? 'CHECKING…' : (UPD.state === 'error' ? UPD.msg : 'UP TO DATE · CHECK')))));
     const rows = [['*1', 'SIMULATION', SET.sim, SET.sim === 'ON' ? t.B : t.N], ['*2', 'SCREEN KEEP-ON', SET.wake ? 'ON' : 'OFF', SET.wake ? t.B : t.N],
       ['*3', 'FULLSCREEN', (APK ? SET.immersive : !!document.fullscreenElement) ? 'ON' : 'OFF', t.N], ['*4', 'HAPTICS', SET.haptics ? 'ON' : 'OFF', t.N],
-      ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'ZOOM − / +', Math.round(SET.scale * 100) + ' %', t.N],
+      ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'TEXT SIZE − / +', Math.round(SET.scale * 100) + ' %', SET.scale !== 1 ? t.B : t.N],
       ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', 'APK UPDATE ' + (UPD.current || ''), upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : t.N)],
       ['*0', 'NIGHT LIGHTING', SET.night + (SET.night === 'AUTO' ? (SRC.light.mode === 'live' ? ' · LIGHT' : ' · DUSK') : '') + (NIGHT.on ? ' · RED' : ''), NIGHT.on ? t.B : t.N]];
     for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
@@ -4082,31 +4096,32 @@ PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
     let y = ir.y;
     const xl = {}; D.forEach((e, i) => { if ((29 - i) % 7 === 0) xl[i] = e.dd; });
     const bw = Math.max(1, Math.floor((ir.w - 6) / 30));
-    sub(scr, ir.x, y++, ir.w, 'SLEEP h · 30 NIGHTS', 'GOAL ' + durHM(goal), t.D);
-    W.bars(scr, new Rect(ir.x, y, ir.w, 7), D.map(e => e.sleep != null ? e.sleep / 3600 : 0), { vmin: 0, vmax: 12, bw, gap: 0, xlab: xl, fmt: v => String(Math.round(v)),
-      styles: D.map(e => e.sleep != null && e.sleep < goal - 3600 ? t.D : t.N) });
+    sub(scr, ir.x, y++, ir.w, 'HOURS SLEPT · PER NIGHT', '┄ GOAL ' + durHM(goal), t.D);
+    W.bars(scr, new Rect(ir.x, y, ir.w, 7), D.map(e => e.sleep != null ? e.sleep / 3600 : 0), { vmin: 0, vmax: 12, bw, gap: 0, xlab: xl, fmt: v => String(Math.round(v)) + 'h',
+      styles: D.map(e => e.sleep != null && e.sleep < goal - 3600 ? t.D : t.N), refs: [[goal / 3600]] });
     y += 8;
     const st = D.map(e => e.steps || 0), top = Math.max(2000, ...st), vmax = [5000, 10000, 15000, 20000, 30000].find(v => v >= top * 1.05) || 40000;
-    sub(scr, ir.x, y++, ir.w, 'STEPS · 30 DAYS', 'AVG ' + fSteps(avgOf(D.slice(0, 29).map(e => e.steps)) != null ? Math.round(avgOf(D.slice(0, 29).map(e => e.steps))) : null), t.D);
-    W.bars(scr, new Rect(ir.x, y, ir.w, 6), st, { vmin: 0, vmax, bw, gap: 0, xlab: xl, fmt: v => fSteps(Math.round(v)), styles: D.map(e => e.today ? t.D : t.N) });
+    const sAvg = avgOf(D.slice(0, 29).map(e => e.steps));
+    sub(scr, ir.x, y++, ir.w, 'STEPS · PER DAY', '┄ AVG ' + fSteps(sAvg != null ? Math.round(sAvg) : null), t.D);
+    W.bars(scr, new Rect(ir.x, y, ir.w, 6), st, { vmin: 0, vmax, bw, gap: 0, xlab: xl, fmt: v => fSteps(Math.round(v)), styles: D.map(e => e.today ? t.D : t.N), refs: [[sAvg]] });
     y += 7;
     // semaines (moyennes) : 4 blocs de 7 jours, le plus récent en bas
     if (y + 6 < ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'WEEKS · AVERAGES', '', t.D);
+      sub(scr, ir.x, y++, ir.w, 'AVERAGE PER WEEK', '7 DAYS FROM', t.D);
       const C = [['SLEEP', 13], ['BED', 20], ['WAKE', 27], ['STEPS', 34], ['ACTIVE', ir.w]];
-      C.forEach(([l, xe]) => scr.put(ir.x + xe - slen(l), y, l, t.F)); y++;
+      scr.put(ir.x, y, 'WEEK', t.F); C.forEach(([l, xe]) => scr.put(ir.x + xe - slen(l), y, l, t.F)); y++;
       for (let w = 3; w >= 0; w--) {
         if (y >= ir.b) break;
         const B = D.slice(29 - 7 * w - 6, 29 - 7 * w + 1), full = B.filter(e => !e.today);
         const v = [avgOf(B.map(e => e.sleep)), avgTod(B.map(e => e.bed), 12 * 3600), avgTod(B.map(e => e.wake), 0), avgOf(full.map(e => e.steps)), avgOf(full.map(e => e.act))];
-        scr.put(ir.x, y, w ? 'W−' + w : 'LAST 7', w ? t.D : t.B);
+        scr.put(ir.x, y, dm(B[0]), w ? t.D : t.B);
         [v[0] != null ? durHM(v[0]) : '—', todTxt(v[1]), todTxt(v[2]), fSteps(v[3] != null ? Math.round(v[3]) : null), fMin(v[4])].forEach((x, k) => scr.put(ir.x + C[k][1] - slen(x), y, x, x === '—' ? t.F : (w ? t.N : t.B)));
         y++;
       }
     }
     const s30 = sleepStats(D);
-    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(s30.sdBed) + ' · WAKE ' + regTxt(s30.sdWake), t.D);
-    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BALANCE', debtTxt(s30.debt) + ' · ' + s30.short + '/' + s30.n + ' SHORT', t.D, s30.debt != null && s30.debt > 10 * 3600 ? t.RB : t.N);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(s30.sdBed).replace(' MIN', '') + ' · WAKE ' + regTxt(s30.sdWake), t.D);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'VS GOAL', debtTxt(s30.debt) + ' · ' + s30.short + '/' + s30.n + ' SHORT', t.D, s30.debt != null && s30.debt > 10 * 3600 ? t.B : t.N);
   },
   draw(scr, r) {
     if (this.view === '30') return this.draw30(scr, r);
@@ -4119,14 +4134,15 @@ PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
       steps: avgOf(full.map(e => e.steps)), act: avgOf(full.map(e => e.act)), scr: avgOf(full.map(e => e.scr)), un: avgOf(full.map(e => e.un)) };
     // NIGHTS : jour · coucher · barre 20h → 12h · réveil · durée
     const xB = ir.x + 7, xC = ir.x + 13, xW = ir.r - 11, cw = Math.max(8, xW - 1 - xC);
-    sub(scr, ir.x, y++, ir.w, 'NIGHTS', 'BED → WAKE · SLEEP', t.D);
+    sub(scr, ir.x, y++, ir.w, 'NIGHTS', 'GOAL ' + durHM((SET.sleepGoal || 8) * 3600) + ' · [*2]', t.D);
+    scr.put(ir.x, y, 'WOKE', t.F); scr.put(xB, y, 'BED', t.F); scr.put(xC + Math.max(0, Math.floor((cw - 6) / 2)), y, 'ASLEEP', t.F); scr.put(xW, y, 'WAKE', t.F); W.rjust(scr, ir.r, y, 'SLEPT', t.F); y++;
     D.forEach(e => {
       if (y >= ir.b) return;
       const st = e.today ? t.B : t.N;
       scr.put(ir.x, y, e.dow + ' ' + e.dd, e.today ? t.B : t.D);
       scr.put(xB, y, e.bed ? todTxt(todOf(e.bed)) : '  —  ', e.bed ? st : t.F);
       scr.put(xW, y, e.wake ? todTxt(todOf(e.wake)) : '  —  ', e.wake ? st : t.F);
-      W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < 6 * 3600 ? t.RB : st) : t.F);
+      W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < (SET.sleepGoal || 8) * 3600 - 3600 ? t.D : st) : t.F);
       const A0 = e.m - 4 * 3600, A1 = e.m + 12 * 3600;
       scr.vector(xC, y, cw, 1, (c, b) => {
         const X = tt => b.x + Math.max(0, Math.min(1, (tt - A0) / (A1 - A0))) * b.w, mid = b.y + b.ch * 0.5, hh = b.ch * 0.3;
@@ -4137,20 +4153,27 @@ PAGES.M53 = { code: 'M53', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
       });
       y++;
     });
-    if (y < ir.b) { [['20', 0], ['00', 0.25], ['04', 0.5], ['08', 0.75], ['12', 1]].forEach(([l, f]) => scr.put(Math.min(xC + cw - 2, xC + Math.round(f * (cw - 1)) - (f ? 1 : 0)), y, l, t.F)); y++; }
+    if (y < ir.b) {
+      let end = -1;
+      [['20h', 0], ['0h', 0.25], ['4h', 0.5], ['8h', 0.75], ['12h', 1]].forEach(([l, f]) => {
+        const x = Math.min(xC + cw - slen(l), xC + Math.round(f * (cw - 1)) - (f ? Math.floor(slen(l) / 2) : 0));
+        if (x > end + 1) { scr.put(x, y, l, t.F); end = x + slen(l) - 1; }
+      });
+      y++;
+    }
     if (y < ir.b) {
       scr.put(ir.x, y, 'AVG', t.B); scr.put(xB, y, todTxt(avg.bed), avg.bed != null ? t.B : t.F); scr.put(xW, y, todTxt(avg.wake), avg.wake != null ? t.B : t.F);
       W.rjust(scr, ir.r, y, avg.sleep != null ? durHM(avg.sleep) : '—', t.B); y++;
     }
     const ss = sleepStats(D);
-    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(ss.sdBed) + ' · WAKE ' + regTxt(ss.sdWake), t.D, (ss.sdBed || 0) > 45 || (ss.sdWake || 0) > 45 ? t.B : t.N);
-    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'GOAL ' + durHM(ss.goal) + ' · [*2]', ss.n ? debtTxt(ss.debt) + ' · ' + ss.n + ' NIGHTS' : '—', t.D, ss.debt != null && ss.debt > 5 * 3600 ? t.RB : t.N);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'REGULARITY', 'BED ' + regTxt(ss.sdBed).replace(' MIN', '') + ' · WAKE ' + regTxt(ss.sdWake), t.D, (ss.sdBed || 0) > 45 || (ss.sdWake || 0) > 45 ? t.B : t.N);
+    if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'VS GOAL', ss.n ? debtTxt(ss.debt) + ' · ' + ss.n + ' NIGHTS' : '—', t.D, ss.debt != null && ss.debt > 5 * 3600 ? t.B : t.N);
     // DAYS : pas, minutes actives, temps d'écran, déverrouillages (colonnes espacées)
     y++;
     if (y + 3 < ir.b) {
       const C = [['STEPS', 15, e => fSteps(e.steps), a2 => fSteps(a2.steps != null ? Math.round(a2.steps) : null)], ['ACTIVE', 24, e => fMin(e.act), a2 => fMin(a2.act)],
-        ['SCREEN', 33, e => e.scr != null ? durHM(e.scr) : '—', a2 => a2.scr != null ? durHM(a2.scr) : '—'], ['UNLOCKS', ir.w, e => e.un != null ? String(e.un) : '—', a2 => a2.un != null ? String(Math.round(a2.un)) : '—']];
-      sub(scr, ir.x, y++, ir.w, 'DAYS', 'TODAY = SO FAR', t.D);
+        ['SCREEN', 33, e => e.scr != null ? durHM(e.scr) : '—', a2 => a2.scr != null ? durHM(a2.scr) : '—'], [ir.w >= 42 ? 'UNLOCKS' : 'UNLK', ir.w, e => e.un != null ? String(e.un) : '—', a2 => a2.un != null ? String(Math.round(a2.un)) : '—']];
+      sub(scr, ir.x, y++, ir.w, 'DAYS', 'ACTIVE = MOVING · TODAY SO FAR', t.D);
       C.forEach(([lab, xe]) => scr.put(ir.x + xe - slen(lab), y, lab, t.F)); y++;
       for (const e of D) {
         if (y >= ir.b) break;
@@ -4254,7 +4277,8 @@ class Renderer {
   layout() {
     const dpr = Math.min(3, window.devicePixelRatio || 1), box = this.cv.parentElement.getBoundingClientRect(), cw = Math.floor(box.width), ch = Math.floor(box.height);
     const short = Math.min(cw, ch);
-    const cellW = Math.max(5, short / 46 / SET.scale), fpx = cellW / this.adv * 0.98, cellH = Math.round(fpx * 1.32 * dpr) / dpr;
+    // ZOOM + : caractères plus grands (moins de colonnes)
+    const cellW = Math.max(5, short / 46 * SET.scale), fpx = cellW / this.adv * 0.98, cellH = Math.round(fpx * 1.32 * dpr) / dpr;
     this.cols = Math.max(30, Math.floor(cw / cellW)); this.rows = Math.max(24, Math.floor(ch / cellH));
     this.cw = cw / this.cols; this.ch = ch / this.rows; CELL.aspect = this.ch / this.cw; this.fpx = Math.min(fpx, this.cw / this.adv * 0.98); this.dpr = dpr;
     this.cv.width = Math.round(cw * dpr); this.cv.height = Math.round(ch * dpr);
@@ -4725,7 +4749,7 @@ function toggleFull() {
   try { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => APP.say('FULLSCREEN REFUSED', true)); }
   catch (e) { APP.say('FULLSCREEN UNAVAILABLE', true); }
 }
-function zoom(d) { SET.scale = Math.max(0.7, Math.min(1.5, +(SET.scale + d * 0.1).toFixed(2))); saveSettings(); relayout(); }
+function zoom(d) { SET.scale = Math.max(0.8, Math.min(1.1, +(SET.scale + d * 0.05).toFixed(2))); saveSettings(); relayout(); }
 function simReset() { SOURCES.forEach(([k]) => { const s = SRC[k]; if (k === 'mic' && !MIC) { s.mode = SET.sim === 'ON' ? 'sim' : 'off'; return; } if (s.mode === 'sim' || s.mode === 'na') { s.mode = 'wait'; s.armed = now(); } }); if (SET.sim !== 'ON' && TREND_SRC === 'SIM') resetTrend('SIM OFF'); }
 
 const CV = document.getElementById('scr');

@@ -99,3 +99,13 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
 - **8.2 LEVEL** : les valeurs restent dans leur afficheur (4 chiffres).
 - **2.3 POWER** : la zone rouge de la jauge est sous 20 % (elle était inversée) ; seuils du graphique libellés 20 % / 10 %.
 
+## 1.11.2
+
+- **Taille de l'affichage** : `ZOOM +` agrandit maintenant le texte (c'était l'inverse) ; plage 80–110 %, ligne
+  « TEXT SIZE » en 9.1 (`*6` / `*7`, ou `ZOOM 100` de n'importe quel format). Le zoom repart de 100 % à cette mise à jour.
+- **2.1 BARO / 2.3 POWER** : la courbe passe avant les lignes de détail, elle reste affichée sur un écran plus court.
+- **2.3 POWER** : graduations sous la jauge (0, 10, 20 en rouge = seuils d'alarme, 50, 100 %).
+- **4.2 RADAR** : ±15 km par défaut, premier cercle à 5 km ; `*2 KM` passe à 30 puis 60 km.
+- **5.3 HEALTH** : en-têtes de colonnes (WOKE · BED · ASLEEP · WAKE · SLEPT), axe en heures, objectif et moyenne
+  en tirets blancs sur les barres 30 jours (valeurs dans l'en-tête), semaines datées ; plus de rouge pour une nuit courte.
+
