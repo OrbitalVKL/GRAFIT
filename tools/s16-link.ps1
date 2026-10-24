@@ -1,4 +1,4 @@
-<#
+﻿<#
   Grafit · lien local S-16 → Grafit Mobile (page 6.4 S-16)
 
   Diffuse l'état du PC sur le réseau local, en UDP (port 47616), vers l'adresse de diffusion de chaque carte réseau
