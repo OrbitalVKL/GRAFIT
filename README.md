@@ -23,7 +23,7 @@ arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargemen
 
 Code de format = M + adresse : 1 STATUS (M11 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
 3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 WEATHER, M42 RADAR, M43 FORECAST, M44 WEEK) ·
-5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71–M75) ·
+5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71–M75, M76 ROUTE) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
 
 Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
@@ -137,4 +137,21 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.12.0
+
+- **7.6 ROUTE** : trajet maison ↔ travail en voiture. Durée avec le trafic actuel, état du trafic (FLUID / HEAVY /
+  JAMMED), retard sur le trajet sans trafic, arrivée si départ immédiat, courbe de la journée ; `*3` ouvre
+  l'itinéraire dans Google Maps. Avant midi maison → travail ; à partir de midi, ou dès que la position est au travail,
+  travail → maison (`*2` inverse).
+  - Durées : Google Routes API (`ROUTEKEY <clé>`, clé personnelle restreinte à l'appli Grafit et à la Routes API).
+  - Garde-fous de facturation : 100 requêtes par jour, 4000 par mois (gratuité Google : 5000) ; veille hebdomadaire
+    de la page des tarifs Google : si la gratuité baisse, le plafond passe à 80 % de la nouvelle valeur ; tarif
+    illisible trois semaines de suite : plafond 2000.
+  - Évènements sur le trajet : Bison Futé (données ouvertes, réseau national non concédé : routes et voies fermées,
+    travaux, déviations) et, avec `INCIDENTKEY <clé TomTom>` (gratuite, sans carte bancaire), accidents, bouchons,
+    routes fermées sur tout le réseau.
+  - Lieux : `PLACE HOME` / `PLACE WORK` sur place, ou suivis d'une adresse ou de coordonnées.
+- **Briefing** : ligne TRAFFIC (et évènement grave sur le trajet) ; `1.1 *1` (ou `BRIEF`) le rouvre à tout moment, il
+  reste affiché jusqu'à ESC.
 

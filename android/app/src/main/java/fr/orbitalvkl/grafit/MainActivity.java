@@ -240,6 +240,32 @@ public class MainActivity extends Activity {
                     getWindow().setAttributes(lp);
                     break;
                 }
+                case "route": {                                  // 7.6 ROUTE : Google Routes API, requête native (empreinte de l'appli)
+                    final String id = o.optString("id"), key = o.optString("key"), body = o.optString("body"), fields = o.optString("fields", "routes.duration,routes.staticDuration,routes.distanceMeters");
+                    new Thread(() -> routeCall(id, key, body, fields)).start();
+                    break;
+                }
+                case "bfEvents": {                               // évènements Bison Futé dans une emprise [latMin, lonMin, latMax, lonMax]
+                    org.json.JSONArray bx = o.optJSONArray("box");
+                    if (bx != null && bx.length() == 4) {
+                        final double[] box = {bx.optDouble(0), bx.optDouble(1), bx.optDouble(2), bx.optDouble(3)};
+                        new Thread(() -> BisonFute.fetch(this, box)).start();
+                    }
+                    break;
+                }
+                case "priceCheck":                                 // veille du tarif Google (gratuité de Compute Routes Pro)
+                    new Thread(this::priceCheck).start();
+                    break;
+                case "openUrl": {                                // itinéraire dans Google Maps (adresses google.com/maps seulement)
+                    String u = o.optString("url");
+                    if (u.startsWith("https://www.google.com/maps/")) {
+                        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(u))); } catch (Exception e) { /* pas d'appli */ }
+                    }
+                    break;
+                }
+                case "appInfo":
+                    try { JSONObject a = new JSONObject(); a.put("pkg", getPackageName()); a.put("sha1", certSha1(true)); JSONObject d = new JSONObject(); d.put("app", a); push(d); } catch (Exception e) { /* */ }
+                    break;
                 case "keepOn":
                     if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -274,6 +300,55 @@ public class MainActivity extends Activity {
     }
 
     /** Sauvegarde / export de la page : grafit-(backup|health|samples)-AAAAMMJJ-HHMM.(json|csv) dans Téléchargements/Grafit. */
+    /** Empreinte SHA-1 du certificat de signature (avec « : » pour la console Google, sans pour l'en-tête X-Android-Cert). */
+    String certSha1(boolean colons) {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), PackageManager.GET_SIGNING_CERTIFICATES);
+            android.content.pm.Signature[] sg = pi.signingInfo.getApkContentsSigners();
+            byte[] h = java.security.MessageDigest.getInstance("SHA-1").digest(sg[0].toByteArray());
+            StringBuilder b = new StringBuilder();
+            for (int i = 0; i < h.length; i++) { if (colons && i > 0) b.append(':'); b.append(String.format(java.util.Locale.ROOT, "%02X", h[i])); }
+            return b.toString();
+        } catch (Exception e) { return null; }
+    }
+
+    void priceCheck() {
+        JSONObject r = new JSONObject();
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL("https://developers.google.com/maps/billing-and-pricing/pricing?hl=en").openConnection();
+            c.setConnectTimeout(10000); c.setReadTimeout(20000); c.setRequestProperty("Accept-Language", "en");
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream in = c.getInputStream()) { byte[] buf = new byte[16384]; int n; while ((n = in.read(buf)) > 0 && bo.size() < 8_000_000) bo.write(buf, 0, n); }
+            String txt = bo.toString("UTF-8").replaceAll("(?s)<script.*?</script>", " ").replaceAll("<[^>]+>", " ").replace("&nbsp;", " ").replaceAll("\\s+", " ");
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Compute Routes Pro\\s*\\**\\s*([0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4})?\\s*\\|?\\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\\s*\\|?\\s*\\$").matcher(txt);
+            if (!m.find()) { m = java.util.regex.Pattern.compile("Compute Routes Pro\\s*\\**\\s*([0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4})\\s*\\|?\\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\\b").matcher(txt); if (!m.find()) m = null; }
+            if (m != null) { r.put("ok", true); r.put("cap", Integer.parseInt(m.group(2).replace(",", ""))); r.put("sku", m.group(1) == null ? "" : m.group(1)); }
+            else { r.put("ok", false); r.put("err", "ROW NOT FOUND"); }
+        } catch (Exception e) { try { r.put("ok", false); r.put("err", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ } }
+        try { JSONObject d = new JSONObject(); d.put("price", r); push(d); } catch (Exception e) { /* */ }
+    }
+
+    void routeCall(String id, String key, String body, String fields) {
+        JSONObject r = new JSONObject();
+        try {
+            r.put("id", id);
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL("https://routes.googleapis.com/directions/v2:computeRoutes").openConnection();
+            c.setRequestMethod("POST"); c.setDoOutput(true); c.setConnectTimeout(8000); c.setReadTimeout(12000);
+            c.setRequestProperty("Content-Type", "application/json");
+            c.setRequestProperty("X-Goog-Api-Key", key);
+            c.setRequestProperty("X-Goog-FieldMask", fields);
+            c.setRequestProperty("X-Android-Package", getPackageName());
+            String sha = certSha1(false); if (sha != null) c.setRequestProperty("X-Android-Cert", sha);
+            try (OutputStream os = c.getOutputStream()) { os.write(body.getBytes(StandardCharsets.UTF_8)); }
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            if (is != null) try (java.io.InputStream in = is) { byte[] buf = new byte[4096]; int n; while ((n = in.read(buf)) > 0) bo.write(buf, 0, n); }
+            r.put("code", code); r.put("body", bo.toString("UTF-8"));
+        } catch (Exception e) { try { r.put("code", -1); r.put("err", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ } }
+        try { JSONObject d = new JSONObject(); d.put("route", r); push(d); } catch (Exception e) { /* */ }
+    }
+
     void saveFile(String name, String text) {
         JSONObject d = new JSONObject();
         try {

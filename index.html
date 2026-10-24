@@ -921,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.6', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.12.0', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -958,7 +958,7 @@ function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringif
 const GROUPS = [
   ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
   ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
-  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75']],
+  ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75', 'M76']],
   ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
@@ -1128,6 +1128,10 @@ window.addEventListener('grafit-native', e => {
   if (d.fileError) { log('SYS', 'FILE FAILED · ' + String(d.fileError).toUpperCase(), true); APP && APP.say('FILE FAILED · ' + String(d.fileError).toUpperCase(), true); }
   if (d.restore != null && typeof restoreText === 'function') restoreText(String(d.restore));
   if (d.s16 && typeof s16Ingest === 'function') s16Ingest(d.s16);
+  if (d.route && typeof rteIngest === 'function') rteIngest(d.route);
+  if (d.bf && typeof bfIngest === 'function') bfIngest(d.bf);
+  if (d.price && typeof priceIngest === 'function') priceIngest(d.price);
+  if (d.app && typeof APPINFO === 'object') Object.assign(APPINFO, d.app);
   if (d.logError) { log('SYS', 'LOG EXPORT FAILED · ' + String(d.logError).toUpperCase(), true); APP && APP.say('LOG EXPORT FAILED', true); }
   if (d.resumed) visChange(true);
   if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
@@ -1909,6 +1913,7 @@ const K_HDG = ['HDG UP', hdgUp, ['HDGUP', 'HDG'], 'HDG [ON|OFF]'];
 function actRow(scr, x, y, w, k, label, value, vs = t.N) { scr.put(x, y, k, t.B); W.kv(scr, x + 4, y, w - 4, label, value, t.D, vs); }
 // ------------------------------------------------------------------ M11 OVERVIEW
 PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
+  keys: [['1', 'BRIEF', cmdBrief, ['BRIEF', 'BRIEFING', 'BRF'], 'BRIEF (STAYS UNTIL ESC)']],
   draw(scr, r, app) {
     const rt = ALS.crit ? ALS.crit + ' CRIT · ' + ALS.caut + ' CAUT' : (ALS.caut ? ALS.caut + ' CAUT' : 'NOMINAL');
     const ir = W.panel(scr, r, this.code, this.name, rt, (ALS.crit || ALS.caut) ? t.TR : t.TD);
@@ -4056,7 +4061,7 @@ PAGES.M52 = { code: 'M52', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
 
 // ------------------------------------------------------------------ M51 DAY : temps éveillé, journée
 PAGES.M51 = { code: 'M51', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
-  keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]'], ['2', 'BRIEF', app => showBrief(app), ['BRIEF', 'BRIEFING']],
+  keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]'], ['2', 'BRIEF', cmdBrief, ['BRIEF', 'BRIEFING']],
     ['3', 'UNLOCK', app => { if (!nativeCmd({ cmd: 'usage' })) app.say('UNLOCK TIME: GRAFIT APK ONLY', true); }, ['UNLOCK', 'USAGE'], 'UNLOCK (ALLOW USAGE ACCESS)']],
   draw(scr, r) {
     const aw = awakeSecs(), ir = W.panel(scr, r, this.code, this.name, DAYREC.wake ? 'WAKE ' + hhmm(DAYREC.wake) + ' · ' + DAYREC.src : 'NO WAKE TIME', DAYREC.wake ? t.TD : t.TF);
@@ -4288,6 +4293,13 @@ function briefLines() {
   if (nn && nn.state !== 'na' && nn.state !== 'stale') L.push(['RADAR', ncText(nn) + (nn.r.wet && ncMotion(nn.r) ? ' · ' + ncMotion(nn.r).replace(' · ', ' ') : '')]);
   const pr = pressure(); if (pr) L.push(['PRESSURE', pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level]]);
   try { const hh = here(), si = A.sunInfo(T, hh.lat, hh.lon); if (si.rise && si.set) L.push(['SUN', 'RISE ' + hhmm(si.rise) + ' · SET ' + hhmm(si.set)]); } catch (e) { /* */ }
+  // trajet du matin (7.6 ROUTE), si la clé et les lieux sont réglés
+  if (RTE.key && RTE.home && RTE.work) {
+    const dir = rteMain(), rr = RTE.res[dir], st = rteState(rr);
+    const sev = evOnRoute(dir).filter(e => e.severe);
+    L.push(['TRAFFIC', rr && now() - rr.t < 1800 ? RTE_DIR[dir][2] + ' ' + minTxt(rr.dur) + ' · ' + st + (rr.stat ? ' +' + Math.max(0, Math.round((rr.dur - rr.stat) / 60)) : '') : (RTE.busy[dir] ? 'ASKING GOOGLE …' : '— · ' + pageAddr('M76'))]);
+    if (sev.length) L.push(['', sev[0].lab + ' KM ' + sev[0].km.toFixed(1) + (sev[0].road ? ' · ' + sev[0].road : '') + (sev.length > 1 ? ' · +' + (sev.length - 1) : '')]);
+  }
   // agenda du jour
   L.push(['', ''], ['TODAY', '']);
   const end = new Date(); end.setHours(23, 59, 59, 0);
@@ -4308,10 +4320,13 @@ function briefLines() {
   if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
   return L;
 }
-function showBrief(app) {
+function cmdBrief(app) { showBrief(app, true); }           // à la demande (1.1 [*1], 5.1 [*2], BRIEF) : reste affiché jusqu'à ESC
+function showBrief(app, manual = false) {
   const d = new Date();
-  app.helpOv = { t: now(), ttl: 180, code: 'BRF', title: 'BRIEFING · ' + DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1), rt: 'ESC CLOSE', lines: briefLines };
+  app.helpOv = { t: now(), ttl: manual ? Infinity : 1800, code: 'BRF', title: 'BRIEFING · ' + DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1), rt: 'ESC CLOSE', lines: briefLines };
   DAYREC.briefD = ymdOf(now()); daySave();
+  if (RTE.key && RTE.home && RTE.work) { const dir = rteMain(); if (!RTE.res[dir] || now() - RTE.res[dir].t > 900) rteFetch(dir); evTick(); }
+  if (manual) return;
   const ro = live('wx') ? rainOutlook(SRC.wx.v) : null, nx = agendaNext();
   log('BRF', 'BRIEFING · ' + (live('wx') ? SRC.wx.v.temp.toFixed(0) + ' °C · ' + rainText(ro) : 'NO WEATHER') + (nx ? ' · ' + evWhen(nx.start) + ' ' + nx.title.toUpperCase() : ''));
 }
@@ -5283,6 +5298,263 @@ PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
   } };
 
 
+// ---------------------------------------------------------------------------------------- 7.6 ROUTE : trajet maison ↔ travail
+// Durée avec le trafic actuel et état du trafic par Google Routes API (clé personnelle : ROUTEKEY <clé>), en voiture.
+// Facturation : 1 requête = 1 événement « Compute Routes Pro » (TRAFFIC_AWARE + tracé simple). Objectif : jamais facturé.
+//  · Grafit s'arrête à ROUTE_DAY requêtes par jour et au plafond mensuel (4000, sous les 5000 gratuits) ;
+//  · veille du tarif : chaque semaine, la page des tarifs Google est relue (APK) ; si la gratuité de « Compute Routes
+//    Pro » baisse, le plafond de Grafit descend à 80 % de la nouvelle valeur ; tarif illisible 3 semaines : plafond 2000 ;
+//  · mise à jour seulement page affichée (10 min le sens utile, 30 min l'autre) et au briefing ;
+//  · APK : requête native avec l'empreinte de l'appli (clé restreinte à Grafit côté Google).
+// Évènements sur le trajet (sans Google) : Bison Futé (réseau national non concédé, données ouvertes : fermetures,
+// voies fermées, travaux, déviations) et, avec INCIDENTKEY <clé TomTom gratuite>, accidents, bouchons, routes fermées.
+const ROUTE_DAY = 100, ROUTE_MONTH = 4000, ROUTE_EVERY = 600, ROUTE_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
+const ROUTE_FIELDS = 'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline';
+const TT_DAY = 60, TT_MONTH = 2000;                           // TomTom : 2500 gratuits par mois
+const RTE0 = () => ({ key: '', ttKey: '', home: null, work: null, res: {}, hist: {}, cnt: { d: '', n: 0, m: '', nm: 0, tn: 0, tnm: 0 }, price: { t: 0, okT: 0, cap: null, sku: '', fails: 0 }, ev: { bf: null, tt: null } });
+const RTE = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.route') || '{}'), o = Object.assign(RTE0(), j); o.cnt = Object.assign(RTE0().cnt, j.cnt || {}); o.price = Object.assign(RTE0().price, j.price || {}); o.ev = Object.assign(RTE0().ev, j.ev || {}); return o; } catch (e) { return RTE0(); } })();
+RTE.busy = {}; RTE.evBusy = {};
+const rteSave = () => { try { const { busy, evBusy, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
+const RTE_DIR = { hw: ['home', 'work', 'HOME → WORK'], wh: ['work', 'home', 'WORK → HOME'] };
+const rtePlaceTxt = p => !p ? '—' : (p.addr ? p.addr.toUpperCase() : fmtLL(p.lat, p.lon));
+const rteWp = p => p.addr ? { address: p.addr } : { location: { latLng: { latitude: p.lat, longitude: p.lon } } };
+// plafond mensuel effectif : 4000, ou 80 % d'une gratuité Google revue à la baisse, ou 2000 si le tarif n'est plus lisible
+function rteMonthCap() {
+  const P = RTE.price; let cap = ROUTE_MONTH;
+  if (P.cap != null && P.cap < 5000) cap = Math.min(cap, Math.floor(P.cap * 0.8));
+  if (APK && P.okT && now() - P.okT > 21 * 86400) cap = Math.min(cap, 2000);
+  return cap;
+}
+function rteQuota() {
+  const d = ymdOf(now()), m = d.slice(0, 6), c = RTE.cnt;
+  if (c.d !== d) { c.d = d; c.n = 0; c.tn = 0; } if (c.m !== m) { c.m = m; c.nm = 0; c.tnm = 0; }
+  const cap = rteMonthCap();
+  return { day: c.n, month: c.nm, cap, ok: c.n < ROUTE_DAY && c.nm < cap, ttOk: c.tn < TT_DAY && c.tnm < TT_MONTH };
+}
+// état du trafic d'après le rapport durée / durée sans trafic
+const rteState = r => !r || !r.stat ? null : (r.dur / r.stat < 1.10 ? 'FLUID' : (r.dur / r.stat < 1.30 ? 'HEAVY' : 'JAMMED'));
+const RTE_LAMP = { FLUID: 'nom', HEAVY: 'on', JAMMED: 'crit' };
+const minTxt = s => s == null ? '—' : Math.round(s / 60) + ' MIN';
+function polyDecode(str) {                                   // algorithme des polylignes Google → [[lat, lon], …]
+  const pts = []; let i = 0, lat = 0, lon = 0;
+  while (i < (str || '').length) {
+    for (const k of [0, 1]) { let r = 0, sh = 0, b; do { b = str.charCodeAt(i++) - 63; r |= (b & 31) << sh; sh += 5; } while (b >= 32 && i < str.length); const d = r & 1 ? ~(r >> 1) : r >> 1; if (k) lon += d; else lat += d; }
+    pts.push([lat / 1e5, lon / 1e5]);
+  }
+  return pts;
+}
+function rteFetch(dir) {
+  const [a, b] = RTE_DIR[dir], A = RTE[a], B = RTE[b];
+  if (!RTE.key || !A || !B || RTE.busy[dir]) return false;
+  const q = rteQuota(); if (!q.ok) { RTE.err = 'SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH'); return false; }
+  RTE.cnt.n++; RTE.cnt.nm++; RTE.busy[dir] = now(); rteSave();
+  const body = JSON.stringify({ origin: rteWp(A), destination: rteWp(B), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE', languageCode: 'fr-FR', units: 'METRIC' });
+  if (APK && nativeCmd({ cmd: 'route', id: dir, key: RTE.key, body, fields: ROUTE_FIELDS })) return true;
+  fetch(ROUTE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': RTE.key, 'X-Goog-FieldMask': ROUTE_FIELDS }, body })
+    .then(r => r.text().then(tx => rteIngest({ id: dir, code: r.status, body: tx }))).catch(e => rteIngest({ id: dir, code: -1, err: String(e.message || e) }));
+  return true;
+}
+function rteIngest(d) {
+  const dir = d.id; if (!RTE_DIR[dir]) return; delete RTE.busy[dir];
+  let j = null; try { j = JSON.parse(d.body || 'null'); } catch (e) { /* */ }
+  if (d.code !== 200 || !j || !j.routes || !j.routes.length) {
+    const st = j && j.error ? j.error.status || '' : '', msg = st === 'RESOURCE_EXHAUSTED' ? 'GOOGLE QUOTA REACHED (CONSOLE CAP)' : (st === 'PERMISSION_DENIED' ? 'KEY REFUSED · CHECK ITS RESTRICTIONS' : (j && j.error ? st + ' ' + (j.error.message || '') : (d.err || 'HTTP ' + d.code)));
+    RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
+  }
+  const r = j.routes[0], sec = x => x ? parseFloat(String(x).replace('s', '')) : null;
+  const res = { t: now(), dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
+    poly: r.polyline && r.polyline.encodedPolyline ? r.polyline.encodedPolyline : (RTE.res[dir] && RTE.res[dir].poly) || '' };
+  RTE.res[dir] = res; RTE.err = '';
+  const day = ymdOf(now()); (RTE.hist[day] = RTE.hist[day] || []).push([Math.round(res.t), dir, Math.round(res.dur), Math.round(res.stat || 0)]);
+  const ks = Object.keys(RTE.hist).sort(); while (ks.length > 7) delete RTE.hist[ks.shift()];
+  rteSave(); evTick();
+}
+// sens affiché : le matin maison → travail ; à partir de midi, ou dès que la position est au travail, travail → maison
+const rteNear = k => { const p = RTE[k]; if (!p || p.lat == null || !(live('geo') && SRC.geo.mode === 'live')) return false; const g = SRC.geo.v; return A.dist(g.lat, g.lon, p.lat, p.lon) < 0.5; };
+const rteMain = () => (new Date().getHours() >= 12 || rteNear('work')) ? 'wh' : 'hw';
+function rteTick(force = false) {                          // page affichée : sens utile toutes les 10 min, l'autre toutes les 30
+  const T = now(), m = PAGES.M76.dir(), o = m === 'hw' ? 'wh' : 'hw';
+  if (force || !RTE.res[m] || T - RTE.res[m].t > ROUTE_EVERY) rteFetch(m);
+  if (force || !RTE.res[o] || T - RTE.res[o].t > 3 * ROUTE_EVERY) rteFetch(o);
+  priceTick();
+}
+// ---- évènements sur le trajet
+const rteBox = () => {                                      // emprise des tracés (ou des lieux), marge ~1,5 km
+  const P = []; for (const d of ['hw', 'wh']) { const r = RTE.res[d]; if (r && r.poly) P.push(...polyDecode(r.poly)); }
+  for (const k of ['home', 'work']) { const p = RTE[k]; if (p && p.lat != null) P.push([p.lat, p.lon]); }
+  if (P.length < 2) return null;
+  const la = P.map(p => p[0]), lo = P.map(p => p[1]), m = 0.015;
+  return [Math.min(...la) - m, Math.min(...lo) - m, Math.max(...la) + m, Math.max(...lo) + m];
+};
+function evTick(force = false) {
+  const T = now(), box = rteBox(); if (!box) return;
+  const E = RTE.ev;
+  if (APK && !RTE.evBusy.bf && (force || !E.bf || T - E.bf.t > ROUTE_EVERY)) { RTE.evBusy.bf = T; if (!nativeCmd({ cmd: 'bfEvents', box })) delete RTE.evBusy.bf; }
+  if (RTE.ttKey && !RTE.evBusy.tt && (force || !E.tt || T - E.tt.t > ROUTE_EVERY) && rteQuota().ttOk) {
+    RTE.evBusy.tt = T; RTE.cnt.tn++; RTE.cnt.tnm++; rteSave();
+    const url = 'https://api.tomtom.com/traffic/services/5/incidentDetails?key=' + encodeURIComponent(RTE.ttKey) + '&bbox=' + [box[1], box[0], box[3], box[2]].map(v => v.toFixed(5)).join(',')
+      + '&fields=' + encodeURIComponent('{incidents{type,geometry{type,coordinates},properties{iconCategory,magnitudeOfDelay,events{description},from,to,delay,roadNumbers}}}') + '&language=fr-FR&timeValidityFilter=present';
+    fetch(url).then(r => r.json().then(j => ({ ok: r.ok, j }))).then(({ ok, j }) => {
+      delete RTE.evBusy.tt;
+      if (!ok || !j || !Array.isArray(j.incidents)) { E.tt = { t: now(), err: 'TOMTOM ' + (j && j.detailedError ? j.detailedError.code : 'ERROR'), list: [] }; rteSave(); return; }
+      E.tt = { t: now(), list: j.incidents.slice(0, 60).map(f => {
+        const g = f.geometry || {}, c = g.type === 'Point' ? [g.coordinates] : (g.coordinates || []), pr = f.properties || {};
+        return { src: 'TT', cat: pr.iconCategory, txt: ((pr.events && pr.events[0] && pr.events[0].description) || '').toUpperCase(), road: (pr.roadNumbers || [])[0] || '', delay: pr.delay || 0,
+          pts: [c[0], c[Math.floor(c.length / 2)], c[c.length - 1]].filter(Boolean).map(q => [q[1], q[0]]) };
+      }) }; rteSave();
+    }).catch(e => { delete RTE.evBusy.tt; E.tt = { t: now(), err: 'TOMTOM UNREACHABLE', list: [] }; });
+  }
+}
+function bfIngest(d) {
+  delete RTE.evBusy.bf;
+  RTE.ev.bf = d.ok ? { t: now(), list: (d.ev || []).map(e => Object.assign(e, { src: 'BF' })) } : { t: now(), err: 'BISON FUTE ' + String(d.err || 'ERROR').toUpperCase().slice(0, 30), list: [] };
+  rteSave();
+}
+const TT_CAT = { 0: 'INCIDENT', 1: 'ACCIDENT', 2: 'FOG', 3: 'DANGER', 4: 'RAIN', 5: 'ICE', 6: 'JAM', 7: 'LANE CLOSED', 8: 'ROAD CLOSED', 9: 'ROADWORKS', 10: 'WIND', 11: 'FLOODING', 14: 'BROKEN-DOWN VEHICLE' };
+function evLabel(e) {
+  if (e.src === 'TT') return TT_CAT[e.cat] || 'INCIDENT';
+  const s = (e.sub || '').toLowerCase(), ty = e.type || '';
+  if (/roadclosed|carriagewayclosures|closedpermanently/.test(s)) return 'ROAD CLOSED';
+  if (/lane/.test(s)) return 'LANE CLOSED';
+  if (ty === 'Accident') return 'ACCIDENT';
+  if (ty === 'MaintenanceWorks' || ty === 'ConstructionWorks') return 'ROADWORKS';
+  if (ty === 'ReroutingManagement') return s === 'donotuseexit' ? 'EXIT CLOSED' : 'DIVERSION';
+  if (ty === 'AbnormalTraffic') return 'JAM';
+  if (/Obstruction/.test(ty)) return 'OBSTACLE';
+  if (/Weather|PoorEnvironment/.test(ty)) return 'WEATHER';
+  if (/weight|height|width|length/.test(s)) return 'RESTRICTION';
+  return ty.replace(/([a-z])([A-Z])/g, '$1 $2').toUpperCase() || 'EVENT';
+}
+const evSevere = l => /ACCIDENT|ROAD CLOSED|EXIT CLOSED|FLOODING|ICE/.test(l);
+// évènements à moins de 250 m du tracé d'un sens, avec leur position (km depuis le départ)
+function evOnRoute(dir) {
+  const r = RTE.res[dir]; if (!r || !r.poly) return [];
+  const P = polyDecode(r.poly), km = [0]; for (let i = 1; i < P.length; i++) km.push(km[i - 1] + A.dist(P[i - 1][0], P[i - 1][1], P[i][0], P[i][1]));
+  const near = (la, lo) => {                                // distance (km) et km le long du tracé (projection sur les segments)
+    let best = 1e9, at = 0; const cl = Math.cos(la * RAD);
+    for (let i = 1; i < P.length; i++) {
+      const ax = (P[i - 1][1] - lo) * 111.32 * cl, ay = (P[i - 1][0] - la) * 111.32, bx = (P[i][1] - lo) * 111.32 * cl, by = (P[i][0] - la) * 111.32;
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy, u = L2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L2)) : 0;
+      const d = Math.hypot(ax + u * dx, ay + u * dy); if (d < best) { best = d; at = km[i - 1] + u * (km[i] - km[i - 1]); }
+    }
+    return [best, at];
+  };
+  const out = [];
+  for (const src of ['tt', 'bf']) for (const e of (RTE.ev[src] && RTE.ev[src].list) || []) {
+    let best = [1e9, 0]; for (const q of e.pts || []) { const n = near(q[0], q[1]); if (n[0] < best[0]) best = n; }
+    if (best[0] <= 0.25) { const lab = evLabel(e); out.push({ lab, km: best[1], road: e.road || '', txt: e.txt || '', src: e.src, severe: evSevere(lab), delay: e.delay || 0 }); }
+  }
+  // doublons (même type à moins de 500 m) : TomTom d'abord
+  return out.sort((a, b) => a.km - b.km).filter((e, i, a) => !a.slice(0, i).some(f => f.lab === e.lab && Math.abs(f.km - e.km) < 0.5));
+}
+// ---- veille du tarif Google (gratuité de « Compute Routes Pro »)
+function priceTick(force = false) {
+  if (!APK || !RTE.key) return;
+  const P = RTE.price; if (!force && now() - P.t < 7 * 86400) return;
+  P.t = now(); rteSave(); nativeCmd({ cmd: 'priceCheck' });
+}
+function priceIngest(d) {
+  const P = RTE.price, before = rteMonthCap();
+  if (d.ok && d.cap > 0) {
+    P.okT = now(); P.fails = 0; const was = P.cap; P.cap = d.cap; P.sku = d.sku || '';
+    if (d.cap < 5000 && was !== d.cap) { log('NAV', 'GOOGLE FREE CAP NOW ' + d.cap + ' · GRAFIT CAP ' + rteMonthCap() + ' / MONTH', true); haptic([120, 80, 120]); }
+    else if (was == null || was !== d.cap) log('NAV', 'GOOGLE FREE CAP CHECKED · ' + d.cap + ' / MONTH');
+  } else { P.fails = (P.fails || 0) + 1; log('NAV', 'GOOGLE PRICE CHECK FAILED · ' + String(d.err || 'NOT FOUND').toUpperCase().slice(0, 40), P.fails >= 2); }
+  if (rteMonthCap() < before) log('NAV', 'ROUTE MONTH CAP LOWERED · ' + before + ' → ' + rteMonthCap(), true);
+  rteSave();
+}
+function cmdPlace(app, arg) {
+  const a = String(arg || '').trim(), [w0, ...rest] = a.split(/\s+/), k = { HOME: 'home', MAISON: 'home', WORK: 'work', TRAVAIL: 'work' }[w0];
+  if (!k) return app && app.say('PLACE HOME|WORK [ADDRESS | LAT,LON] · NO ARGUMENT = WHERE YOU ARE', true);
+  const raw = (app && app.rawLine ? app.rawLine.replace(/^\S+\s+\S+\s*/, '') : rest.join(' ')).trim(), ll = raw.match(/^(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)$/);
+  if (ll) RTE[k] = { lat: +ll[1], lon: +ll[2] };
+  else if (raw) RTE[k] = { addr: raw };
+  else {
+    if (!(live('geo') && SRC.geo.mode === 'live') || SRC.geo.v.acc > 150) return app && app.say('PLACE ' + w0 + ' · NO PRECISE POSITION NOW · TYPE THE ADDRESS', true);
+    RTE[k] = { lat: +SRC.geo.v.lat.toFixed(5), lon: +SRC.geo.v.lon.toFixed(5) };
+  }
+  RTE.res = {}; RTE.ev = { bf: null, tt: null }; rteSave(); log('NAV', 'PLACE ' + k.toUpperCase() + ' SET');
+  app && app.say('PLACE ' + k.toUpperCase() + ' · ' + rtePlaceTxt(RTE[k]));
+}
+function cmdKey(app, field, label, re) {
+  const raw = app && app.rawLine ? app.rawLine.trim().split(/\s+/).slice(1).join('') : '';
+  if (/^OFF$/i.test(raw)) { RTE[field] = ''; rteSave(); return app && app.say(label + ' KEY REMOVED'); }
+  if (!re.test(raw)) return app && app.say(label + 'KEY <KEY> · ' + label + 'KEY OFF', true);
+  RTE[field] = raw; RTE.err = ''; rteSave(); log('NAV', label + ' KEY SET');
+  app && app.say(label + ' KEY SET · ' + raw.slice(0, 6) + '…'); if (field === 'key') priceTick(true);
+}
+function rteMaps(dir) {                                      // itinéraire dans Google Maps (guidage)
+  const [a, b] = RTE_DIR[dir], P = p => encodeURIComponent(p.addr || (p.lat + ',' + p.lon));
+  if (!RTE[a] || !RTE[b]) return false;
+  const url = 'https://www.google.com/maps/dir/?api=1&origin=' + P(RTE[a]) + '&destination=' + P(RTE[b]) + '&travelmode=driving';
+  if (!(APK && nativeCmd({ cmd: 'openUrl', url }))) window.open(url, '_blank');
+  return true;
+}
+PAGES.M76 = { code: 'M76', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAFFIC', 'TRAFIC', 'COMMUTE', 'TRAJET'], fps: 1, swap: false,
+  keys: [['1', 'REFRESH', app => { rteTick(true); evTick(true); app && app.say('ROUTE · UPDATING (' + rteQuota().day + ' / ' + ROUTE_DAY + ' TODAY)'); }, ['REFRESH', 'UPDATE']],
+    ['2', 'SWAP', app => { PAGES.M76.swap = !PAGES.M76.swap; app && app.say('ROUTE · ' + RTE_DIR[PAGES.M76.dir()][2] + ' FIRST'); }, ['SWAP', 'INVERT']],
+    ['3', 'MAPS', app => { const ok = rteMaps(PAGES.M76.dir()); app && app.say(ok ? 'OPENING GOOGLE MAPS' : 'SET HOME AND WORK FIRST', !ok); }, ['MAPS', 'GOOGLEMAPS', 'NAVIGATE']]],
+  cmds: [[['PLACE', 'LIEU'], (app, arg) => cmdPlace(app, arg), 'PLACE HOME|WORK [ADDRESS|LAT,LON]'],
+    [['ROUTEKEY'], app => cmdKey(app, 'key', 'ROUTE', /^[A-Za-z0-9_\-]{30,60}$/), 'ROUTEKEY <GOOGLE KEY>|OFF'],
+    [['INCIDENTKEY'], app => cmdKey(app, 'ttKey', 'INCIDENT', /^[A-Za-z0-9_\-]{20,64}$/), 'INCIDENTKEY <TOMTOM KEY>|OFF']],
+  dir() { const m = rteMain(); return this.swap ? (m === 'hw' ? 'wh' : 'hw') : m; },
+  draw(scr, r) {
+    const q = rteQuota(), ready = RTE.key && RTE.home && RTE.work;
+    if (ready) { rteTick(); evTick(); }
+    const capLow = q.cap < ROUTE_MONTH;
+    const ir = W.panel(scr, r, this.code, this.name, !RTE.key ? 'NO KEY' : (RTE.err ? 'ERROR' : (capLow ? 'CAP ' + q.cap + ' / MONTH' : 'GOOGLE · DRIVE')), RTE.err || capLow ? t.TR : (ready ? t.TD : t.TF));
+    let y = ir.y;
+    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    if (!ready) {
+      const L = [['SET UP', 'ONCE · GOOGLE CLOUD CONSOLE'], ['1 ▸', 'PROJECT + BILLING ACCOUNT'], ['2 ▸', 'ENABLE ONE API: ROUTES API'], ['3 ▸', 'QUOTAS · ROUTES API · PER DAY'], ['', '= 150 IF OFFERED (HARD STOP)'],
+        ['4 ▸', 'CREDENTIALS · API KEY · RESTRICT:'], ['', 'API: ROUTES API · APP: ANDROID'], ['', 'PKG fr.orbitalvkl.grafit'], ['', 'SHA-1 ' + (APPINFO.sha1 ? APPINFO.sha1.slice(0, 29) : 'SHOWN IN THE APK')], ...(APPINFO.sha1 ? [['', '      ' + APPINFO.sha1.slice(30)]] : []),
+        ['5 ▸', 'HERE: ROUTEKEY <KEY>' + (RTE.key ? ' ✓' : '')], ['6 ▸', 'PLACE HOME · PLACE WORK' + (RTE.home && RTE.work ? ' ✓' : '')], ['', 'ON SITE, OR WITH THE ADDRESS'],
+        ['7 ▸', 'OPTION: INCIDENTKEY <TOMTOM>' + (RTE.ttKey ? ' ✓' : '')], ['', ''], ['SAFETY', 'GRAFIT STOPS ITSELF'], ['', ROUTE_DAY + ' / DAY · ' + q.cap + ' / MONTH (FREE 5000)'], ['', 'GOOGLE PRICE WATCHED WEEKLY']];
+      for (const [k, v] of L) { if (y >= ir.b) break; if (!k && !v) { y++; continue; } if (k === 'SET UP' || k === 'SAFETY') { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; } scr.put(ir.x, y, k, t.B); scr.put(ir.x + 5, y++, clip(v, ir.w - 5), /[a-z]/.test(v) ? t.N : t.D); }
+      return;
+    }
+    const main = this.dir(), other = main === 'hw' ? 'wh' : 'hw';
+    // sens affiché : afficheur durée + voyant trafic
+    const rm = RTE.res[main], stm = rteState(rm), [hw, x2] = twoUp(ir);
+    sub(scr, ir.x, y++, ir.w, RTE_DIR[main][2], rm ? (rm.km != null ? rm.km.toFixed(1) + ' km' : '') + (rm.via ? ' · ' + rm.via.toUpperCase().slice(0, 14) : '') : (RTE.busy[main] ? 'UPDATING …' : ''), t.D);
+    W.readout(scr, ir.x, y, hw, 'NOW · TRAFFIC', rm ? String(Math.round(rm.dur / 60)) : '', 'MIN', t.N, false, true, 3);
+    W.tileGrid(scr, x2, y, 1, ir.r - x2 - 2, [['TRAFFIC', 'nom'], [stm || '—', stm ? RTE_LAMP[stm] : 'na']]);
+    y += 6;
+    if (rm) {
+      const dl = rm.stat ? rm.dur - rm.stat : null;
+      kv('NO TRAFFIC', minTxt(rm.stat) + (dl != null ? ' · ' + (dl >= 30 ? '+' + Math.round(dl / 60) + ' MIN (+' + Math.round(100 * dl / rm.stat) + ' %)' : 'NO DELAY') : ''), dl >= 300 ? t.B : t.N);
+      kv('LEAVE NOW → ARRIVE', hhmm(now() + rm.dur), t.B);
+      kv('UPDATED', hhmm(rm.t) + ' · ' + ageTxt(now() - rm.t) + ' AGO', now() - rm.t > 1800 ? t.F : t.D);
+    } else kv('STATUS', RTE.err || (RTE.busy[main] ? 'ASKING GOOGLE …' : 'WAITING'), RTE.err ? t.RB : t.F);
+    // évènements sur le trajet affiché
+    const ev = evOnRoute(main), srcs = [RTE.ev.bf && !RTE.ev.bf.err ? 'BISON FUTE' : null, RTE.ttKey ? (RTE.ev.tt && !RTE.ev.tt.err ? 'TOMTOM' : 'TOMTOM ?') : null].filter(Boolean).join(' · ');
+    y++; sub(scr, ir.x, y++, ir.w, 'ON THE ROUTE', srcs || (APK ? 'WAITING' : 'APK ONLY'), t.F);
+    if (!ev.length) kv('EVENTS', rm && rm.poly ? 'NONE REPORTED' : '—', t.D);
+    ev.slice(0, 3).forEach(e => { if (y >= ir.b) return; const st = e.severe ? t.RB : t.B;
+      scr.put(ir.x, y, ljust('KM ' + e.km.toFixed(1), 8), t.D); scr.put(ir.x + 8, y, e.lab, st);
+      W.rjust(scr, ir.r, y, clip([e.road, e.delay >= 60 ? '+' + Math.round(e.delay / 60) + ' MIN' : ''].filter(Boolean).join(' · ') || e.txt, Math.max(0, ir.w - 10 - slen(e.lab))), t.D); y++; });
+    if (ev.length > 3 && y < ir.b) scr.put(ir.x + 8, y++, '+ ' + (ev.length - 3) + ' MORE', t.F);
+    // l'autre sens, en deux lignes
+    y++;
+    const ro = RTE.res[other], sto = rteState(ro), evo = evOnRoute(other).filter(e => e.severe);
+    sub(scr, ir.x, y++, ir.w, RTE_DIR[other][2], ro && ro.km != null ? ro.km.toFixed(1) + ' km' : '', t.D);
+    kv('NOW', ro ? minTxt(ro.dur) + ' ' + sto + (ro.stat ? ' +' + Math.max(0, Math.round((ro.dur - ro.stat) / 60)) : '') + (evo.length ? ' · ' + evo[0].lab : '') : (RTE.busy[other] ? 'UPDATING …' : '—'), sto === 'JAMMED' || evo.length ? t.RB : (sto === 'HEAVY' ? t.B : t.N));
+    // la journée : durée du sens affiché à chaque mise à jour (05 h → 22 h), si la place le permet
+    const pts = (RTE.hist[ymdOf(now())] || []).filter(e => e[1] === main);
+    if (ir.b - y >= 9) {
+      y++;
+      const d0 = new Date(); d0.setHours(5, 0, 0, 0); const t0 = d0.getTime() / 1000, nb = 68, step = 900, vals = new Array(nb).fill(null);
+      pts.forEach(([ts, , dur]) => { const i = Math.floor((ts - t0) / step); if (i >= 0 && i < nb) vals[i] = dur / 60; });
+      const tEnd = t0 + nb * step, h = Math.min(8, ir.b - y - 2);
+      sub(scr, ir.x, y++, ir.w, 'TODAY · MIN', pts.length + ' UPDATES', t.F);
+      W.plot(scr, new Rect(ir.x, y, ir.w, h), [[vals, t.N]], { auto: true, minSpan: 10, step, fit: true, area: false, fmt: v => String(Math.round(v)), limits: [], tEnd, xfmt: sec => hhmm(tEnd - sec), marker: false });
+      y += h;
+    }
+    const P = RTE.price, pv = !APK ? '' : (P.cap != null ? ' · FREE ' + P.cap + (P.okT ? ' ✓' + pad2(new Date(P.okT * 1000).getDate()) + '/' + pad2(new Date(P.okT * 1000).getMonth() + 1) : '') : ' · PRICE ?');
+    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip('GOOGLE ' + q.day + '/' + ROUTE_DAY + ' · ' + q.month + '/' + q.cap + ' MONTH' + pv, ir.w), q.ok && !capLow ? t.F : t.RB);
+  } };
+const APPINFO = {};
+
 // ---------------------------------------------------------------------------------------- persistance
 // Ce qui doit survivre à la fermeture de l'App : historiques batterie et pression (avec trou marqué), dernière
 // météo (affichée « CACHED » jusqu'au prochain flux, 12 h au plus), dernier TLE, chrono et minuteur.
@@ -5318,7 +5590,7 @@ window.addEventListener('pagehide', persistSave);
 function boot() {
   loadSettings(); restoreTrend(); failRestore(); dayLoad(); agendaLoad(); persistLoad(); dayTick(true);
   if (APK) setTimeout(() => bgRequest(true), 300);
-  if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); setTimeout(() => bgCfgTick(true), 4000); setTimeout(() => widgetTick(true), 9000); }
+  if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); setTimeout(() => bgCfgTick(true), 4000); setTimeout(() => widgetTick(true), 9000); nativeCmd({ cmd: 'appInfo' }); }
   APP = new App();
   log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
   R.measure(); relayout();
