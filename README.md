@@ -117,3 +117,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
 - **Éclairage rouge** : en AUTO, seulement dans le noir d'après le capteur de lumière (plus jamais d'après l'heure) :
   rouge sous 3 lx pendant 20 s, normal au-dessus de 15 lx pendant 20 s. `NIGHT LUX n` règle le seuil.
 
+## 1.11.4
+
+- **8.3 AUDIO** : `*1` arme bien le micro (la bascule était inversée) ; refus d'Android → permission redemandée ;
+  le micro est relâché dès que Grafit passe en arrière-plan.
+- **Lien S-16** : `tools/s16-link-install.cmd` (double-clic) installe la diffusion en arrière-plan, cachée, tout de
+  suite et à chaque ouverture de session (tâche planifiée, ou raccourci du dossier Démarrage si la tâche est refusée).
+  `s16-link.ps1 -Status` dit si elle tourne ; une seule instance à la fois.
+

@@ -12,33 +12,65 @@
   Température CPU : lue dans HWiNFO si « Report value in Gadget » est coché pour la ligne CPU (Tctl/Tdie ou Package) ;
   sinon absente. GPU : nvidia-smi (pilote NVIDIA).
 
-  Utilisation (PowerShell) :
-    .\s16-link.ps1              lance la diffusion dans cette fenêtre (Ctrl+C pour arrêter)
-    .\s16-link.ps1 -Install     démarrage automatique à l'ouverture de session (tâche planifiée, fenêtre cachée)
-    .\s16-link.ps1 -Uninstall   retire la tâche planifiée
+  Installation (une fois) : double-clic sur s16-link-install.cmd, posé à côté de ce script. Ou en PowerShell :
+    .\s16-link.ps1 -Install     tourne en arrière-plan, caché, tout de suite et à chaque ouverture de session
+                                (tâche planifiée ; à défaut, raccourci dans le dossier Démarrage)
+    .\s16-link.ps1 -Status      dit si le lien tourne et s'il démarrera avec Windows
+    .\s16-link.ps1 -Uninstall   arrête le lien et retire le démarrage automatique
     .\s16-link.ps1 -Test        affiche un paquet d'état et les adresses de diffusion, sans rien envoyer
+    .\s16-link.ps1              diffusion dans cette fenêtre (s'arrête quand on la ferme)
 
   Si PowerShell refuse le script (stratégie d'exécution, fichier téléchargé) :
     Unblock-File .\s16-link.ps1
     powershell -ExecutionPolicy Bypass -File .\s16-link.ps1 -Install
 #>
-param([switch]$Install, [switch]$Uninstall, [switch]$Test, [int]$Port = 47616, [int]$Every = 5)
+param([switch]$Install, [switch]$Uninstall, [switch]$Status, [switch]$Test, [int]$Port = 47616, [int]$Every = 5)
 
 $TaskName = 'Grafit S-16 link'
+$ps = (Get-Command powershell.exe).Source
+$hiddenArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+$startLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Grafit S-16 link.lnk'
+# instances en arrière-plan de ce script (hors la fenêtre courante)
+function Get-LinkProcs {
+  @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*s16-link.ps1*' -and $_.CommandLine -notmatch '-(Install|Uninstall|Status|Test)\b' })
+}
+function Show-Status {
+  $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  $n = (Get-LinkProcs).Count
+  Write-Host ('Lien S-16 en cours        : ' + $(if ($n) { "OUI ($n processus)" } else { 'NON' }))
+  Write-Host ('Démarrage avec Windows    : ' + $(if ($t) { 'tâche planifiée « ' + $TaskName + ' » (' + $t.State + ')' } elseif (Test-Path $startLnk) { 'raccourci du dossier Démarrage' } else { 'NON' }))
+  Write-Host ('Script                    : ' + $PSCommandPath)
+}
+if ($Status) { Show-Status; return }
 if ($Install) {
-  $ps = (Get-Command powershell.exe).Source
-  $act = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
-  $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-  $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
-  Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger $trg -Settings $set -Description 'Diffuse l''état du S-16 vers Grafit Mobile sur le réseau local (UDP 47616).' -Force | Out-Null
-  Start-ScheduledTask -TaskName $TaskName
-  Write-Host "Tâche « $TaskName » installée et lancée."
+  Unblock-File -Path $PSCommandPath -ErrorAction SilentlyContinue
+  $how = $null
+  try {
+    $act = New-ScheduledTaskAction -Execute $ps -Argument $hiddenArgs
+    $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger $trg -Settings $set -Description 'Diffuse l''état du S-16 vers Grafit Mobile sur le réseau local (UDP 47616).' -Force -ErrorAction Stop | Out-Null
+    $how = 'tâche planifiée « ' + $TaskName + ' »'
+  } catch {
+    # sans droits suffisants pour la tâche : raccourci caché dans le dossier Démarrage de la session
+    $sh = New-Object -ComObject WScript.Shell; $l = $sh.CreateShortcut($startLnk)
+    $l.TargetPath = $ps; $l.Arguments = $hiddenArgs; $l.WindowStyle = 7; $l.WorkingDirectory = Split-Path $PSCommandPath; $l.Save()
+    $how = 'raccourci du dossier Démarrage'
+  }
+  if (-not (Get-LinkProcs).Count) { Start-Process -FilePath $ps -ArgumentList $hiddenArgs -WindowStyle Hidden }
+  Start-Sleep -Seconds 2
+  Write-Host "Lien S-16 installé ($how) : il tourne caché et redémarre à chaque ouverture de session."
+  Write-Host 'Cette fenêtre peut être fermée.'
+  Show-Status
   return
 }
 if ($Uninstall) {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-  Write-Host "Tâche « $TaskName » retirée."
+  Remove-Item $startLnk -ErrorAction SilentlyContinue
+  Get-LinkProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Write-Host 'Lien S-16 arrêté et retiré du démarrage.'
   return
 }
 
@@ -111,6 +143,11 @@ if ($Test) {
   if ($null -eq (Get-CpuTemp)) { Write-Host 'CPU °C absent : HWiNFO64 > Sensors > ligne CPU (Tctl/Tdie ou Package) > clic droit > Report value in Gadget.' }
   return
 }
+
+# une seule diffusion à la fois (tâche planifiée + lancement à la main)
+$mutex = New-Object Threading.Mutex($false, 'Local\GrafitS16Link')
+$own = $false; try { $own = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $own = $true }
+if (-not $own) { Write-Host 'Le lien S-16 tourne déjà en arrière-plan.'; return }
 
 $udp = New-Object Net.Sockets.UdpClient
 $udp.EnableBroadcast = $true

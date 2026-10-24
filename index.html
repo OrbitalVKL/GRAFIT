@@ -921,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.3', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.4', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1218,20 +1218,29 @@ function armSensorsGesture() {
 
 // micro : niveau en dBFS (non étalonné)
 let MIC = null;
+const MICR = { refused: false, busy: false };
+const micOn = () => !!MIC || MICR.busy;                       // armé (ou demande d'accès en cours)
 async function micArm(on) {
   if (!on) {
     if (MIC) { MIC.stream.getTracks().forEach(tr => tr.stop()); try { MIC.ctx.close(); } catch (e) { /* */ } MIC = null; }
     SRC.mic.mode = 'off'; log('AUD', 'MIC DISARMED'); return;
   }
-  SRC.mic.mode = 'wait'; SRC.mic.armed = now();
+  if (MIC || MICR.busy) return;
+  SRC.mic.mode = 'wait'; SRC.mic.armed = now(); MICR.busy = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     const ctx = new (window.AudioContext || window.webkitAudioContext)(), an = ctx.createAnalyser();
+    try { await ctx.resume(); } catch (e) { /* */ }
     an.fftSize = 2048; ctx.createMediaStreamSource(stream).connect(an);
-    MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize) };
+    MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize) }; MICR.refused = false;
     log('AUD', 'MIC ARMED');
-  } catch (e) { log('AUD', 'MIC REFUSED · ' + (e.name || 'ERROR'), true); }
+  } catch (e) {
+    MICR.refused = true; SRC.mic.mode = 'off';
+    log('AUD', 'MIC REFUSED · ' + (e.name || 'ERROR') + (APK ? ' · ANDROID PERMISSION REQUESTED' : ''), true);
+    if (APK) nativeCmd({ cmd: 'perms' });                    // la permission Android du micro manque : on la redemande
+  } finally { MICR.busy = false; }
 }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && MIC) micArm(false); });   // jamais en arrière-plan
 function micPoll() {
   if (!MIC) return;
   MIC.an.getFloatTimeDomainData(MIC.buf);
@@ -2338,13 +2347,13 @@ PAGES.M82 = { code: 'M82', name: 'LEVEL', ru: 'УРОВЕНЬ', words: ['LEVEL',
 
 // ------------------------------------------------------------------ M83 AUDIO
 PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
-  keys: [['1', 'ARM MIC', (app, arg) => micArm(onOff(arg, SRC.mic.mode === 'off')), ['MIC', 'ARMMIC'], 'MIC [ON|OFF]']],
+  keys: [['1', 'ARM MIC', (app, arg) => { const on = onOff(arg, micOn()); micArm(on); app && app.say(on ? 'MIC · ARMING (ALLOW THE MICROPHONE IF ASKED)' : 'MIC · DISARMED'); }, ['MIC', 'ARMMIC'], 'MIC [ON|OFF]']],
   draw(scr, r) {
-    this.keys[0][1] = SRC.mic.mode === 'off' ? 'ARM MIC' : 'DISARM MIC';
+    this.keys[0][1] = micOn() ? 'DISARM MIC' : 'ARM MIC';
     const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
     let y = ir.y;
     if (!live('mic')) {
-      actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', SRC.mic.mode === 'off' ? 'DISARMED · ARM' : 'PERMISSION PENDING', SRC.mic.mode === 'off' ? t.N : t.B);
+      actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', MICR.refused && !micOn() ? 'REFUSED · ALLOW IN ANDROID · *1' : (micOn() ? 'PERMISSION PENDING' : 'DISARMED · ARM'), MICR.refused && !micOn() ? t.RB : (micOn() ? t.B : t.N));
       y++;
       ['LEVEL ONLY · NOTHING RECORDED OR SENT.', 'OFF UNTIL ARMED · RELEASED WHEN', 'GRAFIT GOES TO THE BACKGROUND.'].forEach(l => scr.put(ir.x, y++, clip(l, ir.w), t.F));
       return;
@@ -5183,8 +5192,8 @@ PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
     let y = ir.y;
     const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
     if (!o) {
-      const L = [['SET UP', 'ONCE, ON THE S-16'], ['1 ▸', 'COPY tools/s16-link.ps1 (GRAFIT REPO)'], ['2 ▸', 'POWERSHELL IN ITS FOLDER :'], ['', 'Unblock-File .\\s16-link.ps1'],
-        ['', 'powershell -ExecutionPolicy Bypass'], ['', '  -File .\\s16-link.ps1 -Install'], ['', 'STARTS AT EACH LOGON, HIDDEN'], ['', 'CHECK FIRST: .\\s16-link.ps1 -Test'], ['3 ▸', 'CPU °C : HWINFO64 · SENSORS · CPU'],
+      const L = [['SET UP', 'ONCE, ON THE S-16'], ['1 ▸', 'COPY s16-link.ps1 + s16-link-install.cmd'], ['', 'TO ONE FOLDER (E.G. C:\\Grafit)'], ['2 ▸', 'DOUBLE-CLICK s16-link-install.cmd'],
+        ['', 'RUNS HIDDEN IN THE BACKGROUND, NOW'], ['', 'AND AT EACH LOGON · WINDOW CAN CLOSE'], ['', 'CHECK: s16-link.ps1 -Status'], ['3 ▸', 'CPU °C : HWINFO64 · SENSORS · CPU'],
         ['', 'TCTL/TDIE · REPORT VALUE IN GADGET'], ['4 ▸', 'PHONE ON THE SAME WI-FI, GRAFIT OPEN'], ['', ''], ['PRIVACY', 'UDP 47616 · LOCAL BROADCAST ONLY'], ['', 'NOTHING SENT TO INTERNET'], ['', 'NO PORT OPENED ON THE PC']];
       for (const [k, v] of L) { if (y >= ir.b) break; if (k === 'SET UP' || k === 'PRIVACY') { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; } scr.put(ir.x, y, k, t.B); scr.put(ir.x + 5, y++, clip(v, ir.w - 5), /^[A-Z0-9 ·:,()'\/−–-]+$/.test(v) ? t.D : t.N); }
       return;
