@@ -120,8 +120,12 @@ public class MainActivity extends Activity {
             @Override
             public void onPermissionRequest(PermissionRequest req) {
                 runOnUiThread(() -> {
-                    boolean ok = HOST.equals(req.getOrigin().getHost()) && has(Manifest.permission.RECORD_AUDIO);
+                    boolean ok = HOST.equals(req.getOrigin().getHost());
                     for (String r : req.getResources()) if (!PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) ok = false;
+                    if (ok && !has(Manifest.permission.RECORD_AUDIO)) {          // micro pas encore permis par Android : on le demande
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_PERMS);
+                        ok = false;
+                    }
                     if (ok) req.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE}); else req.deny();
                 });
             }

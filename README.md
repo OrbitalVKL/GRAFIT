@@ -125,3 +125,9 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   suite et à chaque ouverture de session (tâche planifiée, ou raccourci du dossier Démarrage si la tâche est refusée).
   `s16-link.ps1 -Status` dit si elle tourne ; une seule instance à la fois.
 
+## 1.11.5
+
+- **Micro** : permission `MODIFY_AUDIO_SETTINGS` ajoutée (la WebView d'Android ne démarre pas la capture audio sans
+  elle, même micro autorisé) ; la permission du micro est demandée par Android seulement si elle manque ; contexte
+  audio créé au moment de l'appui ; en cas d'échec, 8.3 affiche la raison (FEED AUD).
+

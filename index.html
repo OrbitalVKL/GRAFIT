@@ -921,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.4', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.5', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1226,18 +1226,22 @@ async function micArm(on) {
     SRC.mic.mode = 'off'; log('AUD', 'MIC DISARMED'); return;
   }
   if (MIC || MICR.busy) return;
-  SRC.mic.mode = 'wait'; SRC.mic.armed = now(); MICR.busy = true;
+  SRC.mic.mode = 'wait'; SRC.mic.armed = now(); MICR.busy = true; MICR.err = '';
+  // contexte audio créé tout de suite, dans le geste de l'utilisateur (sinon il peut rester suspendu, niveau muet)
+  let ctx = null;
+  try { ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.resume().catch(() => {}); } catch (e) { /* */ }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-    const ctx = new (window.AudioContext || window.webkitAudioContext)(), an = ctx.createAnalyser();
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
     try { await ctx.resume(); } catch (e) { /* */ }
-    an.fftSize = 2048; ctx.createMediaStreamSource(stream).connect(an);
+    const an = ctx.createAnalyser(), mute = ctx.createGain(); an.fftSize = 2048; mute.gain.value = 0;
+    ctx.createMediaStreamSource(stream).connect(an); an.connect(mute); mute.connect(ctx.destination);   // graphe tiré, rien d'audible
     MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize) }; MICR.refused = false;
     log('AUD', 'MIC ARMED');
   } catch (e) {
-    MICR.refused = true; SRC.mic.mode = 'off';
-    log('AUD', 'MIC REFUSED · ' + (e.name || 'ERROR') + (APK ? ' · ANDROID PERMISSION REQUESTED' : ''), true);
-    if (APK) nativeCmd({ cmd: 'perms' });                    // la permission Android du micro manque : on la redemande
+    try { ctx && ctx.close(); } catch (x) { /* */ }
+    MICR.refused = true; MICR.err = String(e.name || 'ERROR').replace(/Error$/, '').toUpperCase(); SRC.mic.mode = 'off';
+    log('AUD', 'MIC REFUSED · ' + MICR.err + (e.message ? ' · ' + String(e.message).toUpperCase().slice(0, 60) : ''), true);
   } finally { MICR.busy = false; }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && MIC) micArm(false); });   // jamais en arrière-plan
@@ -2353,7 +2357,7 @@ PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC'
     const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
     let y = ir.y;
     if (!live('mic')) {
-      actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', MICR.refused && !micOn() ? 'REFUSED · ALLOW IN ANDROID · *1' : (micOn() ? 'PERMISSION PENDING' : 'DISARMED · ARM'), MICR.refused && !micOn() ? t.RB : (micOn() ? t.B : t.N));
+      actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', MICR.refused && !micOn() ? 'FAILED · ' + (MICR.err || '?') + ' · *1' : (micOn() ? 'PERMISSION PENDING' : 'DISARMED · ARM'), MICR.refused && !micOn() ? t.RB : (micOn() ? t.B : t.N));
       y++;
       ['LEVEL ONLY · NOTHING RECORDED OR SENT.', 'OFF UNTIL ARMED · RELEASED WHEN', 'GRAFIT GOES TO THE BACKGROUND.'].forEach(l => scr.put(ir.x, y++, clip(l, ir.w), t.F));
       return;
