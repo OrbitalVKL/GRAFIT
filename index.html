@@ -921,7 +921,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.11.5', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.11.6', BUILD: '20261024', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -945,7 +945,7 @@ const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', micUnit: 'DBA', micCal: null, vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() {
   try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ }
   if (SET.zoomV !== 2) { SET.scale = 1; SET.zoomV = 2; saveSettings(); }     // 1.11.2 : sens du zoom inversé (+ = plus grand) → retour à 100 %
@@ -1078,7 +1078,7 @@ const SOURCES = [
 ];
 SOURCES.forEach(([k]) => { SRC[k] = { mode: 'wait', v: {}, t: 0, armed: now(), liveT: 0 }; });
 SRC.mic.mode = 'off';
-const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(1440, 60), chg: new Hist(1440, 60), act: new Hist(1440, 60), bt: new Hist(1440, 60), sig: new Hist(1440, 60), mic: new Hist(400, 0.25), acc: new Hist(300, 5) };
+const HIST = { g: new Hist(400, 0.25), batt: new Hist(1440, 60), press: new Hist(1440, 60), rtt: new Hist(1440, 60), chg: new Hist(1440, 60), act: new Hist(1440, 60), bt: new Hist(1440, 60), sig: new Hist(1440, 60), mic: new Hist(400, 0.25), micA: new Hist(400, 0.25), acc: new Hist(300, 5) };
 
 function feedLive(k, v) {
   const s = SRC[k];
@@ -1236,7 +1236,11 @@ async function micArm(on) {
     try { await ctx.resume(); } catch (e) { /* */ }
     const an = ctx.createAnalyser(), mute = ctx.createGain(); an.fftSize = 2048; mute.gain.value = 0;
     ctx.createMediaStreamSource(stream).connect(an); an.connect(mute); mute.connect(ctx.destination);   // graphe tiré, rien d'audible
-    MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize) }; MICR.refused = false;
+    // pondération A par case de fréquence (CEI 61672) : niveau dB(A) = niveau + correction mesurée sur le spectre
+    const wA = new Float32Array(an.frequencyBinCount);
+    for (let i = 1; i < wA.length; i++) { const f = i * ctx.sampleRate / an.fftSize, f2 = f * f;
+      const ra = 12194 ** 2 * f2 * f2 / ((f2 + 20.6 ** 2) * Math.sqrt((f2 + 107.7 ** 2) * (f2 + 737.9 ** 2)) * (f2 + 12194 ** 2)); wA[i] = ra * ra * Math.pow(10, 0.2); }
+    MIC = { stream, ctx, an, buf: new Float32Array(an.fftSize), fbuf: new Float32Array(an.frequencyBinCount), wA, ms: null, msA: null, t: 0, max: -Infinity, maxA: -Infinity }; MICR.refused = false;
     log('AUD', 'MIC ARMED');
   } catch (e) {
     try { ctx && ctx.close(); } catch (x) { /* */ }
@@ -1245,11 +1249,38 @@ async function micArm(on) {
   } finally { MICR.busy = false; }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && MIC) micArm(false); });   // jamais en arrière-plan
+// niveau : moyenne quadratique de la fenêtre (43 ms), pondération temporelle FAST (125 ms) ; dBFS non pondéré et
+// pondéré A (correction tirée du spectre de la même fenêtre). dB / dB(A) = dBFS + étalonnage (MIC_CAL0 par défaut).
 function micPoll() {
   if (!MIC) return;
-  MIC.an.getFloatTimeDomainData(MIC.buf);
-  let s = 0; for (const v of MIC.buf) s += v * v;
-  feedLive('mic', { db: Math.max(-90, 10 * Math.log10(s / MIC.buf.length + 1e-12)) });
+  const M = MIC; M.an.getFloatTimeDomainData(M.buf); M.an.getFloatFrequencyData(M.fbuf);
+  let s = 0; for (const v of M.buf) s += v * v; const ms = s / M.buf.length;
+  let pw = 0, pa = 0; for (let i = 1; i < M.fbuf.length; i++) { const v = M.fbuf[i]; if (v > -200) { const p = Math.pow(10, v / 10); pw += p; pa += p * M.wA[i]; } }
+  const corr = pw > 0 && pa > 0 ? pa / pw : 1, T = performance.now() / 1000, k = M.t ? 1 - Math.exp(-(T - M.t) / 0.125) : 1; M.t = T;
+  M.ms = M.ms == null ? ms : M.ms + (ms - M.ms) * k; M.msA = M.msA == null ? ms * corr : M.msA + (ms * corr - M.msA) * k;
+  const db = Math.max(-90, 10 * Math.log10(M.ms + 1e-12)), dba = Math.max(-90, 10 * Math.log10(M.msA + 1e-12));
+  M.max = Math.max(M.max, db); M.maxA = Math.max(M.maxA, dba);
+  feedLive('mic', { db, dba });
+}
+// unités : DBFS (pleine échelle numérique, brut), DB (niveau sonore estimé, dB SPL), DBA (pondéré A, comme un sonomètre)
+const MIC_CAL0 = 100, MIC_UNITS = ['DBA', 'DB', 'DBFS'], MIC_LAB = { DB: 'dB', DBA: 'dB(A)', DBFS: 'dBFS' };
+const micCal = () => SET.micCal != null ? +SET.micCal : MIC_CAL0;
+const micU = () => MIC_UNITS.includes(SET.micUnit) ? SET.micUnit : 'DBA';
+const micVal = (db, dba, u = micU()) => db == null ? null : (u === 'DBFS' ? db : (u === 'DBA' ? (dba != null ? dba : db) : db) + micCal());
+function micLeq(n = 40, u = micU()) {                        // niveau équivalent (énergie) sur les n derniers relevés (0,25 s)
+  const a = HIST.mic.v.slice(-n), b = HIST.micA.v.slice(-n), v = []; a.forEach((x, i) => { const y = micVal(x, b[i], u); if (y != null) v.push(y); });
+  return v.length ? 10 * Math.log10(v.reduce((q, y) => q + Math.pow(10, y / 10), 0) / v.length) : null;
+}
+function cmdMicCal(app, arg) {
+  const a = String(arg || '').trim();
+  if (a === 'RESET' || a === 'DEFAULT') { SET.micCal = null; saveSettings(); return app && app.say('MIC CAL RESET · +' + MIC_CAL0 + ' dB (UNCALIBRATED)'); }
+  const v = parseFloat(a.replace(',', '.'));
+  if (!(v >= 20 && v <= 130)) return app && app.say('CAL <dB> : TYPE WHAT A REFERENCE METER READS (20…130) · CAL RESET', true);
+  if (!live('mic') || SRC.mic.mode !== 'live') return app && app.say('CAL · ARM THE MIC FIRST [*1]', true);
+  const u = micU() === 'DBA' ? 'DBA' : 'DB', cur = micLeq(12, 'DBFS'), curA = (() => { const b = HIST.micA.v.slice(-12).filter(x => x != null); return b.length ? 10 * Math.log10(b.reduce((q, y) => q + Math.pow(10, y / 10), 0) / b.length) : null; })();
+  const base = u === 'DBA' ? curA : cur; if (base == null) return app && app.say('CAL · NO LEVEL YET', true);
+  SET.micCal = Math.round((v - base) * 10) / 10; saveSettings(); log('AUD', 'MIC CALIBRATED · ' + v + ' ' + MIC_LAB[u] + ' · OFFSET +' + SET.micCal + ' dB');
+  app && app.say('MIC CAL · NOW ' + v + ' ' + MIC_LAB[u] + ' · OFFSET +' + SET.micCal + ' dB');
 }
 
 // ---------------------------------------------------------------------------------------- flux réseau
@@ -1892,7 +1923,8 @@ PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW
     const g = gLoad(), mic = SRC.mic.v, n = SRC.net.v, pr = pressure(), at = attitude();
     row('BATT', live('batt') ? b.level : null, live('batt') ? Math.round(b.level * 100) + ' %' + (b.charging ? ' ↑' : ' ↓') : tagx('batt'));
     row('G', g != null ? g / 5 : null, g != null ? g.toFixed(2) + ' g' : tagx('motion'), g != null && g >= AL.GLoadCaut);
-    row('NOISE', live('mic') ? (mic.db + 60) / 60 : null, live('mic') ? mic.db.toFixed(0) + ' dB' : 'MIC ' + tag('mic'));
+    { const u = micU(), mv = live('mic') ? micVal(mic.db, mic.dba) : null, sp = u !== 'DBFS';
+      row('NOISE', mv != null ? (sp ? (mv - 30) / 80 : (mv + 60) / 60) : null, mv != null ? mv.toFixed(0) + ' ' + MIC_LAB[u] : 'MIC ' + tag('mic'), mv != null && (sp ? mv >= 85 : mv >= AL.NoiseCaut)); }
     if (y < lim) { const rt = netRtt(); W.kv(scr, ir.x, y++, ir.w, 'NET', live('net') ? (n.online ? netBearer().split(' · ').slice(0, 2).join(' · ') + ' · ' + fmtMs(rt) : 'OFFLINE') : tagx('net'), t.D, NETP.fails >= 3 || (live('net') && !n.online) ? t.RB : t.N); }
     if (y < lim) { const g2 = SRC.geo.v; W.kv(scr, ir.x, y++, ir.w, 'GNSS', live('geo') ? fmtLL(g2.lat, g2.lon) + ' ±' + Math.round(g2.acc) + ' m' : tagx('geo')); }
     if (y < lim) W.kv(scr, ir.x, y++, ir.w, 'QNH', pr ? pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level] : 'NO SOURCE', t.D, trendStyle());
@@ -2350,26 +2382,44 @@ PAGES.M82 = { code: 'M82', name: 'LEVEL', ru: 'УРОВЕНЬ', words: ['LEVEL',
   } };
 
 // ------------------------------------------------------------------ M83 AUDIO
-PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU'], fps: 8,
-  keys: [['1', 'ARM MIC', (app, arg) => { const on = onOff(arg, micOn()); micArm(on); app && app.say(on ? 'MIC · ARMING (ALLOW THE MICROPHONE IF ASKED)' : 'MIC · DISARMED'); }, ['MIC', 'ARMMIC'], 'MIC [ON|OFF]']],
+PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC', 'NOISE', 'VU', 'SONO'], fps: 8,
+  keys: [['1', 'ARM MIC', (app, arg) => { const on = onOff(arg, micOn()); micArm(on); app && app.say(on ? 'MIC · ARMING (ALLOW THE MICROPHONE IF ASKED)' : 'MIC · DISARMED'); }, ['MIC', 'ARMMIC'], 'MIC [ON|OFF]'],
+    ['2', 'UNIT', (app, arg, wd) => { const w = MIC_UNITS.includes(wd) ? wd : (MIC_UNITS.includes(App.norm(arg || '')) ? App.norm(arg) : MIC_UNITS[(MIC_UNITS.indexOf(micU()) + 1) % MIC_UNITS.length]);
+      SET.micUnit = w; saveSettings(); app && app.say('AUDIO UNIT · ' + MIC_LAB[w] + ({ DB: ' · SOUND LEVEL (SPL)', DBA: ' · A-WEIGHTED, LIKE A SOUND METER', DBFS: ' · DIGITAL FULL SCALE (RAW)' })[w]); }, ['UNIT', 'DB', 'DBA', 'DBFS'], 'UNIT [DB|DBA|DBFS]'],
+    ['3', 'CAL', (app, arg) => cmdMicCal(app, arg), ['CAL', 'CALIBRATE'], 'CAL <dB READ ON A METER> | CAL RESET'],
+    ['4', 'MAX RST', () => { if (MIC) { MIC.max = -Infinity; MIC.maxA = -Infinity; } }, ['MAXRESET', 'RESETMAX']]],
   draw(scr, r) {
     this.keys[0][1] = micOn() ? 'DISARM MIC' : 'ARM MIC';
-    const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic'), srcStyle('mic'));
+    const u = micU(), lab = MIC_LAB[u], sp = u !== 'DBFS';
+    const ir = W.panel(scr, r, this.code, this.name, 'MIC ' + tag('mic') + ' · ' + lab, srcStyle('mic'));
     let y = ir.y;
     if (!live('mic')) {
       actRow(scr, ir.x, y++, ir.w, '*1', 'MICROPHONE', MICR.refused && !micOn() ? 'FAILED · ' + (MICR.err || '?') + ' · *1' : (micOn() ? 'PERMISSION PENDING' : 'DISARMED · ARM'), MICR.refused && !micOn() ? t.RB : (micOn() ? t.B : t.N));
+      actRow(scr, ir.x, y++, ir.w, '*2', 'UNIT', lab, t.N);
       y++;
       ['LEVEL ONLY · NOTHING RECORDED OR SENT.', 'OFF UNTIL ARMED · RELEASED WHEN', 'GRAFIT GOES TO THE BACKGROUND.'].forEach(l => scr.put(ir.x, y++, clip(l, ir.w), t.F));
       return;
     }
-    const d = SRC.mic.v.db, caut = d >= AL.NoiseCaut;
-    W.readout(scr, ir.x, y, Math.min(ir.w, 28), 'LEVEL', d.toFixed(1), 'dBFS', t.N, caut, true, 4, 4);
+    const m = SRC.mic.v, v = micVal(m.db, m.dba), lo = sp ? 30 : -60, hi = sp ? 110 : 0, lim = sp ? 85 : AL.NoiseCaut, caut = v >= lim, fr = x => (x - lo) / (hi - lo);
+    W.readout(scr, ir.x, y, Math.min(ir.w, 30), 'LEVEL · FAST', v.toFixed(1), lab, t.N, caut, true, 4, 5);
     y += 6;
-    W.hbar(scr, ir.x, y, ir.w, (d + 60) / 60, caut, [(AL.NoiseCaut + 60) / 60], 6); y += 3;
-    scr.put(ir.x, y, '−60', t.F); W.rjust(scr, ir.r, y, '0 dBFS', t.F); scr.put(ir.x + Math.round((AL.NoiseCaut + 60) / 60 * ir.w) - 2, y, String(AL.NoiseCaut), caut ? t.R : t.RZ); y += 2;
+    W.hbar(scr, ir.x, y, ir.w, fr(v), caut, [fr(lim)], 4); y += 3;
+    const gx = f => ir.x + 1 + Math.round(f * (ir.w - 2));
+    scr.put(ir.x, y, String(lo), t.F); W.rjust(scr, ir.r, y, hi + ' ' + lab, t.F);
+    const ll = sp ? lim + ' HEARING' : lim + ' CLIP'; scr.put(Math.min(ir.r - slen(ll) - slen(hi + ' ' + lab) - 1, gx(fr(lim)) - 1), y, ll, caut ? t.R : t.RZ); y += 2;
+    const kv = (k, val, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, val, t.D, st); };
+    const leq = micLeq(40), mx = MIC ? micVal(MIC.max, MIC.maxA) : null;
+    kv('LEQ 10 s · MAX [*4]', (leq != null ? leq.toFixed(1) : '—') + ' · ' + (mx != null && isFinite(mx) ? mx.toFixed(1) : '—') + ' ' + lab);
+    if (u !== 'DBFS') kv('DBFS · RAW', m.db.toFixed(1) + ' dBFS');
+    kv('UNIT [*2]', lab + ({ DB: ' · SOUND LEVEL, UNWEIGHTED', DBA: ' · NOISE, AS A SOUND METER', DBFS: ' · DIGITAL SCALE' })[u]);
+    if (sp) kv('SCALE', '30 CALM · 60 TALK · 80 STREET', t.F);
+    kv('CAL [*3]', sp ? (SET.micCal != null ? '+' + micCal() + ' dB · CALIBRATED' : '+' + MIC_CAL0 + ' dB · ESTIMATE ±10 dB') : 'NONE (RAW)', SET.micCal != null || !sp ? t.N : t.F);
     if (ir.b - y >= 7) {
-      sub(scr, ir.x, y++, ir.w, 'LEVEL · LIVE 10 s', 'MIC NEVER LOGGED', t.F);
-      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[HIST.mic.v, t.N]], { vmin: -60, vmax: 0, step: 0.25, fmt: v => String(Math.round(v)), yticks: [-60, -45, -30, -15, 0], limits: [[AL.NoiseCaut, 0, 'CAUT']] });
+      y++;
+      sub(scr, ir.x, y++, ir.w, lab + ' · LIVE', 'MIC NEVER LOGGED', t.F);
+      const vals = HIST.mic.v.map((x, i) => micVal(x, HIST.micA.v[i]));
+      W.plot(scr, new Rect(ir.x, y, ir.w, ir.b - y), [[vals, t.N]], { vmin: lo, vmax: hi, step: 0.25, fmt: x => String(Math.round(x)),
+        yticks: sp ? [30, 50, 70, 90, 110] : [-60, -45, -30, -15, 0], limits: [[lim, 0, sp ? 'EAR' : 'CLIP']] });
     }
   } };
 
@@ -4795,7 +4845,7 @@ function fastTick() {                                   // 10 Hz : capteurs rapi
   micPoll(); simTick(); gravityUp();
   const g = gLoad(), T = now();
   if (g != null) { HIST.g.push(g); if (g > (T - DER.gPeakT < AL.GLatchSecs ? DER.gPeak : 0)) { DER.gPeak = g; DER.gPeakT = T; } }
-  if (live('mic')) HIST.mic.push(SRC.mic.v.db);
+  if (live('mic')) { HIST.mic.push(SRC.mic.v.db); HIST.micA.push(SRC.mic.v.dba != null ? SRC.mic.v.dba : SRC.mic.v.db); }
   chrTick();
 }
 function slowTick() {                                   // 1 Hz : alarmes, tendance, historiques

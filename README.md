@@ -131,3 +131,10 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   elle, même micro autorisé) ; la permission du micro est demandée par Android seulement si elle manque ; contexte
   audio créé au moment de l'appui ; en cas d'échec, 8.3 affiche la raison (FEED AUD).
 
+## 1.11.6
+
+- **8.3 AUDIO, niveau sonore en dB** : `*2 UNIT` passe de dB(A) (bruit, comme un sonomètre, par défaut) à dB (non
+  pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
+  zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
+  `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
