@@ -138,6 +138,13 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.12.1
+
+- **Ligne de commande au toucher** : `↵ CMD` (pavé) ou un appui sur la ligne du bas ouvre le clavier ; le champ
+  s'affiche juste au-dessus du clavier (appui long → Coller, ou presse-papiers du clavier). Corrige la saisie qui se
+  refermait aussitôt (focus repris par le canvas au relâchement du doigt). `↵` du pavé exécute la saisie en cours,
+  `ESC` la ferme. La console garde sa taille pendant la saisie.
+
 ## 1.12.0
 
 - **7.6 ROUTE** : trajet maison ↔ travail en voiture. Durée avec le trafic actuel, état du trafic (FLUID / HEAVY /

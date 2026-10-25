@@ -29,11 +29,13 @@ body { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color
 #scr { display: block; touch-action: none; }
 /* éclairage de nuit (mode nuit) : toute la console en rouge atténué, par un calque « multiply » au-dessus du canvas */
 .night #wrap::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: rgb(178, 20, 0); mix-blend-mode: multiply; }
-#cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; }
+#cmd { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; font-size: 16px; border: 0; padding: 0; background: transparent; color: transparent; -webkit-user-select: text; user-select: text; }
+/* écran tactile : la ligne de commande devient un vrai champ, posé juste au-dessus du clavier (appui long → Coller) */
+#cmd.open { opacity: 1; box-sizing: border-box; padding: 0 10px; color: #e6e8ea; caret-color: #e6e8ea; background: #050607; border: 0; border-top: 1px solid #3a3f45; border-radius: 0; outline: none; }
+#cmd.open::placeholder { color: #6c7074; }
 noscript { display: block; padding: 24px 16px; font: 14px/1.5 ui-monospace, monospace; color: var(--fg); }
 </style>
-<div id="wrap"><canvas id="scr" aria-label="Grafit OS Mobile console"></canvas></div>
-<input id="cmd" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Grafit command line">
+<div id="wrap"><canvas id="scr" aria-label="Grafit OS Mobile console"></canvas><input id="cmd" type="text" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" placeholder="COMMAND · ↵ RUN · ESC CLOSE" aria-label="Grafit command line"></div>
 <noscript>Grafit Mobile needs JavaScript.</noscript>
 <script>
 'use strict';
@@ -921,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.12.0', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.12.1', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -4636,8 +4638,8 @@ class App {
   // ---------------------------------------------------------- pavé numérique (pupitre)
   onPad(p) {
     const pend = now() < this.padT ? this.pad : null; this.pad = null;
-    if (p === 'ENTER') return openCmd();
-    if (p === 'ESC') { this.armed = null; this.msg = ''; this.helpOv = null; if (this.cmd !== null) { this.cmd = null; CMD_IN.blur(); } return; }
+    if (p === 'ENTER') { if (this.cmd !== null && this.cmd.trim()) { const l = this.cmd; closeCmd(); return this.execute(l); } return openCmd(); }
+    if (p === 'ESC') { this.armed = null; this.msg = ''; this.helpOv = null; if (this.cmd !== null) closeCmd(); return; }
     if (/^\d$/.test(p)) {
       let n = +p; const pages = GROUPS[this.gi][3];
       if (pend === '.') { n = n || 10; if (n <= pages.length) this.show(this.gi, n - 1); else this.say('NO FORMAT ' + (this.gi + 1) + '.' + n + ' · GROUP ' + (this.gi + 1) + ' HAS ' + pages.length, true); }
@@ -4793,6 +4795,7 @@ class App {
     }
   }
   drawCmd(scr, y, Wd, blink) {
+    this.hits.push({ x: 0, y, w: Wd, h: 1, fn: () => openCmd() });
     let x = scr.put(0, y, ' ' + CFG.STATION.slice(0, 3) + ' ▸ ', t.B);
     if (this.cmd !== null) {
       x += scr.put(x, y, this.cmd.slice(-(Wd - 20)), t.N); scr.put(x, y, blink ? '█' : ' ', t.N);
@@ -4814,13 +4817,45 @@ class App {
 
 // ---------------------------------------------------------------------------------------- saisie, gestes
 const CMD_IN = document.getElementById('cmd');
-function openCmd(first = '') { APP.cmd = first; CMD_IN.value = first; try { CMD_IN.focus({ preventScroll: true }); } catch (e) { CMD_IN.focus(); } }
+// Écran tactile : le champ devient visible au-dessus du clavier. Au toucher, Chrome déplace le focus au « mousedown »
+// émulé qui suit le relâchement du doigt : sans garde, le champ ouvert sur ↵ CMD perdait aussitôt le focus.
+const TOUCHUI = APK || !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+let CMD_T = 0, IME = 0;
+function openCmd(first = '') {
+  if (APP.cmd !== null && !first) first = APP.cmd;                 // déjà ouverte : on garde la saisie, on rouvre le clavier
+  APP.cmd = null; if (document.activeElement === CMD_IN) CMD_IN.blur();   // focus() sur un champ actif ne rouvre pas le clavier
+  APP.cmd = first; CMD_IN.value = first; CMD_T = now(); cmdBar();
+  try { CMD_IN.focus({ preventScroll: true }); } catch (e) { CMD_IN.focus(); }
+  try { CMD_IN.setSelectionRange(first.length, first.length); } catch (e) { /* */ }
+  if (APK) nativeCmd({ cmd: 'kbd', on: true });
+}
+function closeCmd() { APP.cmd = null; CMD_IN.blur(); cmdBar(); if (APK) nativeCmd({ cmd: 'kbd', on: false }); }
+function cmdBar() {                                                  // position du champ visible (écran tactile)
+  const open = APP.cmd !== null && TOUCHUI;
+  CMD_IN.classList.toggle('open', open);
+  if (!open) { CMD_IN.removeAttribute('style'); return; }
+  const rc = CV.getBoundingClientRect(), vv = window.visualViewport, H = window.innerHeight;
+  const kb = Math.max(IME, vv ? Math.max(0, H - vv.height - vv.offsetTop) : 0);
+  const h = Math.max(44, Math.round(R.ch * 2)), rowB = rc.top + SCR.h * R.ch;
+  const top = Math.max(rc.top, kb > 0 ? H - kb - h - 4 : Math.min(H - h, rowB - h));
+  Object.assign(CMD_IN.style, { left: rc.left + 'px', width: rc.width + 'px', top: top + 'px', bottom: 'auto', height: h + 'px',
+    font: '500 ' + Math.max(15, R.fpx * 1.15).toFixed(1) + 'px ' + R.family });
+}
 CMD_IN.addEventListener('input', () => { if (APP.cmd !== null) APP.cmd = CMD_IN.value; });
 CMD_IN.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); const l = APP.cmd || ''; APP.cmd = null; CMD_IN.blur(); APP.execute(l); }
-  else if (e.key === 'Escape') { APP.cmd = null; CMD_IN.blur(); }
+  if (e.key === 'Enter') { e.preventDefault(); const l = APP.cmd || CMD_IN.value || ''; closeCmd(); APP.execute(l); frame(true); }
+  else if (e.key === 'Escape') { closeCmd(); frame(true); }
 });
-CMD_IN.addEventListener('blur', () => { if (APP.cmd === '') APP.cmd = null; });
+CMD_IN.addEventListener('blur', () => {
+  if (APP.cmd !== null && now() - CMD_T < 1.5) {                    // focus volé juste après l'ouverture : on le reprend
+    setTimeout(() => { if (APP.cmd !== null && document.activeElement !== CMD_IN) { try { CMD_IN.focus({ preventScroll: true }); } catch (e) { CMD_IN.focus(); } } }, 0);
+    return;
+  }
+  if (APP.cmd === '') APP.cmd = null;
+  cmdBar();
+});
+window.addEventListener('grafit-native', e => { const d = e.detail || {}; if (d.ime != null) { IME = Math.max(0, +d.ime || 0); cmdBar(); } });
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => cmdBar());
 
 function toggleFull() {
   if (APK) { SET.immersive = !SET.immersive; saveSettings(); nativeCmd({ cmd: 'immersive', on: SET.immersive }); return; }
@@ -4833,10 +4868,15 @@ function simReset() { SOURCES.forEach(([k]) => { const s = SRC[k]; if (k === 'mi
 const CV = document.getElementById('scr');
 const R = new Renderer(CV);
 let SCR = new Screen(46, 40);
-function relayout() { const [w, h] = R.layout(); SCR = new Screen(w, h); }
+let LAYW = 0, LAYH = 0;
+function relayout() { const [w, h] = R.layout(); SCR = new Screen(w, h); LAYW = window.innerWidth; LAYH = window.innerHeight; }
 function cellAt(ev) { const rect = CV.getBoundingClientRect(); return [Math.floor((ev.clientX - rect.left) / R.cw), Math.floor((ev.clientY - rect.top) / R.ch)]; }
 let TOUCH = null;
-CV.addEventListener('pointerdown', ev => { TOUCH = { x: ev.clientX, y: ev.clientY, t: now() }; armSensorsGesture(); });
+CV.addEventListener('pointerdown', ev => {
+  if (ev.pointerType !== 'mouse' || APP.cmd !== null) ev.preventDefault();   // pas de souris émulée : le champ garde le focus
+  TOUCH = { x: ev.clientX, y: ev.clientY, t: now() }; armSensorsGesture();
+});
+CV.addEventListener('mousedown', ev => { if (APP.cmd !== null) ev.preventDefault(); });
 CV.addEventListener('pointerup', ev => {
   if (!TOUCH) return;
   const dx = ev.clientX - TOUCH.x, dy = ev.clientY - TOUCH.y; TOUCH = null;
@@ -4845,7 +4885,10 @@ CV.addEventListener('pointerup', ev => {
   for (let i = APP.hits.length - 1; i >= 0; i--) { const h = APP.hits[i]; if (x >= h.x && x < h.x + h.w && y >= h.y && y < h.y + h.h) { h.fn(APP); frame(true); return; } }
 });
 window.addEventListener('keydown', e => { if (e.target === CMD_IN) return; APP.onKey(e); frame(true); });
-window.addEventListener('resize', () => { relayout(); frame(true); });
+window.addEventListener('resize', () => {
+  if (APP.cmd !== null && window.innerWidth === LAYW && window.innerHeight < LAYH) { cmdBar(); return; }   // clavier : la console garde sa taille
+  relayout(); frame(true); cmdBar();
+});
 
 // ---------------------------------------------------------------------------------------- boucles
 let nextFrame = 0;

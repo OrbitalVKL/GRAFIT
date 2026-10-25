@@ -62,6 +62,7 @@ public class MainActivity extends Activity {
     Updater updater;
     long updT = 0;
     boolean pageReady = false, loaded = false;
+    int imePx = 0;                                       // hauteur du clavier au-dessus de la barre de navigation
 
     @Override
     protected void onCreate(Bundle state) {
@@ -78,6 +79,10 @@ public class MainActivity extends Activity {
         root.setOnApplyWindowInsetsListener((v, ins) -> {
             Insets b = ins.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             v.setPadding(b.left, b.top, b.right, b.bottom);
+            // clavier : bord à bord, la fenêtre n'est plus redimensionnée ; la page reçoit sa hauteur et pose
+            // la ligne de commande juste au-dessus (la console garde sa taille)
+            int over = Math.max(0, ins.getInsets(WindowInsets.Type.ime()).bottom - b.bottom);
+            if (over != imePx) { imePx = over; pushIme(); }
             return WindowInsets.CONSUMED;
         });
 
@@ -263,6 +268,16 @@ public class MainActivity extends Activity {
                     }
                     break;
                 }
+                case "kbd": {                                    // clavier de la ligne de commande (↵ CMD)
+                    final boolean show = on;
+                    web.postDelayed(() -> {
+                        android.view.inputmethod.InputMethodManager imm = (android.view.inputmethod.InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                        if (imm == null) return;
+                        if (show) { web.requestFocus(); imm.showSoftInput(web, 0); }
+                        else imm.hideSoftInputFromWindow(web.getWindowToken(), 0);
+                    }, show ? 150 : 0);
+                    break;
+                }
                 case "appInfo":
                     try { JSONObject a = new JSONObject(); a.put("pkg", getPackageName()); a.put("sha1", certSha1(true)); JSONObject d = new JSONObject(); d.put("app", a); push(d); } catch (Exception e) { /* */ }
                     break;
@@ -421,6 +436,10 @@ public class MainActivity extends Activity {
                 push(d);
             } catch (Exception e) { /* */ }
         }).start();
+    }
+
+    void pushIme() {
+        try { JSONObject d = new JSONObject(); d.put("ime", Math.round(imePx / getResources().getDisplayMetrics().density)); push(d); } catch (Exception e) { /* */ }
     }
 
     /** Envoi à la page : window.dispatchEvent(new CustomEvent('grafit-native', {detail})) */
