@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.13.0', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.13.1', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1133,7 +1133,7 @@ window.addEventListener('grafit-native', e => {
   if (d.route && typeof rteIngest === 'function') rteIngest(d.route);
   if (d.bf && typeof bfIngest === 'function') bfIngest(d.bf);
   if (d.price && typeof priceIngest === 'function') priceIngest(d.price);
-  if (d.app && typeof APPINFO === 'object') Object.assign(APPINFO, d.app);
+  if (d.app && typeof APPINFO === 'object') { Object.assign(APPINFO, d.app); if (typeof apiSigCheck === 'function') apiSigCheck(); }
   if (d.logError) { log('SYS', 'LOG EXPORT FAILED · ' + String(d.logError).toUpperCase(), true); APP && APP.say('LOG EXPORT FAILED', true); }
   if (d.resumed) visChange(true);
   if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
@@ -3569,9 +3569,13 @@ PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES
     ['4', 'BACKUP', app => cmdBackup(app), ['BACKUP', 'SAUVEGARDE'], 'BACKUP (JSON FILE)'],
     ['5', 'RESTORE', app => cmdRestore(app), ['RESTORE', 'RESTAURE'], 'RESTORE (TAP TWICE)'],
     ['6', 'CSV', app => cmdCsv(app), ['CSV', 'EXPORTCSV'], 'CSV (SAMPLES + HEALTH)'],
-    ['7', 'VIBE', (app, arg) => cmdVibe(app, arg), ['VIBE', 'VIBRATE', 'BGALERTS'], 'VIBE [ON|OFF]']],
+    ['7', 'VIBE', (app, arg) => cmdVibe(app, arg), ['VIBE', 'VIBRATE', 'BGALERTS'], 'VIBE [ON|OFF]'],
+    ['8', 'API', app => { const here = app && app.page === PAGES.M34; PAGES.M34.view = here && PAGES.M34.view === 'API' ? 'SRC' : 'API'; if (app && !here) app.go('M34'); }, ['API', 'KEYS', 'APIS'], 'API (KEYS · LAST OK · CHECK)'],
+    ['9', 'CHECK', app => { PAGES.M34.view = 'API'; if (app && app.page !== PAGES.M34) app.go('M34'); apiCheck(app, 'MANUAL'); }, ['CHECK', 'APICHECK'], 'CHECK (API KEYS, ONE REQUEST EACH)']],
+  view: 'SRC',
   draw(scr, r) {
     this.keys[4][1] = now() - RST.armT < 5 ? 'CONFIRM' : 'RESTORE';
+    if (this.view === 'API') { const sm = apiSummary(); return drawApi(scr, W.panel(scr, r, this.code, this.name + ' · API', APICHK.run ? 'CHECKING …' : (sm.bad ? 'CHECK' : (RTE.key || RTE.ttKey ? 'OK' : 'NO KEY')), sm.bad ? t.TR : t.TD)); }
     const nl = SOURCES.filter(([k]) => SRC[k].mode === 'live').length, ns = SOURCES.filter(([k]) => SRC[k].mode === 'sim').length;
     const ir = W.panel(scr, r, this.code, this.name, nl + ' LIVE' + (ns ? ' · ' + ns + ' SIM' : ''), ns ? t.T : t.TD);
     let y = ir.y;
@@ -3591,7 +3595,9 @@ PAGES.M34 = { code: 'M34', name: 'SOURCES', ru: 'ИСТОЧН', words: ['SOURCES
     }
     if (y < ir.b - 1) {
       y++;
-      W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG [*3]', bgState() + (APK && BGL.last ? ' · LAST ' + hhmm(BGL.last / 1000) + ' · ' + (BGL.n || 0) + ' SAMPLES' : ''), t.D, BGL.on ? t.B : (APK ? t.RB : t.F));
+      const sm = apiSummary();
+      W.kv(scr, ir.x, y++, ir.w, 'API [*8]', sm.txt, t.D, sm.bad ? t.RB : (RTE.key || RTE.ttKey ? t.N : t.F));
+      if (y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG [*3]', bgState() + (APK && BGL.last ? ' · LAST ' + hhmm(BGL.last / 1000) + ' · ' + (BGL.n || 0) + ' SAMPLES' : ''), t.D, BGL.on ? t.B : (APK ? t.RB : t.F));
       const st = BGL.stat;
       if (APK && st && st.day && y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'SERVICE TODAY', st.n + ' SAMPLES · CPU ' + Math.round(st.awake / 1000) + ' s · STILL ' + (st.n ? Math.round(100 * st.still / st.n) : 0) + ' % · ' + (st.bytes / 1048576).toFixed(1) + ' MB · ' + st.mode, t.D, t.N);
       if (APK && y < ir.b - 1) W.kv(scr, ir.x, y++, ir.w, 'VIBE ALERTS [*7]', SET.vibe ? 'ON · BATT HEAT SHOCK PRESS RAIN' : 'OFF', t.D, SET.vibe ? t.N : t.F);
@@ -4338,6 +4344,7 @@ function briefLines() {
   }
   if (S16.st) { const o = S16.st; L.push(['S-16', s16Online() ? 'CPU ' + (o.cpu && o.cpu.t != null ? Math.round(o.cpu.t) + '°' : '—') + ' GPU ' + (o.gpu && o.gpu.t != null ? Math.round(o.gpu.t) + '°' : '—') + (Object.values(S16.al).some(Boolean) ? ' · CHECK ' + pageAddr('M64') : ' · OK') : 'OFFLINE · ' + ageTxt(T - S16.t)]); }
   if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
+  if (typeof apiSummary === 'function') { const sm = apiSummary(); if (sm.bad) L.push(['API', sm.txt + ' · ' + pageAddr('M34'), t.RB]); }
   return L;
 }
 function cmdBrief(app) { app && app.go('M11'); }           // BRIEF, 5.1 [*2] : format 1.1
@@ -5372,7 +5379,7 @@ PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
 const ROUTE_DAY = 100, ROUTE_MONTH = 4000, ROUTE_EVERY = 600, ROUTE_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
 const ROUTE_FIELDS = 'routes.duration,routes.staticDuration,routes.distanceMeters,routes.description,routes.polyline.encodedPolyline';
 const TT_DAY = 60, TT_MONTH = 2000;                           // TomTom : 2500 gratuits par mois
-const RTE0 = () => ({ key: '', ttKey: '', home: null, work: null, res: {}, hist: {}, cnt: { d: '', n: 0, m: '', nm: 0, tn: 0, tnm: 0 }, price: { t: 0, okT: 0, cap: null, sku: '', fails: 0 }, ev: { bf: null, tt: null } });
+const RTE0 = () => ({ key: '', ttKey: '', home: null, work: null, res: {}, hist: {}, cnt: { d: '', n: 0, m: '', nm: 0, tn: 0, tnm: 0 }, price: { t: 0, okT: 0, cap: null, sku: '', fails: 0 }, ev: { bf: null, tt: null }, okAt: {}, okSha: '', errT: 0 });
 const RTE = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.route') || '{}'), o = Object.assign(RTE0(), j); o.cnt = Object.assign(RTE0().cnt, j.cnt || {}); o.price = Object.assign(RTE0().price, j.price || {}); o.ev = Object.assign(RTE0().ev, j.ev || {}); return o; } catch (e) { return RTE0(); } })();
 RTE.busy = {}; RTE.evBusy = {}; RTE.fail = {};
 const rteSave = () => { try { const { busy, evBusy, fail, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
@@ -5421,12 +5428,12 @@ function rteIngest(d) {
   let j = null; try { j = JSON.parse(d.body || 'null'); } catch (e) { /* */ }
   if (d.code !== 200 || !j || !j.routes || !j.routes.length) {
     const st = j && j.error ? j.error.status || '' : '', msg = st === 'RESOURCE_EXHAUSTED' ? 'GOOGLE QUOTA REACHED (CONSOLE CAP)' : (st === 'PERMISSION_DENIED' ? 'KEY REFUSED · CHECK ITS RESTRICTIONS' : (j && j.error ? st + ' ' + (j.error.message || '') : (d.err || 'HTTP ' + d.code)));
-    RTE.fail[dir] = now(); RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
+    RTE.fail[dir] = now(); RTE.errT = now(); RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
   }
   const r = j.routes[0], sec = x => x ? parseFloat(String(x).replace('s', '')) : null;
   const res = { t: now(), dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
     poly: r.polyline && r.polyline.encodedPolyline ? r.polyline.encodedPolyline : (RTE.res[dir] && RTE.res[dir].poly) || '' };
-  RTE.res[dir] = res; RTE.err = ''; delete RTE.fail[dir];
+  RTE.res[dir] = res; RTE.err = ''; delete RTE.fail[dir]; (RTE.okAt = RTE.okAt || {}).g = now(); if (APPINFO.sha1) RTE.okSha = APPINFO.sha1;
   const day = ymdOf(now()); (RTE.hist[day] = RTE.hist[day] || []).push([Math.round(res.t), dir, Math.round(res.dur), Math.round(res.stat || 0)]);
   const ks = Object.keys(RTE.hist).sort(); while (ks.length > 7) delete RTE.hist[ks.shift()];
   rteSave(); evTick();
@@ -5463,13 +5470,14 @@ function evTick(force = false) {
         const g = f.geometry || {}, c = g.type === 'Point' ? [g.coordinates] : (g.coordinates || []), pr = f.properties || {};
         return { src: 'TT', cat: pr.iconCategory, txt: ((pr.events && pr.events[0] && pr.events[0].description) || '').toUpperCase(), road: (pr.roadNumbers || [])[0] || '', delay: pr.delay || 0,
           pts: [c[0], c[Math.floor(c.length / 2)], c[c.length - 1]].filter(Boolean).map(q => [q[1], q[0]]) };
-      }) }; rteSave();
+      }) }; (RTE.okAt = RTE.okAt || {}).tt = now(); rteSave();
     }).catch(e => { delete RTE.evBusy.tt; E.tt = { t: now(), err: 'TOMTOM UNREACHABLE', list: [] }; });
   }
 }
 function bfIngest(d) {
   delete RTE.evBusy.bf;
   RTE.ev.bf = d.ok ? { t: now(), list: (d.ev || []).map(e => Object.assign(e, { src: 'BF' })) } : { t: now(), err: 'BISON FUTE ' + String(d.err || 'ERROR').toUpperCase().slice(0, 30), list: [] };
+  if (d.ok) (RTE.okAt = RTE.okAt || {}).bf = now();
   rteSave();
 }
 const TT_CAT = { 0: 'INCIDENT', 1: 'ACCIDENT', 2: 'FOG', 3: 'DANGER', 4: 'RAIN', 5: 'ICE', 6: 'JAM', 7: 'LANE CLOSED', 8: 'ROAD CLOSED', 9: 'ROADWORKS', 10: 'WIND', 11: 'FLOODING', 14: 'BROKEN-DOWN VEHICLE' };
@@ -5537,13 +5545,16 @@ function cmdPlace(app, arg) {
   }
   RTE.res = {}; RTE.fail = {}; RTE.ev = { bf: null, tt: null }; rteSave(); log('NAV', 'PLACE ' + k.toUpperCase() + ' SET');
   app && app.say('PLACE ' + k.toUpperCase() + ' · ' + rtePlaceTxt(RTE[k]));
+  if ((RTE.key || RTE.ttKey) && RTE.home && RTE.work) setTimeout(() => apiCheck(app, 'PLACES SET'), 2500);
 }
 function cmdKey(app, field, label, re) {
   const raw = app && app.rawLine ? app.rawLine.trim().split(/\s+/).slice(1).join('') : '';
   if (/^OFF$/i.test(raw)) { RTE[field] = ''; rteSave(); return app && app.say(label + ' KEY REMOVED'); }
   if (!re.test(raw)) return app && app.say(label + 'KEY <KEY> · ' + label + 'KEY OFF', true);
   RTE[field] = raw; RTE.err = ''; RTE.fail = {}; rteSave(); log('NAV', label + ' KEY SET');
-  app && app.say(label + ' KEY SET · ' + raw.slice(0, 6) + '…'); if (field === 'key') priceTick(true);
+  if (field === 'ttKey') RTE.ev.tt = null;
+  app && app.say(label + ' KEY SET · ' + raw.slice(0, 6) + '…' + (RTE.home && RTE.work ? ' · TESTING …' : ' · NOW PLACE HOME / WORK')); if (field === 'key') priceTick(true);
+  if (RTE.home && RTE.work) setTimeout(() => apiCheck(app, 'NEW KEY'), 1200);
 }
 function rteMaps(dir) {                                      // itinéraire dans Google Maps (guidage)
   const [a, b] = RTE_DIR[dir], P = p => encodeURIComponent(p.addr || (p.lat + ',' + p.lon));
@@ -5617,6 +5628,95 @@ PAGES.M71 = { code: 'M71', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
   } };
 const APPINFO = {};
 
+// ---------------------------------------------------------------------------------------- API : état des clés, contrôle
+// Google Routes, TomTom, Bison Futé : dernier succès, dernière erreur, compteurs (3.4 [*8]). Contrôle réel (une requête
+// par service) après chaque mise à jour de l'appli, après une nouvelle clé ou de nouveaux lieux, ou à la demande (3.4 [*9]) ;
+// résultat au journal (NAV, en rouge si un service ne répond pas). Empreinte de l'appli comparée à celle du dernier succès
+// Google : si elle change, la restriction de la clé ne la reconnaît plus.
+const APICHK = (() => { try { return JSON.parse(localStorage.getItem('grafit.apichk') || 'null') || {}; } catch (e) { return {}; } })();
+const apiChkSave = () => { try { const { run, ...o } = APICHK; localStorage.setItem('grafit.apichk', JSON.stringify(o)); } catch (e) { /* */ } };
+const apiSigBad = () => !!(APPINFO.sha1 && RTE.okSha && APPINFO.sha1 !== RTE.okSha);
+function apiSigCheck() { if (apiSigBad() && !apiSigCheck.done) { apiSigCheck.done = true; log('NAV', 'APP SIGNATURE CHANGED · GOOGLE KEY RESTRICTION MUST BE UPDATED · ' + pageAddr('M34'), true); } }
+function apiState() {                                         // par service : [OK | ERR | ? | —, détail]
+  const E = RTE.ev, ok = RTE.okAt || {};
+  return {
+    g: !RTE.key ? ['—', 'NO KEY · ROUTEKEY <KEY>'] : (RTE.err ? ['ERR', RTE.err] : (ok.g ? ['OK', ''] : ['?', RTE.home && RTE.work ? 'NOT TRIED YET' : 'PLACE HOME / WORK FIRST'])),
+    tt: !RTE.ttKey ? ['—', 'NO KEY · OPTION'] : (E.tt && E.tt.err ? ['ERR', E.tt.err] : (ok.tt ? ['OK', ''] : ['?', 'NOT TRIED YET'])),
+    bf: !APK ? ['—', 'APK ONLY'] : (E.bf && E.bf.err ? ['ERR', E.bf.err] : (ok.bf ? ['OK', ''] : ['?', RTE.home && RTE.work ? 'NOT TRIED YET' : 'NEEDS THE PLACES'])),
+  };
+}
+function apiSummary() {
+  const s = apiState(), P = [['GOOGLE', s.g], ['TOMTOM', s.tt], ['BF', s.bf]].filter(([, v]) => v[0] !== '—' && !(v === s.bf && !RTE.key));
+  const bad = P.some(([, v]) => v[0] === 'ERR') || apiSigBad() || !!APICHK.bad;
+  return { txt: RTE.key || RTE.ttKey ? P.map(([n, v]) => n + ' ' + v[0]).join(' · ') + (apiSigBad() ? ' · SIGNATURE' : '') : 'NO KEY · ' + pageAddr('M71'), bad };
+}
+function apiCheck(app, why) {
+  if (APICHK.run) return app && app.say('API CHECK · ALREADY RUNNING', true);
+  if (!RTE.key && !RTE.ttKey) return app && app.say('API CHECK · NO KEY SET · ' + pageAddr('M71'), true);
+  const t0 = now(), hasG = !!(RTE.key && RTE.home && RTE.work); let again = false;
+  APICHK.run = true;
+  if (hasG) rteFetch(rteMain(), true);
+  evTick(true);
+  if (APK) nativeCmd({ cmd: 'appInfo' });
+  app && app.say('API CHECK · ' + why + ' · RUNNING …');
+  const poll = () => {
+    const E = RTE.ev, ok = RTE.okAt || {};
+    if ((Object.keys(RTE.busy).length || RTE.evBusy.tt || RTE.evBusy.bf) && now() - t0 < 45) return setTimeout(poll, 1500);
+    // lieux en adresses : l'emprise des évènements n'existe qu'après la première réponse de Google
+    if (!again && rteBox() && ((RTE.ttKey && !(E.tt && E.tt.t >= t0)) || (APK && !(E.bf && E.bf.t >= t0)))) { again = true; evTick(true); return setTimeout(poll, 1500); }
+    const items = [], q = rteQuota();
+    if (RTE.key) items.push(['GOOGLE', !hasG ? 'NO PLACES' : (ok.g >= t0 ? 'OK' : 'FAIL · ' + (RTE.err || 'NO ANSWER'))]);
+    if (RTE.ttKey) items.push(['TOMTOM', !rteBox() ? 'NO PLACES' : (ok.tt >= t0 ? 'OK' : 'FAIL · ' + ((E.tt && E.tt.t >= t0 && E.tt.err) || (q.ttOk ? 'NO ANSWER' : 'SAFE STOP')))]);
+    if (APK && rteBox()) items.push(['BISON FUTE', ok.bf >= t0 ? 'OK' : 'FAIL · ' + ((E.bf && E.bf.t >= t0 && E.bf.err) || 'NO ANSWER')]);
+    if (apiSigBad()) items.push(['SIGNATURE', 'CHANGED']);
+    const bad = items.some(([, v]) => v !== 'OK' && v !== 'NO PLACES');
+    Object.assign(APICHK, { run: false, t: now(), why, items, bad }); apiChkSave();
+    const txt = items.map(([n, v]) => n + ' ' + v).join(' · ');
+    log('NAV', 'API CHECK (' + why + ') · ' + txt, bad);
+    if (APP) APP.say('API CHECK · ' + txt, bad);
+  };
+  setTimeout(poll, 2500);
+}
+function apiBoot() {                                          // premier démarrage après une mise à jour : contrôle réel
+  let lv = '', had = false;
+  try { lv = localStorage.getItem('grafit.ver') || ''; had = !!(lv || localStorage.getItem('grafit.log') || localStorage.getItem('grafit.route')); localStorage.setItem('grafit.ver', CFG.VERSION); } catch (e) { return; }
+  if (!had || lv === CFG.VERSION) return;
+  const kept = [RTE.key ? 'ROUTE KEY' : '', RTE.ttKey ? 'INCIDENT KEY' : '', SET.mapKey ? 'MAP KEY' : '', RTE.home && RTE.work ? 'PLACES' : ''].filter(Boolean);
+  log('SYS', 'UPDATED ' + (lv || 'FROM ≤1.13.0') + ' → ' + CFG.VERSION + ' · DATA KEPT' + (kept.length ? ' · ' + kept.join(' · ') : ''));
+  if (RTE.key || RTE.ttKey) setTimeout(() => apiCheck(null, 'AFTER UPDATE'), 15000);
+}
+const dmHM = ts => pad2(new Date(ts * 1000).getDate()) + '/' + pad2(new Date(ts * 1000).getMonth() + 1) + ' ' + hhmm(ts);
+function drawApi(scr, ir) {                                   // 3.4 [*8] : vue API
+  const T = now(), s = apiState(), ok = RTE.okAt || {}, q = rteQuota(), P = RTE.price;
+  let y = ir.y;
+  const SST = { OK: t.B, ERR: t.RB, '?': t.N, '—': t.F, SET: t.N };
+  const row = (name, st, last) => {
+    if (y >= ir.b) return;
+    scr.put(ir.x, y, name, st[0] === 'ERR' ? t.RB : t.N); scr.put(ir.x + 15, y, st[0], SST[st[0]] || t.N);
+    W.rjust(scr, ir.r, y, last ? hhmm(last) + ' · ' + ageTxt(T - last) : '—', t.D); y++;
+  };
+  const det = (txt, st = t.D) => { if (y < ir.b && txt) scr.put(ir.x + 2, y++, clip(txt, ir.w - 2), st); };
+  sub(scr, ir.x, y++, ir.w, 'SERVICE', 'STATE · LAST OK', t.F);
+  row('GOOGLE ROUTES', s.g, ok.g);
+  if (s.g[0] === 'ERR') det(s.g[1] + (RTE.errT ? ' · ' + hhmm(RTE.errT) : ''), t.RB); else if (s.g[0] !== 'OK') det(s.g[1], t.F);
+  if (RTE.key) det('KEY ' + RTE.key.slice(0, 6) + '… · ' + q.day + '/' + ROUTE_DAY + ' TODAY · ' + q.month + '/' + q.cap + ' MONTH');
+  row('TOMTOM', s.tt, ok.tt);
+  if (s.tt[0] === 'ERR') det(s.tt[1], t.RB); else if (s.tt[0] !== 'OK') det(s.tt[1], t.F);
+  if (RTE.ttKey) det('KEY ' + RTE.ttKey.slice(0, 4) + '… · ' + RTE.cnt.tn + '/' + TT_DAY + ' TODAY · ' + RTE.cnt.tnm + '/' + TT_MONTH + ' MONTH');
+  row('BISON FUTE', s.bf, ok.bf); det(s.bf[0] === 'ERR' ? s.bf[1] : (s.bf[0] === 'OK' ? 'OPEN DATA · NO KEY · NATIONAL ROADS' : s.bf[1]), s.bf[0] === 'ERR' ? t.RB : t.F);
+  row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M42') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);
+  y++;
+  if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'SAFEGUARDS', '', t.F);
+  const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+  kv('GOOGLE FREE TIER', !APK ? 'APK ONLY' : (P.cap != null ? P.cap + ' / MONTH ✓ ' + (P.okT ? dmHM(P.okT).slice(0, 5) : '') : 'NOT VERIFIED YET'), P.cap != null && P.cap < 5000 || (P.fails || 0) >= 2 ? t.RB : t.N);
+  kv('GRAFIT CAP', ROUTE_DAY + ' / DAY · ' + q.cap + ' / MONTH', q.ok ? t.N : t.RB);
+  kv('APP SIGNATURE', APPINFO.sha1 ? APPINFO.sha1.slice(0, 5) + '…' + APPINFO.sha1.slice(-5) + (RTE.okSha ? (apiSigBad() ? ' · CHANGED' : ' · AS LAST OK') : '') : (APK ? 'READING …' : 'APK ONLY'), apiSigBad() ? t.RB : t.N);
+  y++;
+  if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'LAST CHECK [*9]', APICHK.run ? 'RUNNING …' : (APICHK.t ? dmHM(APICHK.t) : 'NEVER'), APICHK.bad ? t.RB : t.F);
+  if (APICHK.t && !APICHK.run) { kv('REASON', APICHK.why || '—', t.D); for (const [n, v] of APICHK.items || []) kv(n, v, v === 'OK' ? t.B : (v === 'NO PLACES' ? t.F : t.RB)); }
+  if (y < ir.b) scr.put(ir.x, ir.b - 1, clip('*8 SENSORS · *9 CHECK NOW (ONE REQUEST EACH)', ir.w), t.F);
+}
+
 // ---------------------------------------------------------------------------------------- persistance
 // Ce qui doit survivre à la fermeture de l'App : historiques batterie et pression (avec trou marqué), dernière
 // météo (affichée « CACHED » jusqu'au prochain flux, 12 h au plus), dernier TLE, chrono et minuteur.
@@ -5654,7 +5754,7 @@ function boot() {
   if (APK) setTimeout(() => bgRequest(true), 300);
   if (APK) { nativeCmd({ cmd: 'keepOn', on: !!SET.wake }); nativeCmd({ cmd: 'immersive', on: !!SET.immersive }); setTimeout(() => bgCfgTick(true), 4000); setTimeout(() => widgetTick(true), 9000); nativeCmd({ cmd: 'appInfo' }); }
   APP = new App();
-  log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION);
+  log('SYS', CFG.OS_RU + ' ' + CFG.VERSION + ' ONLINE · ' + CFG.STATION); apiBoot();
   R.measure(); relayout();
   startSensors();
   if (SET.wake) wakeSet(true);

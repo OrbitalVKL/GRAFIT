@@ -138,6 +138,16 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.13.1
+
+- **3.4 SOURCES · API** : ligne `API` (Google, TomTom, Bison Futé : OK / ERR / ?) ; `*8` (ou `API` de partout) ouvre le
+  détail : état, dernier succès, erreur, compteurs du jour et du mois, carte CARTO, gratuité Google vérifiée, plafonds,
+  empreinte de l'appli comparée à celle du dernier succès Google.
+- **Contrôle réel** (une requête par service) : au premier démarrage après chaque mise à jour, après `ROUTEKEY` /
+  `INCIDENTKEY`, après `PLACE` si tout est réglé, et à la demande (`*9` ou `CHECK`). Résultat dans 3.4, au journal (NAV,
+  en rouge si un service échoue) et, en cas d'échec, sur une ligne `API` rouge du briefing 1.1.
+- Mise à jour notée au journal : `UPDATED a → b · DATA KEPT · ROUTE KEY · INCIDENT KEY · PLACES`.
+
 ## 1.13.0
 
 - **1.1 BRIEF** : le briefing devient un format, affiché en continu (nuit, météo, trajet du moment, agenda, état) ;
