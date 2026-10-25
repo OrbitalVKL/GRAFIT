@@ -17,7 +17,7 @@
 <meta name="theme-color" content="#0a0c0e">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wghtM75..112.5,100..800&display=swap">
 <style>
 /* Console plein écran : grille de caractères dessinée sur un canvas. Look unique, sombre, par choix (terminal Soyuz). */
 :root { --bg: #0a0c0e; --fg: #cfd2d4; --dim: #82868a; --red: #9e4a4a; color-scheme: dark; }
@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.12.1', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.13.0', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -958,7 +958,7 @@ function saveSettings() { try { localStorage.setItem('grafit.set', JSON.stringif
 // les numéros ne suivent plus ceux de Grafit PC.
 // Les adresses citées dans les textes viennent de pageAddr() : elles suivent toute réorganisation.
 const GROUPS = [
-  ['1', 'STATUS', 'СОСТ', ['M11']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
+  ['1', 'STATUS', 'СОСТ', ['M11', 'M12']], ['2', 'SYSTEMS', 'СИСТ', ['M21', 'M22', 'M23', 'M24']], ['3', 'ALARMS', 'АВАР', ['M31', 'M32', 'M33', 'M34']],
   ['4', 'WEATHER', 'ПОГОДА', ['M41', 'M42', 'M43', 'M44']], ['5', 'DAY', 'СУТКИ', ['M51', 'M52', 'M53']],
   ['6', 'COMMS', 'СВЯЗЬ', ['M61', 'M62', 'M63', 'M64']], ['7', 'NAV', 'НАВ', ['M71', 'M72', 'M73', 'M74', 'M75', 'M76']],
   ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
@@ -1480,7 +1480,7 @@ function simTick() {
     if (stale && k !== 'motion' && k !== 'orient') { s.mode = 'wait'; s.armed = t; }
   }
   if (SET.sim === 'ON') ['orient', 'motion', 'geo', 'batt', 'net', 'baro', 'btemp', 'light', 'wx', 'mic'].forEach(k => { if (SRC[k].mode !== 'sim') { SRC[k].mode = 'sim'; if (k === 'baro') seedSimTrend(); } });
-  if (SRC.tle.mode === 'wait' && t - SRC.tle.armed > 15) SRC.tle.mode = 'sim';   // TLE embarqué (cache de M71)
+  if (SRC.tle.mode === 'wait' && t - SRC.tle.armed > 15) SRC.tle.mode = 'sim';   // TLE embarqué (cache de M74)
   for (const k of ['amb', 'stemp', 'gnssraw', 'cell', 'steps', 'therm', 'store']) if (SRC[k].mode === 'wait' && t - SRC[k].armed > 4) SRC[k].mode = 'na';   // APK seulement
 }
 const live = k => SRC[k].mode === 'live' || SRC[k].mode === 'sim';
@@ -1913,9 +1913,27 @@ const refreshSats = app => { fetchSatCat(true); app && app.say('SAT CATALOG · R
 const K_HDG = ['HDG UP', hdgUp, ['HDGUP', 'HDG'], 'HDG [ON|OFF]'];
 // Ligne de réglage : touche du pavé (*n), libellé, état. Les formats n'ont aucune touche à l'écran : tout se fait au pavé.
 function actRow(scr, x, y, w, k, label, value, vs = t.N) { scr.put(x, y, k, t.B); W.kv(scr, x + 4, y, w - 4, label, value, t.D, vs); }
-// ------------------------------------------------------------------ M11 OVERVIEW
-PAGES.M11 = { code: 'M11', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
-  keys: [['1', 'BRIEF', cmdBrief, ['BRIEF', 'BRIEFING', 'BRF'], 'BRIEF (STAYS UNTIL ESC)']],
+// ------------------------------------------------------------------ M11 BRIEF : briefing du jour, en continu
+// Nuit, météo (tranches, pluie, radar), trajet du moment, agenda, état. Sections compactées si l'écran est court.
+PAGES.M11 = { code: 'M11', name: 'BRIEF', ru: 'СВОДКА', words: ['BRIEF', 'BRIEFING', 'BRF'], fps: 1,
+  keys: [['1', 'REFRESH', app => { briefRefresh(true); app && app.say('BRIEF · WEATHER' + (RTE.key && RTE.home && RTE.work ? ' AND TRAFFIC' : '') + ' REQUESTED'); }, ['REFRESH', 'UPDATE']]],
+  draw(scr, r) {
+    briefRefresh();
+    const d = new Date(), ir = W.panel(scr, r, this.code, this.name, DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1), t.TD);
+    let L = briefLines();
+    const room = ir.b - ir.y;
+    if (L.length > room) L = L.filter(l => l[0] || l[1]);               // trop long : sans les lignes vides
+    const kw = Math.min(11, Math.max(...L.filter(l => l[1]).map(l => slen(l[0]))) + 2);
+    let y = ir.y;
+    for (const [k, v, st] of L) {
+      if (y >= ir.b) break;
+      if (!k && !v) { y++; continue; }
+      if (k && (!v || ['NIGHT', 'WEATHER', 'TODAY', 'STATUS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; }
+      scr.put(ir.x, y, clip(k, kw - 1), t.D); scr.put(ir.x + kw, y++, clip(v, ir.w - kw), st != null ? st : t.N);
+    }
+  } };
+// ------------------------------------------------------------------ M12 OVERVIEW
+PAGES.M12 = { code: 'M12', name: 'OVERVIEW', ru: 'ОБЗОР', words: ['OVERVIEW', 'STATUS'], fps: 4,
   draw(scr, r, app) {
     const rt = ALS.crit ? ALS.crit + ' CRIT · ' + ALS.caut + ' CAUT' : (ALS.caut ? ALS.caut + ' CAUT' : 'NOMINAL');
     const ir = W.panel(scr, r, this.code, this.name, rt, (ALS.crit || ALS.caut) ? t.TR : t.TD);
@@ -2430,7 +2448,7 @@ PAGES.M83 = { code: 'M83', name: 'AUDIO', ru: 'ЗВУК', words: ['AUDIO', 'MIC'
     }
   } };
 
-// ------------------------------------------------------------------ M71 TRACK
+// ------------------------------------------------------------------ M74 TRACK
 // Carte équirectangulaire vectorielle : terres remplies, nuit ombrée, graticule, traces de l'ISS en splines.
 function splitLon(pts) { const out = [[]]; pts.forEach((p, i) => { if (i && Math.abs(p[1] - pts[i - 1][1]) > 180) out.push([]); out[out.length - 1].push(p); }); return out.filter(s => s.length > 1); }
 function markSun(c, x, y, d, col) { c.strokeStyle = col; c.lineWidth = 1.3 * d; c.beginPath(); c.arc(x, y, 4.5 * d, 0, 2 * Math.PI); c.stroke(); c.fillStyle = col; c.beginPath(); c.arc(x, y, 1.4 * d, 0, 2 * Math.PI); c.fill(); }
@@ -2439,8 +2457,8 @@ function markIss(c, x, y, d, col) { c.fillStyle = rgba(RED, 0.25); c.beginPath()
 function markHome(c, x, y, d, col) { c.strokeStyle = col; c.lineWidth = 1.2 * d; c.beginPath(); c.arc(x, y, 3.5 * d, 0, 2 * Math.PI); c.moveTo(x - 7 * d, y); c.lineTo(x - 3.5 * d, y); c.moveTo(x + 3.5 * d, y); c.lineTo(x + 7 * d, y); c.moveTo(x, y - 7 * d); c.lineTo(x, y - 3.5 * d); c.moveTo(x, y + 3.5 * d); c.lineTo(x, y + 7 * d); c.stroke(); }
 const LEG = (scr, x, y, items) => { for (const [g, txt, st] of items) { x += scr.put(x, y, g, st) + 1; x += scr.put(x, y, txt, t.F) + 2; } };
 
-PAGES.M71 = { code: 'M71', name: 'TRACK', ru: 'ТРАСС', words: ['TRACK', 'ISS', 'MAP', 'ORBIT'], fps: 1, tab: 'ISS', passT: 0, pass: null,
-  keys: [['1', 'ISS', () => { PAGES.M71.tab = 'ISS'; }], ['2', 'SUN', () => { PAGES.M71.tab = 'SUN'; }], ['3', 'MOON', () => { PAGES.M71.tab = 'MOON'; }]],
+PAGES.M74 = { code: 'M74', name: 'TRACK', ru: 'ТРАСС', words: ['TRACK', 'ISS', 'MAP', 'ORBIT'], fps: 1, tab: 'ISS', passT: 0, pass: null,
+  keys: [['1', 'ISS', () => { PAGES.M74.tab = 'ISS'; }], ['2', 'SUN', () => { PAGES.M74.tab = 'SUN'; }], ['3', 'MOON', () => { PAGES.M74.tab = 'MOON'; }]],
   draw(scr, r) {
     const T = now(), h = here(), tab = this.tab;
     const ir = W.panel(scr, r, this.code, this.name, tab + ' · TLE ' + TLE_SRC, t.TD);
@@ -2506,8 +2524,8 @@ PAGES.M71 = { code: 'M71', name: 'TRACK', ru: 'ТРАСС', words: ['TRACK', 'IS
     }
   } };
 
-// ------------------------------------------------------------------ M72 SKY
-PAGES.M72 = { code: 'M72', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 'PLANETS'], fps: 6, passT: 0, pass: null,
+// ------------------------------------------------------------------ M75 SKY
+PAGES.M75 = { code: 'M75', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 'PLANETS'], fps: 6, passT: 0, pass: null,
   keys: [['1', ...K_HDG]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
@@ -2569,10 +2587,10 @@ PAGES.M72 = { code: 'M72', name: 'SKY', ru: 'НЕБО', words: ['SKY', 'STARS', 
     const [mf, wax] = A.moonPhase(T); kv('MOON', Math.round(mf * 100) + ' % · ' + A.moonPhaseName(mf, wax));
   } };
 
-// ------------------------------------------------------------------ M74 KURS · ATT
-PAGES.M74 = { code: 'M74', name: 'KURS · ATT', ru: 'КУРС', words: ['KURS', 'ATT', 'ATTITUDE', 'DOCKING'], fps: 20, tgt: 'AUTO',
-  keys: [['1', 'AUTO', () => { PAGES.M74.tgt = 'AUTO'; }], ['2', 'ISS', () => { PAGES.M74.tgt = 'ISS'; }], ['3', 'MOON', () => { PAGES.M74.tgt = 'MOON'; }], ['4', 'SUN', () => { PAGES.M74.tgt = 'SUN'; }]],
-  cmds: [[['TGT', 'TARGET'], (app, arg) => { if (['AUTO', 'ISS', 'MOON', 'SUN'].includes(arg)) { PAGES.M74.tgt = arg; app.go('M74'); } else app.say('TGT AUTO|ISS|MOON|SUN', true); }, 'TGT AUTO|ISS|MOON|SUN']],
+// ------------------------------------------------------------------ M76 KURS · ATT
+PAGES.M76 = { code: 'M76', name: 'KURS · ATT', ru: 'КУРС', words: ['KURS', 'ATT', 'ATTITUDE', 'DOCKING'], fps: 20, tgt: 'AUTO',
+  keys: [['1', 'AUTO', () => { PAGES.M76.tgt = 'AUTO'; }], ['2', 'ISS', () => { PAGES.M76.tgt = 'ISS'; }], ['3', 'MOON', () => { PAGES.M76.tgt = 'MOON'; }], ['4', 'SUN', () => { PAGES.M76.tgt = 'SUN'; }]],
+  cmds: [[['TGT', 'TARGET'], (app, arg) => { if (['AUTO', 'ISS', 'MOON', 'SUN'].includes(arg)) { PAGES.M76.tgt = arg; app.go('M76'); } else app.say('TGT AUTO|ISS|MOON|SUN', true); }, 'TGT AUTO|ISS|MOON|SUN']],
   target(T, h) {
     const cand = [];
     if (TLE) { const [az, el] = A.issLook(TLE, T, h.lat, h.lon); cand.push({ name: 'ISS', az, el }); }
@@ -2657,8 +2675,8 @@ PAGES.M74 = { code: 'M74', name: 'KURS · ATT', ru: 'КУРС', words: ['KURS', 
     scr.put(inner.x, inner.b - 1, clip(at ? 'GRAVITY REF · ' + at.mode + ' · ' + tag('motion') : 'WAITING FOR MOTION SENSOR', inner.w), t.F);
   } };
 
-// ------------------------------------------------------------------ M75 GNSS
-PAGES.M75 = { code: 'M75', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 'POSITION', 'GEO'], fps: 1,
+// ------------------------------------------------------------------ M72 GNSS
+PAGES.M72 = { code: 'M72', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 'POSITION', 'GEO'], fps: 1,
   draw(scr, r) {
     const ir = W.panel(scr, r, this.code, this.name, 'GEOLOCATION ' + tag('geo'), srcStyle('geo'));
     let y = ir.y; const g = SRC.geo.v, T = now();
@@ -4295,12 +4313,12 @@ function briefLines() {
   if (nn && nn.state !== 'na' && nn.state !== 'stale') L.push(['RADAR', ncText(nn) + (nn.r.wet && ncMotion(nn.r) ? ' · ' + ncMotion(nn.r).replace(' · ', ' ') : '')]);
   const pr = pressure(); if (pr) L.push(['PRESSURE', pr.p.toFixed(1) + ' hPa · TREND ' + PT.NAMES[TREND.level]]);
   try { const hh = here(), si = A.sunInfo(T, hh.lat, hh.lon); if (si.rise && si.set) L.push(['SUN', 'RISE ' + hhmm(si.rise) + ' · SET ' + hhmm(si.set)]); } catch (e) { /* */ }
-  // trajet du matin (7.6 ROUTE), si la clé et les lieux sont réglés
+  // trajet du moment (7.1 ROUTE), si la clé et les lieux sont réglés
   if (RTE.key && RTE.home && RTE.work) {
     const dir = rteMain(), rr = RTE.res[dir], st = rteState(rr);
     const sev = evOnRoute(dir).filter(e => e.severe);
-    L.push(['TRAFFIC', rr && now() - rr.t < 1800 ? RTE_DIR[dir][2] + ' ' + minTxt(rr.dur) + ' · ' + st + (rr.stat ? ' +' + Math.max(0, Math.round((rr.dur - rr.stat) / 60)) : '') : (RTE.busy[dir] ? 'ASKING GOOGLE …' : '— · ' + pageAddr('M76'))]);
-    if (sev.length) L.push(['', sev[0].lab + ' KM ' + sev[0].km.toFixed(1) + (sev[0].road ? ' · ' + sev[0].road : '') + (sev.length > 1 ? ' · +' + (sev.length - 1) : '')]);
+    L.push(['TRAFFIC', rr && now() - rr.t < 1800 ? RTE_DIR[dir][2] + ' ' + minTxt(rr.dur) + ' · ' + st + (rr.stat ? ' +' + Math.max(0, Math.round((rr.dur - rr.stat) / 60)) : '') : (RTE.busy[dir] ? 'ASKING GOOGLE …' : (RTE.err ? RTE.err.slice(0, 26) + ' · ' + pageAddr('M71') : '— · ' + pageAddr('M71'))), RTE.err && !(rr && now() - rr.t < 1800) ? t.RB : undefined]);
+    if (sev.length) L.push(['', sev[0].lab + ' KM ' + sev[0].km.toFixed(1) + (sev[0].road ? ' · ' + sev[0].road : '') + (sev.length > 1 ? ' · +' + (sev.length - 1) : ''), t.RB]);
   }
   // agenda du jour
   L.push(['', ''], ['TODAY', '']);
@@ -4322,13 +4340,13 @@ function briefLines() {
   if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
   return L;
 }
-function cmdBrief(app) { showBrief(app, true); }           // à la demande (1.1 [*1], 5.1 [*2], BRIEF) : reste affiché jusqu'à ESC
-function showBrief(app, manual = false) {
-  const d = new Date();
-  app.helpOv = { t: now(), ttl: manual ? Infinity : 1800, code: 'BRF', title: 'BRIEFING · ' + DOW3[d.getDay()] + ' ' + pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1), rt: 'ESC CLOSE', lines: briefLines };
-  DAYREC.briefD = ymdOf(now()); daySave();
-  if (RTE.key && RTE.home && RTE.work) { const dir = rteMain(); if (!RTE.res[dir] || now() - RTE.res[dir].t > 900) rteFetch(dir); evTick(); }
-  if (manual) return;
+function cmdBrief(app) { app && app.go('M11'); }           // BRIEF, 5.1 [*2] : format 1.1
+function briefRefresh(force = false) {                       // trajet du moment (sens selon l'heure / la position) et météo
+  if (RTE.key && RTE.home && RTE.work) { const dir = rteMain(); if (force || !RTE.res[dir] || now() - RTE.res[dir].t > 900) rteFetch(dir, force); evTick(force); }
+  if (force) fetchWx();
+}
+function briefAuto(app) {                                    // premier réveil du jour : la console passe sur 1.1 BRIEF
+  app.go('M11'); DAYREC.briefD = ymdOf(now()); daySave(); briefRefresh();
   const ro = live('wx') ? rainOutlook(SRC.wx.v) : null, nx = agendaNext();
   log('BRF', 'BRIEFING · ' + (live('wx') ? SRC.wx.v.temp.toFixed(0) + ' °C · ' + rainText(ro) : 'NO WEATHER') + (nx ? ' · ' + evWhen(nx.start) + ' ' + nx.title.toUpperCase() : ''));
 }
@@ -4494,7 +4512,7 @@ class App {
   constructor() {
     this.cmd = null; this.msg = ''; this.msgT = 0; this.msgWarn = false; this.armed = null;
     this.pad = null; this.padT = 0; this.prev = null; this.lampT0 = 0; this.t0 = now(); this.hits = [];
-    this.gi = 0; this.pi = GROUPS.map(() => 0);        // démarrage toujours sur 1.1 (M11 OVERVIEW)
+    this.gi = 0; this.pi = GROUPS.map(() => 0);        // démarrage toujours sur 1.1 (M11 BRIEF)
     this.splash = now(); this.ready = false;          // écran de chargement, puis attente d'un geste
   }
   get page() { return PAGES[GROUPS[this.gi][3][this.pi[this.gi]]]; }
@@ -4630,7 +4648,7 @@ class App {
     for (const [k, d] of lines) {
       if (y >= ir.b - 1) break;
       if (!k && !d) { y++; continue; }
-      if (k && (!d || ['ACTIONS'].includes(k) || (o.code === 'BRF' && ['NIGHT', 'WEATHER'].includes(k)))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
+      if (k && (!d || ['ACTIONS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, d, t.D); continue; }
       scr.put(ir.x, y, clip(k, kw - 1), t.B); scr.put(ir.x + kw, y++, clip(d, ir.w - kw), d.startsWith('=') ? t.F : t.D);
     }
     scr.put(ir.x, ir.b - 1, clip('ESC CLOSE · ↵ COMMAND', ir.w), t.F);
@@ -4668,7 +4686,7 @@ class App {
     if (/^[1-9]$/.test(k)) { if (!this.action(k)) { const n = +k - 1; if (n < GROUPS[this.gi][3].length) this.show(this.gi, n); } return; }
     if (/^[a-z]$/i.test(k) && !e.ctrlKey && !e.metaKey) { openCmd(k); e.preventDefault(); }
   }
-  start() { if (this.ready) return; this.ready = true; armSensorsGesture(); haptic(20); log('SYS', 'CONSOLE START · 1.1 OVERVIEW'); }
+  start() { if (this.ready) return; this.ready = true; armSensorsGesture(); haptic(20); log('SYS', 'CONSOLE START · 1.1 BRIEF'); }
   // ---------------------------------------------------------- dessin
   draw(scr) {
     this.hits = [];
@@ -4686,7 +4704,7 @@ class App {
       r = new Rect(0, 3, Wd, y0 - 3); this.drawConsole(scr, 0, y0, Wd);
     }
     const page = this.page;
-    if (BRIEF.pending) { BRIEF.pending = false; showBrief(this); }
+    if (BRIEF.pending) { BRIEF.pending = false; briefAuto(this); }
     if (this.helpOv && now() - this.helpOv.t > (this.helpOv.ttl || 45)) this.helpOv = null;
     try { if (this.helpOv) this.drawHelp(scr, r); else page.draw(scr, r, this); }
     catch (err) { const ir = W.panel(scr, r, page.code, page.name, 'FAULT', t.TR, true); scr.put(ir.x, ir.y + 1, clip('FORMAT FAULT · ' + err.message, ir.w), t.R); console.error(err); }
@@ -5341,7 +5359,7 @@ PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
   } };
 
 
-// ---------------------------------------------------------------------------------------- 7.6 ROUTE : trajet maison ↔ travail
+// ---------------------------------------------------------------------------------------- 7.1 ROUTE : trajet maison ↔ travail
 // Durée avec le trafic actuel et état du trafic par Google Routes API (clé personnelle : ROUTEKEY <clé>), en voiture.
 // Facturation : 1 requête = 1 événement « Compute Routes Pro » (TRAFFIC_AWARE + tracé simple). Objectif : jamais facturé.
 //  · Grafit s'arrête à ROUTE_DAY requêtes par jour et au plafond mensuel (4000, sous les 5000 gratuits) ;
@@ -5356,8 +5374,8 @@ const ROUTE_FIELDS = 'routes.duration,routes.staticDuration,routes.distanceMeter
 const TT_DAY = 60, TT_MONTH = 2000;                           // TomTom : 2500 gratuits par mois
 const RTE0 = () => ({ key: '', ttKey: '', home: null, work: null, res: {}, hist: {}, cnt: { d: '', n: 0, m: '', nm: 0, tn: 0, tnm: 0 }, price: { t: 0, okT: 0, cap: null, sku: '', fails: 0 }, ev: { bf: null, tt: null } });
 const RTE = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.route') || '{}'), o = Object.assign(RTE0(), j); o.cnt = Object.assign(RTE0().cnt, j.cnt || {}); o.price = Object.assign(RTE0().price, j.price || {}); o.ev = Object.assign(RTE0().ev, j.ev || {}); return o; } catch (e) { return RTE0(); } })();
-RTE.busy = {}; RTE.evBusy = {};
-const rteSave = () => { try { const { busy, evBusy, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
+RTE.busy = {}; RTE.evBusy = {}; RTE.fail = {};
+const rteSave = () => { try { const { busy, evBusy, fail, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
 const RTE_DIR = { hw: ['home', 'work', 'HOME → WORK'], wh: ['work', 'home', 'WORK → HOME'] };
 const rtePlaceTxt = p => !p ? '—' : (p.addr ? p.addr.toUpperCase() : fmtLL(p.lat, p.lon));
 const rteWp = p => p.addr ? { address: p.addr } : { location: { latLng: { latitude: p.lat, longitude: p.lon } } };
@@ -5386,9 +5404,10 @@ function polyDecode(str) {                                   // algorithme des p
   }
   return pts;
 }
-function rteFetch(dir) {
+function rteFetch(dir, force = false) {
   const [a, b] = RTE_DIR[dir], A = RTE[a], B = RTE[b];
-  if (!RTE.key || !A || !B || RTE.busy[dir]) return false;
+  if (!RTE.key || !A || !B || (RTE.busy[dir] && now() - RTE.busy[dir] < 60)) return false;
+  if (!force && RTE.fail[dir] && now() - RTE.fail[dir] < 300) return false;     // échec récent : nouvel essai dans 5 min
   const q = rteQuota(); if (!q.ok) { RTE.err = 'SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH'); return false; }
   RTE.cnt.n++; RTE.cnt.nm++; RTE.busy[dir] = now(); rteSave();
   const body = JSON.stringify({ origin: rteWp(A), destination: rteWp(B), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE', languageCode: 'fr-FR', units: 'METRIC' });
@@ -5402,12 +5421,12 @@ function rteIngest(d) {
   let j = null; try { j = JSON.parse(d.body || 'null'); } catch (e) { /* */ }
   if (d.code !== 200 || !j || !j.routes || !j.routes.length) {
     const st = j && j.error ? j.error.status || '' : '', msg = st === 'RESOURCE_EXHAUSTED' ? 'GOOGLE QUOTA REACHED (CONSOLE CAP)' : (st === 'PERMISSION_DENIED' ? 'KEY REFUSED · CHECK ITS RESTRICTIONS' : (j && j.error ? st + ' ' + (j.error.message || '') : (d.err || 'HTTP ' + d.code)));
-    RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
+    RTE.fail[dir] = now(); RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
   }
   const r = j.routes[0], sec = x => x ? parseFloat(String(x).replace('s', '')) : null;
   const res = { t: now(), dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
     poly: r.polyline && r.polyline.encodedPolyline ? r.polyline.encodedPolyline : (RTE.res[dir] && RTE.res[dir].poly) || '' };
-  RTE.res[dir] = res; RTE.err = '';
+  RTE.res[dir] = res; RTE.err = ''; delete RTE.fail[dir];
   const day = ymdOf(now()); (RTE.hist[day] = RTE.hist[day] || []).push([Math.round(res.t), dir, Math.round(res.dur), Math.round(res.stat || 0)]);
   const ks = Object.keys(RTE.hist).sort(); while (ks.length > 7) delete RTE.hist[ks.shift()];
   rteSave(); evTick();
@@ -5416,9 +5435,9 @@ function rteIngest(d) {
 const rteNear = k => { const p = RTE[k]; if (!p || p.lat == null || !(live('geo') && SRC.geo.mode === 'live')) return false; const g = SRC.geo.v; return A.dist(g.lat, g.lon, p.lat, p.lon) < 0.5; };
 const rteMain = () => (new Date().getHours() >= 12 || rteNear('work')) ? 'wh' : 'hw';
 function rteTick(force = false) {                          // page affichée : sens utile toutes les 10 min, l'autre toutes les 30
-  const T = now(), m = PAGES.M76.dir(), o = m === 'hw' ? 'wh' : 'hw';
-  if (force || !RTE.res[m] || T - RTE.res[m].t > ROUTE_EVERY) rteFetch(m);
-  if (force || !RTE.res[o] || T - RTE.res[o].t > 3 * ROUTE_EVERY) rteFetch(o);
+  const T = now(), m = PAGES.M71.dir(), o = m === 'hw' ? 'wh' : 'hw';
+  if (force || !RTE.res[m] || T - RTE.res[m].t > ROUTE_EVERY) rteFetch(m, force);
+  if (force || !RTE.res[o] || T - RTE.res[o].t > 3 * ROUTE_EVERY) rteFetch(o, force);
   priceTick();
 }
 // ---- évènements sur le trajet
@@ -5516,14 +5535,14 @@ function cmdPlace(app, arg) {
     if (!(live('geo') && SRC.geo.mode === 'live') || SRC.geo.v.acc > 150) return app && app.say('PLACE ' + w0 + ' · NO PRECISE POSITION NOW · TYPE THE ADDRESS', true);
     RTE[k] = { lat: +SRC.geo.v.lat.toFixed(5), lon: +SRC.geo.v.lon.toFixed(5) };
   }
-  RTE.res = {}; RTE.ev = { bf: null, tt: null }; rteSave(); log('NAV', 'PLACE ' + k.toUpperCase() + ' SET');
+  RTE.res = {}; RTE.fail = {}; RTE.ev = { bf: null, tt: null }; rteSave(); log('NAV', 'PLACE ' + k.toUpperCase() + ' SET');
   app && app.say('PLACE ' + k.toUpperCase() + ' · ' + rtePlaceTxt(RTE[k]));
 }
 function cmdKey(app, field, label, re) {
   const raw = app && app.rawLine ? app.rawLine.trim().split(/\s+/).slice(1).join('') : '';
   if (/^OFF$/i.test(raw)) { RTE[field] = ''; rteSave(); return app && app.say(label + ' KEY REMOVED'); }
   if (!re.test(raw)) return app && app.say(label + 'KEY <KEY> · ' + label + 'KEY OFF', true);
-  RTE[field] = raw; RTE.err = ''; rteSave(); log('NAV', label + ' KEY SET');
+  RTE[field] = raw; RTE.err = ''; RTE.fail = {}; rteSave(); log('NAV', label + ' KEY SET');
   app && app.say(label + ' KEY SET · ' + raw.slice(0, 6) + '…'); if (field === 'key') priceTick(true);
 }
 function rteMaps(dir) {                                      // itinéraire dans Google Maps (guidage)
@@ -5533,10 +5552,10 @@ function rteMaps(dir) {                                      // itinéraire dans
   if (!(APK && nativeCmd({ cmd: 'openUrl', url }))) window.open(url, '_blank');
   return true;
 }
-PAGES.M76 = { code: 'M76', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAFFIC', 'TRAFIC', 'COMMUTE', 'TRAJET'], fps: 1, swap: false,
+PAGES.M71 = { code: 'M71', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAFFIC', 'TRAFIC', 'COMMUTE', 'TRAJET'], fps: 1, swap: false,
   keys: [['1', 'REFRESH', app => { rteTick(true); evTick(true); app && app.say('ROUTE · UPDATING (' + rteQuota().day + ' / ' + ROUTE_DAY + ' TODAY)'); }, ['REFRESH', 'UPDATE']],
-    ['2', 'SWAP', app => { PAGES.M76.swap = !PAGES.M76.swap; app && app.say('ROUTE · ' + RTE_DIR[PAGES.M76.dir()][2] + ' FIRST'); }, ['SWAP', 'INVERT']],
-    ['3', 'MAPS', app => { const ok = rteMaps(PAGES.M76.dir()); app && app.say(ok ? 'OPENING GOOGLE MAPS' : 'SET HOME AND WORK FIRST', !ok); }, ['MAPS', 'GOOGLEMAPS', 'NAVIGATE']]],
+    ['2', 'SWAP', app => { PAGES.M71.swap = !PAGES.M71.swap; app && app.say('ROUTE · ' + RTE_DIR[PAGES.M71.dir()][2] + ' FIRST'); }, ['SWAP', 'INVERT']],
+    ['3', 'MAPS', app => { const ok = rteMaps(PAGES.M71.dir()); app && app.say(ok ? 'OPENING GOOGLE MAPS' : 'SET HOME AND WORK FIRST', !ok); }, ['MAPS', 'GOOGLEMAPS', 'NAVIGATE']]],
   cmds: [[['PLACE', 'LIEU'], (app, arg) => cmdPlace(app, arg), 'PLACE HOME|WORK [ADDRESS|LAT,LON]'],
     [['ROUTEKEY'], app => cmdKey(app, 'key', 'ROUTE', /^[A-Za-z0-9_\-]{30,60}$/), 'ROUTEKEY <GOOGLE KEY>|OFF'],
     [['INCIDENTKEY'], app => cmdKey(app, 'ttKey', 'INCIDENT', /^[A-Za-z0-9_\-]{20,64}$/), 'INCIDENTKEY <TOMTOM KEY>|OFF']],

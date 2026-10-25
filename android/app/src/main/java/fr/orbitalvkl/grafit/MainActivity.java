@@ -245,7 +245,7 @@ public class MainActivity extends Activity {
                     getWindow().setAttributes(lp);
                     break;
                 }
-                case "route": {                                  // 7.6 ROUTE : Google Routes API, requête native (empreinte de l'appli)
+                case "route": {                                  // 7.1 ROUTE : Google Routes API, requête native (empreinte de l'appli)
                     final String id = o.optString("id"), key = o.optString("key"), body = o.optString("body"), fields = o.optString("fields", "routes.duration,routes.staticDuration,routes.distanceMeters");
                     new Thread(() -> routeCall(id, key, body, fields)).start();
                     break;

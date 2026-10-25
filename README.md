@@ -21,9 +21,9 @@ arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargemen
 
 ## Groupes et codes (1.10)
 
-Code de format = M + adresse : 1 STATUS (M11 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
+Code de format = M + adresse : 1 STATUS (M11 BRIEF, M12 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
 3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 WEATHER, M42 RADAR, M43 FORECAST, M44 WEEK) ·
-5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71–M75, M76 ROUTE) ·
+5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71 ROUTE, M72 GNSS, M73 SATS, M74 TRACK, M75 SKY, M76 KURS) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
 
 Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
@@ -137,6 +137,15 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.13.0
+
+- **1.1 BRIEF** : le briefing devient un format, affiché en continu (nuit, météo, trajet du moment, agenda, état) ;
+  `*1` actualise météo et trafic. La console démarre dessus ; au premier réveil du jour elle y revient. `BRIEF` y mène
+  de partout (et 5.1 `*2`). 1.2 OVERVIEW (ancien M11).
+- **7 NAV réordonné** : 7.1 ROUTE (M71), 7.2 GNSS (M72), 7.3 SATS (M73), 7.4 TRACK (M74), 7.5 SKY (M75), 7.6 KURS (M76).
+- **ROUTE** : après une requête Google en échec (clé refusée, réseau), nouvel essai au bout de 5 min seulement
+  (auparavant une requête par seconde tant que la page restait affichée, quota du jour vite épuisé) ; `*1` force.
 
 ## 1.12.1
 
