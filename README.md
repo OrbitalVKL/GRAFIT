@@ -138,6 +138,19 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.14.0
+
+- **Taille d'affichage fixe** : plus de zoom (46 colonnes sur la largeur, toujours) ; `*6` / `*7` de 9.1 règlent
+  désormais la luminosité.
+- **Plus de place pour les formats** (+4 lignes) : la rangée d'onglets des groupes disparaît (le pavé porte déjà les
+  groupes et allume le groupe actif), le filet sous le bandeau est tracé dans la 2e ligne, plus d'espace entre les
+  onglets des formats et le pavé.
+- **Contrôle de tous les formats** sur la grille du Pixel 10 Pro avec barres système (46 × 43 à 45) : rien n'est coupé.
+  Sur un écran court, chaque format retire d'abord ses lignes d'espacement, puis regroupe (1.1 BRIEF : défauts, pas,
+  soleil, vent + pression, bilan 7 nuits ; 3.4 : sources absentes sur une ligne), réduit ses courbes, et ne garde
+  jamais une coupure silencieuse. Corrigés : 5.1 (7 derniers réveils), 5.3 (tableau DAYS, 30 jours), 4.3 (4 tranches +
+  frise horaire), 6.4 (courbe), 7.1 (courbe du jour), 4.2 (touches), 3.4.
+
 ## 1.13.1
 
 - **3.4 SOURCES · API** : ligne `API` (Google, TomTom, Bison Futé : OK / ERR / ?) ; `*8` (ou `API` de partout) ouvre le
