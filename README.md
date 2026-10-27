@@ -138,6 +138,12 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.14.1
+
+- **Position de repli neutre** : la simulation et le repli sans GNSS ne pointent plus sur une ville réelle de l'auteur
+  (point zéro de Paris). Dès le premier fix, la dernière position connue (arrondie à ~1 km) sert de repli ; elle reste
+  dans le stockage local du téléphone et n'est envoyée nulle part.
+
 ## 1.14.0
 
 - **Taille d'affichage fixe** : plus de zoom (46 colonnes sur la largeur, toujours) ; `*6` / `*7` de 9.1 règlent

@@ -923,8 +923,8 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.14.0', BUILD: '20261025', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
-  HOME: { lat: 44.84, lon: -0.57, name: 'BDX' },          // repli tant que le GNSS n'a pas de position
+  VERSION: '1.14.1', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
   // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
@@ -1418,7 +1418,7 @@ function simValue(k, t) {
       const sp = (dt % 75) < 0.35 ? 2.1 * G : 0;                      // choc bref toutes les 75 s
       return { ax: m[2][0] * G + sp + 0.15 * Math.sin(t * 7.1), ay: m[2][1] * G + 0.12 * Math.sin(t * 5.3), az: m[2][2] * G + 0.1 * Math.sin(t * 6.7), ra: 18 * nz(t, 2, 0.7, 0.3), rb: 12 * nz(t, 1.7, 0.9, 0.4), rg: 9 * nz(t, 2.3, 1.1, 0.5) };
     }
-    case 'geo': return { lat: 44.8378 + 0.0003 * Math.sin(t / 50), lon: -0.5792 + 0.0004 * Math.cos(t / 61), alt: 24 + 2 * Math.sin(t / 30), acc: 11 + 5 * Math.sin(t / 17), altAcc: 8, speed: 0.4 + 0.3 * Math.sin(t / 9), course: null, fixT: t - 1 };
+    case 'geo': return { lat: 48.8534 + 0.0003 * Math.sin(t / 50), lon: 2.3488 + 0.0004 * Math.cos(t / 61), alt: 24 + 2 * Math.sin(t / 30), acc: 11 + 5 * Math.sin(t / 17), altAcc: 8, speed: 0.4 + 0.3 * Math.sin(t / 9), course: null, fixT: t - 1 };
     case 'batt': return { level: Math.max(0.05, 0.64 - dt / 36000), charging: false, tFull: Infinity, tEmpty: 6.2 * 3600 - dt };
     case 'net': return { online: true, type: 'wifi', eff: '4g', down: 38 + 6 * Math.sin(t / 20), rtt: 50 + 18 * nz(t, 5, 2, 1) + ((dt % 47) < 4 ? 320 : 0), save: false };
     case 'mic': return { db: -44 + 7 * nz(t, 1.3, 0.4, 0.17) + ((dt % 40) < 4.5 ? 34 : 0) };
@@ -1494,7 +1494,17 @@ function tagx(k) {
   return ({ geo: 'NO FIX · CHECK LOCATION', wx: 'NO NETWORK', net: 'NO LINK INFO', batt: 'NO BATTERY INFO', orient: 'NO COMPASS', motion: 'NO MOTION SENSOR',
     baro: 'NO BAROMETER', mic: 'MIC OFF', cell: 'NO CELL INFO', steps: 'NO STEP SENSOR', store: 'NO STORAGE INFO' })[k] || 'NOT AVAILABLE';
 }
-const here = () => live('geo') ? { lat: SRC.geo.v.lat, lon: SRC.geo.v.lon, name: 'GNSS' } : CFG.HOME;
+// dernière position GNSS connue, arrondie à ~1 km, gardée seulement dans le stockage local du téléphone
+const LASTPOS = (() => { try { const o = JSON.parse(localStorage.getItem('grafit.lastpos') || 'null'); if (o && isFinite(o.lat) && isFinite(o.lon)) return o; } catch (e) { /* */ } return { lat: null, lon: null, t: 0 }; })();
+function lastPosKeep() {
+  if (!(live('geo') && SRC.geo.mode === 'live') || !(SRC.geo.v.acc < 1000)) return;
+  const g = SRC.geo.v, T = now(), lat = Math.round(g.lat * 100) / 100, lon = Math.round(g.lon * 100) / 100;
+  if (lat === LASTPOS.lat && lon === LASTPOS.lon && T - LASTPOS.t < 3600) return;
+  LASTPOS.lat = lat; LASTPOS.lon = lon; LASTPOS.t = T;
+  try { localStorage.setItem('grafit.lastpos', JSON.stringify(LASTPOS)); } catch (e) { /* */ }
+}
+const here = () => { if (live('geo')) { lastPosKeep(); return { lat: SRC.geo.v.lat, lon: SRC.geo.v.lon, name: 'GNSS' }; }
+  return LASTPOS.lat != null ? { lat: LASTPOS.lat, lon: LASTPOS.lon, name: 'LAST FIX' } : CFG.HOME; };
 
 // ---------------------------------------------------------------------------------------- grandeurs dérivées
 const DER = { u: [0, 0, 1], gPeak: 0, gPeakT: 0, prevRho: 0, prevT: 0 };
@@ -2690,7 +2700,7 @@ PAGES.M72 = { code: 'M72', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
       kv('COURSE', g.course != null && isFinite(g.course) ? Math.round(g.course) + '° ' + card(g.course) : '—');
       kv('LOCATOR', locator(g.lat, g.lon));
       kv('FIX AGE', Math.max(0, Math.round(T - g.fixT)) + ' s', T - g.fixT > AL.GnssLostSecs ? t.RB : t.N);
-    } else { noData(scr, ir.x, y++, ir.w, SRC.geo.mode === 'na' ? 'NO POSITION · USING ' + CFG.HOME.name : 'WAITING FOR A FIX · USING ' + CFG.HOME.name); y++; }
+    } else { noData(scr, ir.x, y++, ir.w, SRC.geo.mode === 'na' ? 'NO POSITION · USING ' + here().name : 'WAITING FOR A FIX · USING ' + here().name); y++; }
     const h = here(), s = A.sunInfo(T, h.lat, h.lon), m = A.moonInfo(T, h.lat, h.lon);
     y++; if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'SUN · MOON', h.name === 'GNSS' ? 'AT YOUR FIX' : 'AT ' + h.name);
     kv('SUN AZ · EL', Math.round(s.az) + '° · ' + sgn(s.el, 1) + '°');
@@ -2970,7 +2980,7 @@ PAGES.M41 = { code: 'M41', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
     if (vis != null) kv('VISIBILITY', vis >= 10000 ? Math.round(vis / 1000) + ' km' : (vis / 1000).toFixed(1) + ' km', vis < 1000 ? t.B : t.N);
     const dr = dayRec(w, T);
     if (dr && dr.rise && dr.set) kv('SUN', T < dr.rise ? 'RISES ' + hm(dr.rise) + ' · IN ' + durHM((dr.rise - T) / 1000) : (T < dr.set ? 'SETS ' + hm(dr.set) + ' · IN ' + durHM((dr.set - T) / 1000) : 'SET ' + hm(dr.set)));
-    kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : CFG.HOME.name);
+    kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : here().name);
     y++;
     // pluie au quart d'heure sur 6 h si elle arrive (ou sur demande), sinon pression
     const ro = rainOutlook(w, T) || { state: 'dry' }, has6 = !!(w.mt && w.mp && ro.i15 >= 0);
@@ -5247,7 +5257,7 @@ function bgCfgTick(force = false) {
   if (!force && !(moved && T - BGC.t > 60) && T - BGC.t < 1800) return;
   BGC.t = T; const o = { cmd: 'bgCfg', vibe: !!SET.vibe };
   if (g) { BGC.lat = g.lat; BGC.lon = g.lon; o.lat = +g.lat.toFixed(3); o.lon = +g.lon.toFixed(3); }
-  else if (BGC.lat == null) { o.lat = CFG.HOME.lat; o.lon = CFG.HOME.lon; }
+  else if (BGC.lat == null) { const h = here(); o.lat = h.lat; o.lon = h.lon; }
   nativeCmd(o);
 }
 function cmdVibe(app, arg) {
