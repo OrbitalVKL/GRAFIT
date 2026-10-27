@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.14.3', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.14.4', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -5412,13 +5412,13 @@ PAGES.M64 = { code: 'M64', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
     sub(scr, ir.x, y++, ir.w, 'LOAD', on ? 'LIVE · ' + ageTxt(now() - S16.t) : 'LAST KNOWN · ' + ageTxt(now() - S16.t), on ? t.D : t.R);
     const bar = (lab, frac, txt, al, red) => {
       if (y >= ir.b) return;
-      scr.put(ir.x, y, lab, al ? t.RB : t.D); W.segBar(scr, ir.x + 7, y, Math.max(4, ir.w - 7 - 15), frac, red, al); W.rjust(scr, ir.r, y, txt, al ? t.RB : vs); y++;
+      scr.put(ir.x, y, lab, al ? t.RB : t.D); W.segBar(scr, ir.x + 7, y, Math.max(4, ir.w - 7 - Math.max(15, slen(txt) + 2)), frac, red, al); W.rjust(scr, ir.r, y, txt, al ? t.RB : vs); y++;
     };
     if (o.cpu && o.cpu.l != null) bar('CPU', o.cpu.l / 100, Math.round(o.cpu.l) + ' %', false, null);
     if (o.gpu && o.gpu.l != null) bar('GPU', o.gpu.l / 100, Math.round(o.gpu.l) + ' %', false, null);
     if (o.gpu && o.gpu.mt) bar('VRAM', o.gpu.mu / o.gpu.mt, (o.gpu.mu / 1024).toFixed(1) + '/' + Math.round(o.gpu.mt / 1024) + ' GB', false, null);
     if (o.ram && o.ram.t) { const f = o.ram.u / o.ram.t; bar('RAM', f, (+o.ram.u).toFixed(1) + '/' + Math.round(o.ram.t) + ' GB', f * 100 >= S16_LIM.ram, S16_LIM.ram / 100); }
-    for (const [dl, free] of o.disk || []) bar('DISK ' + dl, 1 - free / 100, free + ' % FREE', free <= S16_LIM.disk, 1 - S16_LIM.disk / 100);
+    for (const [dl, free, gb] of o.disk || []) bar('DISK ' + dl, 1 - free / 100, gb != null ? (gb >= 100 ? Math.round(gb) : gb.toFixed(1)) + ' GB · ' + (+free).toFixed(1) + ' %' : free + ' % FREE', free <= S16_LIM.disk, 1 - S16_LIM.disk / 100);
     if (!tight) y++;
     kv('UPTIME', upTxt(o.up));
     if (o.gpu && o.gpu.p != null) kv('GPU POWER', Math.round(o.gpu.p) + ' W');

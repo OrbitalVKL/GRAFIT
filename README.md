@@ -138,6 +138,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.14.4
+
+- **6.4 S-16** : disques en Go libres + % à 0,1 près ; lecteur Google Drive exclu ; uptime depuis le dernier démarrage
+  réel (démarrage rapide de Windows et sortie de veille compris, journal Système) — script `tools/s16-link.ps1` à jour.
+
 ## 1.14.3
 
 - **7.1 ROUTE** : calcul `TRAFFIC_AWARE_OPTIMAL` (celui de l'appli Google Maps) au lieu de `TRAFFIC_AWARE` (version

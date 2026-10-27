@@ -123,14 +123,32 @@ function Get-Gpu {
   @{ t = (& $n $f[0]); l = (& $n $f[1]); mu = (& $n $f[2]); mt = (& $n $f[3]); p = (& $n $f[4]) }
 }
 
-$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+# Démarrage réel : avec le démarrage rapide de Windows, « Arrêter » met le noyau en veille prolongée et
+# LastBootUpTime ne change pas (7 jours après un seul redémarrage). On prend donc le dernier démarrage noté au
+# journal Système (Kernel-Boot 27 : chaque démarrage, rapide compris) ou la dernière sortie de veille
+# (Power-Troubleshooter 1), recalculé toutes les 5 minutes.
+$script:bootT = $null; $script:bootChk = [datetime]::MinValue
+function Get-SessionStart {
+  if (((Get-Date) - $script:bootChk).TotalMinutes -lt 5 -and $script:bootT) { return $script:bootT }
+  $script:bootChk = Get-Date
+  $c = @((Get-CimInstance Win32_OperatingSystem).LastBootUpTime)
+  foreach ($f in @(@{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Boot'; Id = 27 },
+                   @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Power-Troubleshooter'; Id = 1 })) {
+    try { $e = Get-WinEvent -FilterHashtable $f -MaxEvents 1 -ErrorAction Stop; if ($e) { $c += $e.TimeCreated } } catch { }
+  }
+  $script:bootT = ($c | Sort-Object -Descending | Select-Object -First 1)
+  $script:bootT
+}
 function Get-State {
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
   $cpuL = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
   $os = Get-CimInstance Win32_OperatingSystem
   $ramT = [Math]::Round($os.TotalVisibleMemorySize / 1MB, 1); $ramU = [Math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 1)
-  $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { , @($_.DeviceID.TrimEnd(':'), [Math]::Round(100.0 * [double]$_.FreeSpace / [Math]::Max(1.0, [double]$_.Size))) })
-  @{ v = 1; k = 's'; pc = $env:COMPUTERNAME; t = $now; up = [int]((Get-Date) - $boot).TotalSeconds
+  # disques locaux réels seulement (NTFS / ReFS) : le lecteur Google Drive (G:, FAT32 virtuel) est exclu
+  # [lettre, % libre à 0,1 près, Go libres]
+  $disks = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Object { $_.FileSystem -in 'NTFS', 'ReFS' -and $_.VolumeName -notmatch 'Google' -and $_.Size -gt 0 } |
+    ForEach-Object { , @($_.DeviceID.TrimEnd(':'), [Math]::Round(100.0 * [double]$_.FreeSpace / [double]$_.Size, 1), [Math]::Round([double]$_.FreeSpace / 1GB, 1)) })
+  @{ v = 1; k = 's'; pc = $env:COMPUTERNAME; t = $now; up = [int]((Get-Date) - (Get-SessionStart)).TotalSeconds
      cpu = @{ l = $cpuL; t = (Get-CpuTemp) }; gpu = (Get-Gpu); ram = @{ u = $ramU; t = $ramT }; disk = $disks }
 }
 
