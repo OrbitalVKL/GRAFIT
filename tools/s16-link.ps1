@@ -58,7 +58,10 @@ if ($Install) {
     $l.TargetPath = $ps; $l.Arguments = $hiddenArgs; $l.WindowStyle = 7; $l.WorkingDirectory = Split-Path $PSCommandPath; $l.Save()
     $how = 'raccourci du dossier Démarrage'
   }
-  if (-not (Get-LinkProcs).Count) { Start-Process -FilePath $ps -ArgumentList $hiddenArgs -WindowStyle Hidden }
+  # une version déjà lancée garderait son ancien code : on l'arrête avant de relancer celle-ci
+  $old = Get-LinkProcs
+  if ($old.Count) { $old | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1; Write-Host ("Ancienne diffusion arrêtée (" + $old.Count + " processus).") }
+  Start-Process -FilePath $ps -ArgumentList $hiddenArgs -WindowStyle Hidden
   Start-Sleep -Seconds 2
   Write-Host "Lien S-16 installé ($how) : il tourne caché et redémarre à chaque ouverture de session."
   Write-Host 'Cette fenêtre peut être fermée.'
