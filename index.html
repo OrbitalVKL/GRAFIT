@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.14.1', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.14.2', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -932,8 +932,8 @@ const CFG = {
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
     GnssLostSecs: 300, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
-  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
-  WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
+  WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day,precipitation&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
+  WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day,precipitation&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
   TLE_URL: 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE',
 };
 const now = () => Date.now() / 1000;
@@ -1325,7 +1325,7 @@ async function fetchWx() {
         uv: dl.uv_index_max ? dl.uv_index_max[i] : null, rise: dl.sunrise && dl.sunrise[i] ? abs(dl.sunrise[i]) : null, set: dl.sunset && dl.sunset[i] ? abs(dl.sunset[i]) : null }; });
     }
     feedLive('wx', { temp: c.temperature_2m, feel: c.apparent_temperature, dew: c.dew_point_2m, rh: c.relative_humidity_2m, p: c.pressure_msl, wind: c.wind_speed_10m,
-      dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni,
+      dir: c.wind_direction_10m, gust: c.wind_gusts_10m, code: c.weather_code, pnow: c.precipitation ?? null, day: c.is_day, hp: h.pressure_msl, ht: h.temperature_2m, hpop: h.precipitation_probability, htime: h.time, ni,
       hms: h.time.map(abs), hpr: h.precipitation || null, hcode: h.weather_code || null, happ: h.apparent_temperature || null, hwind: h.wind_speed_10m || null,
       hgust: h.wind_gusts_10m || null, hdir: h.wind_direction_10m || null, hcloud: h.cloud_cover || null, huv: h.uv_index || null, hvis: h.visibility || null, hday: h.is_day || null,
       mt: m && m.time ? m.time.map(abs) : null, mp: m ? m.precipitation : null, days, at: now() });
@@ -1345,9 +1345,26 @@ async function fetchWx() {
 const RAIN_MM15 = 0.1, RAIN_MMH = 0.2, RAIN_POP = 50;
 const rainInt = r => r < 2.5 ? 'LIGHT' : (r < 7.6 ? 'MODERATE' : 'HEAVY');
 const hm = ms => { const d = new Date(ms); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); };
+// pluie observée maintenant (code météo courant, précipitation du moment, radar au-dessus) : prime sur le modèle
+const WET_CODE = c => c != null && ((c >= 51 && c <= 67) || (c >= 80 && c <= 82) || c >= 95);
+function rainObs(w) {
+  let nn = null; try { nn = ncNow(); } catch (e) { /* */ }
+  if (nn && nn.state === 'now') return { src: 'RADAR', rate: mmhOf(nn.peak), until: nn.until ? nn.until * 1000 : null };
+  if (w.pnow != null && w.pnow >= RAIN_MM15) return { src: 'OBS', rate: w.pnow, until: null };
+  if (WET_CODE(w.code) && now() * 1000 - (w.at || 0) * 1000 < 5400e3) return { src: 'OBS', rate: Math.max(w.pnow || 0, 0.3), until: null };
+  return null;
+}
 function rainOutlook(w, T = Date.now()) {
   if (!w) return null;
   let i15 = -1;
+  if (Math.abs(T - Date.now()) < 6e5) {                       // « maintenant » : l'observation corrige un modèle trop sec
+    const ob = rainObs(w);
+    if (ob) {
+      let i = w.mt ? w.mt.findIndex(x => x > T) : -1, stop = ob.until, sum = 0, peak = ob.rate;
+      if (!stop && i >= 0) { let k = i; while (k < w.mt.length && k < i + 48 && w.mp[k] != null && w.mp[k] >= RAIN_MM15) { peak = Math.max(peak, w.mp[k] * 4); sum += w.mp[k]; k++; } if (k > i) stop = w.mt[k - 1]; }
+      return { state: 'now', rate: ob.rate, peak, sum, stop, i15: i, obs: ob.src };
+    }
+  }
   if (w.mt && w.mp) {
     i15 = w.mt.findIndex(x => x > T);
     if (i15 >= 0) {
@@ -1376,7 +1393,7 @@ function rainOutlook(w, T = Date.now()) {
 function rainText(o) {
   if (!o) return 'NO FORECAST';
   switch (o.state) {
-    case 'now': return 'RAINING · ' + rainInt(o.rate) + ' · ' + (o.stop ? 'STOPS ~' + hm(o.stop) : '> 12 H');
+    case 'now': return 'RAINING · ' + rainInt(o.rate) + (o.obs ? ' (' + o.obs + ')' : '') + ' · ' + (o.stop ? 'STOPS ~' + hm(o.stop) : (o.obs ? 'END ?' : '> 12 H'));
     case 'soon': return rainInt(o.peak) + ' FROM ' + hm(o.at) + ' · ~' + (o.dur >= 120 ? Math.round(o.dur / 60) + ' H' : o.dur + ' MIN');
     case 'later': return (o.pop != null && o.pop >= 60 ? 'LIKELY' : 'POSSIBLE') + ' ~' + hm(o.at) + (o.pop != null ? ' · ' + o.pop + ' %' : '');
     case 'dry6': return 'DRY NEXT 6 H';

@@ -138,6 +138,12 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.14.2
+
+- **Pluie « maintenant »** : l'observation prime sur le modèle. Radar au-dessus (nowcast), précipitation du moment
+  (Open-Meteo `current`) ou code météo de pluie → `RAINING … (RADAR|OBS)` partout (4.1, 4.3, 1.1, 1.2), même si la
+  prévision au quart d'heure dit sec.
+
 ## 1.14.1
 
 - **Position de repli neutre** : la simulation et le repli sans GNSS ne pointent plus sur une ville réelle de l'auteur
