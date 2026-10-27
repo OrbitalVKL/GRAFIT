@@ -138,6 +138,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.14.3
+
+- **7.1 ROUTE** : calcul `TRAFFIC_AWARE_OPTIMAL` (celui de l'appli Google Maps) au lieu de `TRAFFIC_AWARE` (version
+  allégée, moins précise) ; même tarif Google (Compute Routes Pro), mêmes plafonds.
+
 ## 1.14.2
 
 - **Pluie « maintenant »** : l'observation prime sur le modèle. Radar au-dessus (nowcast), précipitation du moment

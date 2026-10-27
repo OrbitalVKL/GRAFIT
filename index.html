@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.14.2', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.14.3', BUILD: '20261027', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -5486,7 +5486,7 @@ function rteFetch(dir, force = false) {
   if (!force && RTE.fail[dir] && now() - RTE.fail[dir] < 300) return false;     // échec récent : nouvel essai dans 5 min
   const q = rteQuota(); if (!q.ok) { RTE.err = 'SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH'); return false; }
   RTE.cnt.n++; RTE.cnt.nm++; RTE.busy[dir] = now(); rteSave();
-  const body = JSON.stringify({ origin: rteWp(A), destination: rteWp(B), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE', languageCode: 'fr-FR', units: 'METRIC' });
+  const body = JSON.stringify({ origin: rteWp(A), destination: rteWp(B), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE_OPTIMAL', languageCode: 'fr-FR', units: 'METRIC' });
   if (APK && nativeCmd({ cmd: 'route', id: dir, key: RTE.key, body, fields: ROUTE_FIELDS })) return true;
   fetch(ROUTE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': RTE.key, 'X-Goog-FieldMask': ROUTE_FIELDS }, body })
     .then(r => r.text().then(tx => rteIngest({ id: dir, code: r.status, body: tx }))).catch(e => rteIngest({ id: dir, code: -1, err: String(e.message || e) }));
