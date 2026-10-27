@@ -6,16 +6,17 @@
   Grafit est au premier plan.
 
     toutes les 5 s  : {"v":1,"k":"s","pc":…,"t":…,"cpu":{"l":%, "t":°C},"gpu":{"l":%, "t":°C, "mu":Mo, "mt":Mo, "p":W},
-                       "ram":{"u":Go, "t":Go},"disk":[["C",% libre],…],"up":s}
+                       "ram":{"u":Go, "t":Go},"disk":[["C",% libre,Go libres],…],"up":s}
     toutes les 60 s : {"v":1,"k":"h","pc":…,"t0":…,"step":60,"ct":[…],"gt":[…],"cl":[…],"gl":[…]}   (2 h, à la minute)
 
   Température CPU : lue dans HWiNFO si « Report value in Gadget » est coché pour la ligne CPU (Tctl/Tdie ou Package) ;
   sinon absente. GPU : nvidia-smi (pilote NVIDIA).
 
   Installation (une fois) : double-clic sur s16-link-install.cmd, posé à côté de ce script. Ou en PowerShell :
-    .\s16-link.ps1 -Install     tourne en arrière-plan, caché, tout de suite et à chaque ouverture de session
+    .\s16-link.ps1 -Install     arrête toute diffusion déjà lancée (tâche, ancienne version, copie, pwsh), puis tourne
+                                en arrière-plan, caché, tout de suite et à chaque ouverture de session
                                 (tâche planifiée ; à défaut, raccourci dans le dossier Démarrage)
-    .\s16-link.ps1 -Status      dit si le lien tourne et s'il démarrera avec Windows
+    .\s16-link.ps1 -Status      dit si le lien tourne (processus, mutex, version) et s'il démarrera avec Windows
     .\s16-link.ps1 -Uninstall   arrête le lien et retire le démarrage automatique
     .\s16-link.ps1 -Test        affiche un paquet d'état et les adresses de diffusion, sans rien envoyer
     .\s16-link.ps1              diffusion dans cette fenêtre (s'arrête quand on la ferme)
@@ -27,30 +28,81 @@
 param([switch]$Install, [switch]$Uninstall, [switch]$Status, [switch]$Test, [int]$Port = 47616, [int]$Every = 5)
 
 $TaskName = 'Grafit S-16 link'
+$MutexName = 'Local\GrafitS16Link'
 $ps = (Get-Command powershell.exe).Source
 $hiddenArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`""
 $startLnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Grafit S-16 link.lnk'
-# instances en arrière-plan de ce script (hors la fenêtre courante)
+# fiche de la diffusion en cours (PID, heure de lancement, empreinte du script) : retrouve aussi une instance élevée,
+# dont la ligne de commande est illisible depuis une console sans droits administrateur
+$pidFile = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Grafit\s16-link.pid'
+
+function Read-PidFile { try { Get-Content $pidFile -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null } }
+# instances en arrière-plan de ce script (hors la fenêtre courante) : powershell.exe ou pwsh.exe, quels que soient le
+# chemin et le nom de la copie (s16-link*.ps1), plus celle de la fiche si son processus vit encore.
+# Toujours sous la forme @(Get-LinkProcs) : en PowerShell 5.1, un résultat seul n'a pas de .Count.
 function Get-LinkProcs {
-  @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*s16-link.ps1*' -and $_.CommandLine -notmatch '-(Install|Uninstall|Status|Test)\b' })
+  $fiche = Read-PidFile
+  @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ProcessId -ne $PID -and (
+      ($_.CommandLine -match 's16-link[^\\/"]*\.ps1' -and $_.CommandLine -notmatch '-(Install|Uninstall|Status|Test)\b|Unblock-File') -or
+      ($fiche -and $_.ProcessId -eq $fiche.pid -and $_.CreationDate -and
+       [Math]::Abs($_.CreationDate.ToUniversalTime().Ticks - [long]$fiche.start) -lt 20000000)) })
+}
+# 0 libre, 1 détenu, 2 détenu par un processus inaccessible (élevé). Le mutex peut exister sans propriétaire (poignée
+# restée ouverte dans une console où le script a été lancé à la main) : on essaie de le prendre et on le rend aussitôt
+function Get-MutexState {
+  $mx = $null
+  try { if (-not [Threading.Mutex]::TryOpenExisting($MutexName, [ref]$mx)) { return 0 } } catch { return 2 }
+  try { $got = $mx.WaitOne(0) } catch { $got = $true }      # AbandonedMutexException : pris quand même
+  if ($got) { try { $mx.ReleaseMutex() } catch { } }
+  $mx.Dispose()
+  if ($got) { 0 } else { 1 }
+}
+# arrête la tâche et toute diffusion en cours, puis attend que le mutex soit libéré ; $true si c'est fait
+function Stop-Link {
+  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  foreach ($p in @(Get-LinkProcs)) {
+    try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; Write-Host ("Diffusion arrêtée : PID $($p.ProcessId) ($($p.Name), lancée le $($p.CreationDate)).") }
+    catch { Write-Host ("Impossible d'arrêter le PID $($p.ProcessId) ($($p.Name)) : instance élevée ? relancer depuis une console administrateur.") }
+  }
+  for ($i = 0; $i -lt 40 -and (Get-MutexState); $i++) { Start-Sleep -Milliseconds 250 }
+  if (Get-MutexState) { Write-Host "Le mutex $MutexName est encore détenu par un processus introuvable : relancer depuis une console administrateur."; return $false }
+  $true
 }
 function Show-Status {
   $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  $n = (Get-LinkProcs).Count
-  Write-Host ('Lien S-16 en cours        : ' + $(if ($n) { "OUI ($n processus)" } else { 'NON' }))
-  Write-Host ('Démarrage avec Windows    : ' + $(if ($t) { 'tâche planifiée « ' + $TaskName + ' » (' + $t.State + ')' } elseif (Test-Path $startLnk) { 'raccourci du dossier Démarrage' } else { 'NON' }))
+  $procs = @(Get-LinkProcs); $n = $procs.Count; $mu = Get-MutexState; $fiche = Read-PidFile
+  Write-Host ('Lien S-16 en cours        : ' + $(if ($n) { "OUI ($n processus)" } elseif ($mu) { 'OUI (processus introuvable, voir le mutex)' } else { 'NON' }))
+  foreach ($p in $procs) {
+    $ver = if ($fiche -and $p.ProcessId -eq $fiche.pid) { if ($fiche.hash -eq (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash) { 'version à jour' } else { 'ANCIENNE version : relancer -Install' } } else { 'version inconnue (sans fiche) : relancer -Install' }
+    Write-Host ("  PID $($p.ProcessId) $($p.Name), lancé le $($p.CreationDate) — $ver")
+  }
+  Write-Host ('Mutex ' + $MutexName + ' : ' + @('libre', 'détenu', 'détenu par un processus inaccessible (élevé ?)')[$mu])
+  if ($mu -and -not $n) {
+    # sans droits administrateur, la ligne de commande d'un processus élevé est vide : ce sont les suspects
+    $sus = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { -not $_.CommandLine })
+    foreach ($p in $sus) { Write-Host ("  suspect : PID $($p.ProcessId) $($p.Name), lancé le $($p.CreationDate), ligne de commande illisible (élevé)") }
+  }
+  if ($t) {
+    $a = $t.Actions | Select-Object -First 1
+    Write-Host ('Démarrage avec Windows    : tâche planifiée « ' + $TaskName + ' » (' + $t.State + ', ' + $t.Principal.UserId + ', ' + $(if ($t.Principal.RunLevel -eq 'Highest') { 'privilèges les plus élevés' } else { 'sans élévation' }) + ')')
+    if ("$($a.Execute) $($a.Arguments)" -notlike "*$PSCommandPath*") { Write-Host ('  ATTENTION, la tâche lance autre chose : ' + $a.Execute + ' ' + $a.Arguments) }
+  } elseif (Test-Path $startLnk) { Write-Host 'Démarrage avec Windows    : raccourci du dossier Démarrage' } else { Write-Host 'Démarrage avec Windows    : NON' }
   Write-Host ('Script                    : ' + $PSCommandPath)
 }
 if ($Status) { Show-Status; return }
 if ($Install) {
   Unblock-File -Path $PSCommandPath -ErrorAction SilentlyContinue
+  # une version déjà lancée (tâche, ancienne version, copie, pwsh) garderait le mutex et son ancien code :
+  # la nouvelle s'arrêterait aussitôt et le téléphone recevrait toujours l'ancien format
+  [void](Stop-Link)
   $how = $null
   try {
     $act = New-ScheduledTaskAction -Execute $ps -Argument $hiddenArgs
     $trg = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $prn = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
     $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger $trg -Settings $set -Description 'Diffuse l''état du S-16 vers Grafit Mobile sur le réseau local (UDP 47616).' -Force -ErrorAction Stop | Out-Null
+    Register-ScheduledTask -TaskName $TaskName -Action $act -Trigger $trg -Principal $prn -Settings $set -Description 'Diffuse l''état du S-16 vers Grafit Mobile sur le réseau local (UDP 47616).' -Force -ErrorAction Stop | Out-Null
     $how = 'tâche planifiée « ' + $TaskName + ' »'
   } catch {
     # sans droits suffisants pour la tâche : raccourci caché dans le dossier Démarrage de la session
@@ -58,21 +110,20 @@ if ($Install) {
     $l.TargetPath = $ps; $l.Arguments = $hiddenArgs; $l.WindowStyle = 7; $l.WorkingDirectory = Split-Path $PSCommandPath; $l.Save()
     $how = 'raccourci du dossier Démarrage'
   }
-  # une version déjà lancée garderait son ancien code : on l'arrête avant de relancer celle-ci
-  $old = Get-LinkProcs
-  if ($old.Count) { $old | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1; Write-Host ("Ancienne diffusion arrêtée (" + $old.Count + " processus).") }
-  Start-Process -FilePath $ps -ArgumentList $hiddenArgs -WindowStyle Hidden
-  Start-Sleep -Seconds 2
+  # lancée par la tâche (sans élévation, même depuis une console administrateur) ; à défaut, directement ;
+  # attend (10 s au plus) sa fiche, écrite une fois le mutex pris (sonder le mutex pendant son démarrage le lui volerait)
+  $t0 = [DateTime]::UtcNow.Ticks
+  if ($how -like 'tâche*') { Start-ScheduledTask -TaskName $TaskName } else { Start-Process -FilePath $ps -ArgumentList $hiddenArgs -WindowStyle Hidden }
+  for ($i = 0; $i -lt 40 -and [long](Read-PidFile).start -lt $t0; $i++) { Start-Sleep -Milliseconds 250 }
   Write-Host "Lien S-16 installé ($how) : il tourne caché et redémarre à chaque ouverture de session."
   Write-Host 'Cette fenêtre peut être fermée.'
   Show-Status
   return
 }
 if ($Uninstall) {
-  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  [void](Stop-Link)
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-  Remove-Item $startLnk -ErrorAction SilentlyContinue
-  Get-LinkProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Remove-Item $startLnk, $pidFile -ErrorAction SilentlyContinue
   Write-Host 'Lien S-16 arrêté et retiré du démarrage.'
   return
 }
@@ -165,10 +216,14 @@ if ($Test) {
   return
 }
 
-# une seule diffusion à la fois (tâche planifiée + lancement à la main)
-$mutex = New-Object Threading.Mutex($false, 'Local\GrafitS16Link')
-$own = $false; try { $own = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $own = $true }
-if (-not $own) { Write-Host 'Le lien S-16 tourne déjà en arrière-plan.'; return }
+# une seule diffusion à la fois (tâche planifiée + lancement à la main) ; un mutex créé par une instance élevée est
+# inaccessible d'ici : c'est aussi une diffusion en cours
+$own = $false
+try { $mutex = New-Object Threading.Mutex($false, $MutexName); try { $own = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $own = $true } } catch { }
+if (-not $own) { if ($mutex) { $mutex.Dispose() }; Write-Host 'Le lien S-16 tourne déjà en arrière-plan (voir -Status ; -Install arrête l''ancienne diffusion et relance celle-ci).'; return }
+New-Item -ItemType Directory -Path (Split-Path $pidFile) -Force | Out-Null
+@{ pid = $PID; start = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks; script = $PSCommandPath
+   hash = (Get-FileHash $PSCommandPath -Algorithm SHA256).Hash } | ConvertTo-Json -Compress | Set-Content -Path $pidFile -Encoding UTF8
 
 $udp = New-Object Net.Sockets.UdpClient
 $udp.EnableBroadcast = $true
