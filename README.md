@@ -140,6 +140,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.15.1
+
+- **9.1 `*9`** : pendant la vérification de version, `CHECK IN PROGRESS` en rouge clignotant à côté de `*9` (au moins
+  3 s, la réponse de GitHub étant souvent immédiate), au lieu de l'état UP TO DATE resté fixe.
+
 ## 1.15.0
 
 - **Sommeil (4.3 HEALTH, ex-5.3)** : le coucher était parfois avancé, donc la nuit trop longue. La dernière vérification

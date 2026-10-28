@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.15.0', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.15.1', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1117,7 +1117,7 @@ const UPD = { current: null, latest: null, available: false, state: 'idle', prog
 function updCmd(app) {
   if (!APK) return app && app.say('UPDATE: GRAFIT APK ONLY · THE WEB VERSION UPDATES ITSELF', true);
   if (UPD.available) { persistSave(); log('SYS', 'UPDATE ' + UPD.latest + ' · DATA SAVED'); logSave(); nativeCmd({ cmd: 'update' }); app && app.say('UPDATE ' + UPD.latest + ' · DOWNLOADING'); }
-  else { nativeCmd({ cmd: 'checkUpdate' }); app && app.say('UPDATE · CHECKING GITHUB'); }
+  else { UPD.chkT = now(); nativeCmd({ cmd: 'checkUpdate' }); app && app.say('UPDATE · CHECKING GITHUB'); }
 }
 window.addEventListener('grafit-native', e => {
   const d = e.detail || {};
@@ -3571,7 +3571,7 @@ PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINAN
   } };
 
 // ------------------------------------------------------------------ M91 QUICK SET
-PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 2,
+PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK', 'SET', 'SETTINGS', 'CONFIG'], fps: 4,
   keys: [['1', 'SIM', (app, arg) => { SET.sim = ['AUTO', 'ON', 'OFF'].includes(arg) ? arg : { AUTO: 'ON', ON: 'OFF', OFF: 'AUTO' }[SET.sim]; saveSettings(); log('SYS', 'SIM MODE ' + SET.sim); simReset(); app && app.say('SIM MODE ' + SET.sim); }, ['SIM'], 'SIM [AUTO|ON|OFF]'],
     ['2', 'SCREEN', (app, arg) => { wakeSet(onOff(arg, SET.wake)); app && app.say('SCREEN KEEP-ON ' + (SET.wake ? 'ON' : 'OFF')); }, ['SCREEN', 'KEEPON', 'WAKELOCK'], 'SCREEN [ON|OFF]'], ['3', 'FULL', () => toggleFull(), ['FULL', 'FULLSCREEN']],
     ['4', 'HAPTIC', (app, arg) => { SET.haptics = onOff(arg, SET.haptics); saveSettings(); app && app.say('HAPTICS ' + (SET.haptics ? 'ON' : 'OFF')); }, ['HAPTIC', 'HAPTICS'], 'HAPTIC [ON|OFF]'],
@@ -3585,14 +3585,16 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     let y = ir.y;
     // *9 : l'action (vérifier / installer) à gauche, l'état de la version à droite
     this.keys[8][1] = APK && UPD.available ? 'INSTALL' : 'CHECK';
+    // vérification en cours (au moins 3 s affichée, la réponse de GitHub est souvent instantanée) : rouge clignotant
+    const checking = APK && (UPD.state === 'checking' || now() - (UPD.chkT || 0) < 3);
     const updAct = !APK ? 'APK UPDATE' : (UPD.available ? 'INSTALL ' + UPD.latest : 'CHECK FOR UPDATE');
     const upd = !APK ? 'APK ONLY' : (UPD.state === 'downloading' ? 'DOWNLOADING ' + UPD.progress + ' %' : (UPD.state === 'installing' ? 'INSTALLING…'
-      : (UPD.state === 'checking' ? 'CHECKING GITHUB…' : (UPD.state === 'error' ? UPD.msg : (UPD.available ? 'AVAILABLE · HAVE ' + (UPD.current || '?')
+      : (checking ? (app && !app.blink() ? ' '.repeat(17) : 'CHECK IN PROGRESS') : (UPD.state === 'error' ? UPD.msg : (UPD.available ? 'AVAILABLE · HAVE ' + (UPD.current || '?')
       : (UPD.latest ? 'UP TO DATE' + (UPD.okT ? ' · ' + hhmm(UPD.okT) : '') : 'NOT CHECKED'))))));
     const rows = [['*1', 'SIMULATION', SET.sim, SET.sim === 'ON' ? t.B : t.N], ['*2', 'SCREEN KEEP-ON', SET.wake ? 'ON' : 'OFF', SET.wake ? t.B : t.N],
       ['*3', 'FULLSCREEN', (APK ? SET.immersive : !!document.fullscreenElement) ? 'ON' : 'OFF', t.N], ['*4', 'HAPTICS', SET.haptics ? 'ON' : 'OFF', t.N],
       ['*5', 'REFRESH FEEDS', 'WX · TLE · SATS', t.D], ['*6*7', 'BRIGHTNESS − / +', brightTxt(), SET.bright === 'AUTO' && SET.brightN === 'AUTO' ? t.N : t.B],
-      ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', updAct, upd, UPD.state === 'error' ? t.RB : (UPD.available ? t.B : (UPD.latest ? t.N : t.F))],
+      ['*8', 'PERMISSIONS', APK ? 'SENSORS · CALENDAR' : 'MOTION SENSORS', t.D], ['*9', updAct, upd, checking ? t.RB : (UPD.state === 'error' ? t.RB : (UPD.available ? t.B : (UPD.latest ? t.N : t.F)))],
       ['*0', 'NIGHT LIGHTING', nightTxt(), NIGHT.on ? t.B : t.N]];
     for (const [k, lab, v, st] of rows) { if (y >= ir.b) break; if (!k) { W.kv(scr, ir.x + 4, y++, ir.w - 4, lab, v, t.D, st); continue; } if (k.length > 2) { scr.put(ir.x, y, '*6', t.B); actRow(scr, ir.x + 2, y++, ir.w - 2, '*7', lab, v, st); } else actRow(scr, ir.x, y++, ir.w, k, lab, v, st); }
     y++;
