@@ -19,12 +19,14 @@ Le journal est conservé sur l'appareil (2 000 événements, plusieurs jours), p
 arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargements/Grafit/grafit-log-AAAAMMJJ-HHMM.txt`
 (APK) ou le télécharge (web), avec l'état des sources au moment de l'export.
 
-## Groupes et codes (1.10)
+## Groupes et codes (1.15)
 
-Code de format = M + adresse : 1 STATUS (M11 BRIEF, M12 OVERVIEW) · 2 SYSTEMS (M21 BARO, M22 TEMPS, M23 POWER, M24 MOTION) ·
-3 ALARMS (M31 ALARMS, M32 FAIL, M33 FEED, M34 SOURCES) · 4 WEATHER (M41 WEATHER, M42 RADAR, M43 FORECAST, M44 WEEK) ·
-5 DAY (M51 DAY, M52 AGENDA, M53 HEALTH) · 6 COMMS (M61 NETWORK, M62 TOWERS, M63 SATCOM, M64 S-16) · 7 NAV (M71 ROUTE, M72 GNSS, M73 SATS, M74 TRACK, M75 SKY, M76 KURS) ·
+Code de format = M + adresse : 1 SYSTEMS (M11 BRIEF, M12 OVERVIEW, M13 BARO, M14 TEMPS, M15 POWER, M16 MOTION) ·
+2 ALARMS (M21 ALARMS, M22 FAIL, M23 FEED, M24 SOURCES) · 3 WEATHER (M31 WEATHER, M32 RADAR, M33 FORECAST, M34 WEEK) ·
+4 DAY (M41 DAY, M42 AGENDA, M43 HEALTH) · 5 COMMS (M51 NETWORK, M52 TOWERS, M53 SATCOM, M54 S-16) ·
+6 NAV (M61 ROUTE, M62 GNSS, M63 SATS, M64 TRACK, M65 SKY, M66 KURS) · 7 FINANCE (M71, réservé) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
+Les adresses citées dans les notes de version ci-dessous sont celles de l'époque.
 
 Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
 fichier du journal continu de l'APK, relu au démarrage pour reconstituer 24 h de courbes.
@@ -137,6 +139,20 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.15.0
+
+- **Sommeil (4.3 HEALTH, ex-5.3)** : le coucher était parfois avancé, donc la nuit trop longue. La dernière vérification
+  du téléphone avant de dormir (réveil, heure : moins de 3 min, après 00:30) était prise pour un coup d'œil nocturne et
+  écartée ; le coucher retombait sur la session d'avant. Un coup d'œil nocturne doit maintenant être précédé de 90 min
+  sans téléphone (déjà endormi). Au réveil, une courte session après l'alarme − 30 min, ou suivie de pas, compte comme
+  le lever. Le coucher suit le podomètre tant que le téléphone, en poche, bouge encore. Les nuits de la semaine passée
+  sont recalculées une fois depuis le journal continu (`DAY NIGHTS RECOMPUTED` au journal).
+- **Groupes** : BRIEF et OVERVIEW passent en tête de 1 SYSTEMS (1.1, 1.2 ; capteurs en 1.3 à 1.6), les groupes
+  suivants remontent d'un cran (ALARMS 2, WEATHER 3, DAY 4, COMMS 5, NAV 6) et changent de code ; 7 FINANCE est réservé
+  au carnet de comptes (page d'attente, rien n'est lu) ; 8 UTILITY et 9 CMD ne bougent pas.
+- **9.1 `*9`** : l'action à gauche (CHECK FOR UPDATE, ou INSTALL x.y.z quand une version est disponible), l'état à
+  droite (UP TO DATE · heure de la dernière réponse de GitHub, AVAILABLE, CHECKING, erreur) ; touche CHECK / INSTALL.
 
 ## 1.14.4
 
