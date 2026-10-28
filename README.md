@@ -140,6 +140,13 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.17.0
+
+- **Finances dans les alarmes** : 12e voyant `FINANCE` (panneau 1.2 et 2.1) — CRIT/CAUT selon les alertes de Klad, comptes à
+  vérifier ou reste à vivre négatif ; page de défaut 2.2 avec consignes ; journal.
+- **Briefing 1.1** : section FINANCE (reste à vivre, mois dépensé / budget, prélèvements des 7 jours, à vérifier, alerte),
+  regroupée sur écran court.
+
 ## 1.16.1
 
 - **7.1 FINANCE**, résumé Klad 0.5 / 0.6 : ligne `TO CHECK IN KLAD` (nouveautés, à classer, comptes à vérifier, sauvegarde),

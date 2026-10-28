@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.16.1', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.17.0', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1654,7 +1654,22 @@ const ANN = [
     fn: c => { const s = SRC.motion; if (s.mode !== 'live') return s.mode === 'sim' ? [0, 'SIM'] : null; if (settling()) return [c, 'RESUMING']; const age = now() - Math.max(s.liveT, VIS.fg); return age > AL.SensorsFrozen ? [2, 'FROZEN ' + Math.round(age) + ' s · FG ' + Math.round(now() - VIS.fg) + ' s'] : [0, 'OK']; } },
   { key: 'STORAGE', lab: 'STORAGE', tag: 'SYS', confirm: 0, title: 'INTERNAL STORAGE', act: 'FREE SPACE: PHOTOS, VIDEOS, DOWNLOADS', lim: `CAUT < ${AL.StoreCaut} % FREE · CRIT < ${AL.StoreCrit} %`,
     fn: c => { if (!live('store')) return null; const v = SRC.store.v, pct = v.total ? v.free / v.total * 100 : 100; return [lo(pct, c, AL.StoreCaut, AL.StoreCrit, 1), Math.round(pct) + ' % · ' + (v.free / 1e9).toFixed(1) + ' GB']; } },
+  // finances (Klad, lu sur le téléphone) : alertes caut/crit de Klad, comptes à vérifier, reste à vivre négatif
+  { key: 'FINANCE', lab: 'FINANCE', tag: 'FIN', confirm: 0, title: 'FINANCE · KLAD', act: 'OPEN KLAD · DETAILS IN ' + pageAddr('M71'),
+    lim: 'KLAD ALERTS (CAUT / CRIT) · ACCOUNTS TO CHECK · LEFT TO LIVE < 0', fn: () => finAnn() },
 ];
+// état financier pour le voyant, la page de défaut et le briefing : [niveau 0-2, valeur] ou null (Klad non lu)
+function finAnn() {
+  if (typeof KLAD === 'undefined' || KLAD.state !== 'ok' || !KLAD.s) return null;
+  const S = KLAD.s, al = (Array.isArray(S.alerts) ? S.alerts : []).filter(a => a.level === 'crit' || a.level === 'caut');
+  const M = S.month || {}, ltl = M.left_to_live, ac = S.attention && S.attention.accounts_to_check;
+  let lvl = 0, txt = '';
+  const a2 = al.find(a => a.level === 'crit') || al[0];
+  if (a2) { lvl = a2.level === 'crit' ? 2 : 1; txt = (a2.code ? a2.code.replace(/_/g, ' ') + ' ' : '') + String(a2.text || '').toUpperCase(); if (al.length > 1) txt += ' +' + (al.length - 1); }
+  if (ltl != null && ltl < 0) { lvl = Math.max(lvl, 1); txt = txt || 'LEFT TO LIVE ' + eur(ltl); }
+  if (ac) { lvl = Math.max(lvl, 1); txt = txt || ac + ' ACCOUNT' + (ac > 1 ? 'S' : '') + ' TO CHECK'; }
+  return [lvl, lvl ? txt.trim() : (ltl != null ? 'LIVE ' + eur(ltl).replace(' €', '') : 'OK')];
+}
 const BATT_HEALTH = { 1: 'UNKNOWN', 2: 'GOOD', 3: 'OVERHEAT', 4: 'DEAD', 5: 'OVERVOLTAGE', 6: 'FAILURE', 7: 'COLD' };
 const ANN_INFO = new Set(ANN.filter(a => a.info).map(a => a.key));
 ANN.forEach(a => { a.lvl = 0; a.val = '—'; a.pend = null; a.since = 0; if (a.confirm == null) a.confirm = AL.ConfirmSecs; });
@@ -1715,6 +1730,8 @@ const FAIL_DOC = {
     ['Move near a window or outdoors', 'Check SIM / airplane mode / roaming', 'See ' + pageAddr('M52') + ' TOWERS for the nearest sites']],
   BHEALTH: ['Android battery health is not GOOD: overheat, overvoltage, dead cell or failure (CRIT), too cold (CAUT).',
     ['Unplug the charger and let the phone rest', 'Try another charger / cable', 'If it persists: battery service']],
+  FINANCE: ['Klad (finances, on this phone) reports a caution or critical alert (overdraft, negative balance, budget over, sync or bank consent), an account to check, or a negative left-to-live.',
+    ['Open Klad and review the alert', 'Details in ' + pageAddr('M71') + ' FINANCE (accounts, month, upcoming)', 'Clears by itself once Klad no longer reports it']],
   STORAGE: ['Internal storage almost full: apps, camera and updates fail; Android slows down below a few %.',
     ['Delete large videos / downloads', 'Back up photos then free space (Files › Clean)', 'Clear caches of big apps']],
   THERMAL: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
@@ -1955,7 +1972,7 @@ PAGES.M11 = { code: 'M11', name: 'BRIEF', ru: 'СВОДКА', words: ['BRIEF', '
     for (const [k, v, st] of L) {
       if (y >= ir.b) break;
       if (!k && !v) { y++; continue; }
-      if (k && (!v || ['NIGHT', 'WEATHER', 'TODAY', 'STATUS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; }
+      if (k && (!v || ['NIGHT', 'WEATHER', 'TODAY', 'FINANCE', 'STATUS'].includes(k))) { sub(scr, ir.x, y++, ir.w, k, v, t.D); continue; }
       scr.put(ir.x, y, clip(k, kw - 1), t.D); scr.put(ir.x + kw, y++, clip(v, ir.w - kw), st != null ? st : t.N);
     }
   } };
@@ -4516,6 +4533,19 @@ function briefLines() {
   ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
   if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('M42')]);
   // état : défauts, batterie (vitesse), S-16, pas
+  // finances (Klad) : reste à vivre, mois, prochain prélèvement (7 j), à vérifier, alerte
+  if (typeof KLAD !== 'undefined' && KLAD.state === 'ok' && KLAD.s) {
+    const S = KLAD.s, M = S.month || {}, up = Array.isArray(S.upcoming) ? S.upcoming : [], At = S.attention || {};
+    const atN = (+At.unseen || 0) + (+At.unclassified || 0) + (+At.accounts_to_check || 0) + (At.backup_days ? 1 : 0);
+    L.push(['', ''], ['FINANCE', 'KLAD' + (KLAD.upd ? ' · ' + ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '')]);
+    if (M.left_to_live != null) L.push(['LIVE LEFT', eur(M.left_to_live) + (M.left_to_live_basis ? ' · ' + String(M.left_to_live_basis).toUpperCase() : ''), M.left_to_live < 0 ? t.RB : undefined]);
+    if (M.spent != null && M.budget != null) L.push(['MONTH', eur(M.spent).replace(' €', '') + ' / ' + eur(M.budget) + (M.spent > M.budget ? ' · OVER' : ''), M.spent > M.budget ? t.RB : undefined]);
+    const lim = new Date(); lim.setDate(lim.getDate() + 7); const limD = lim.toISOString().slice(0, 10);
+    const nd = up.filter(u => u.amount < 0 && String(u.date) <= limD);
+    if (nd.length) L.push(['DEBITS 7 D', nd.slice(0, 2).map(u => String(u.date).slice(8, 10) + '/' + String(u.date).slice(5, 7) + ' ' + String(u.label || '').toUpperCase() + ' ' + eur(u.amount).replace(' €', '')).join(' · ') + (nd.length > 2 ? ' +' + (nd.length - 2) : '')]);
+    if (atN) L.push(['TO CHECK', atN + ' IN KLAD', At.accounts_to_check ? t.RB : undefined]);
+    const fa = finAnn(); if (fa && fa[0] && !/^LEFT TO LIVE|TO CHECK$/.test(fa[1])) L.push(['ALERT', fa[1], fa[0] >= 2 ? t.RB : t.B]);
+  }
   L.push(['', ''], ['STATUS', '']);
   const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
   L.push(['FAULTS', fs.open + ' ACTIVE · ' + (fs.ucrit + fs.ucaut) + ' UNACK' + (fa ? ' · ' + fa.msg : '')]);
@@ -4543,9 +4573,11 @@ function briefFit(L, room) {
   join('BATTERY', 'STEPS', (a, b) => a + ' · ' + b + ' STEPS'); if (fits()) return L;
   fold('WEATHER', 'SUN', (a, b) => (a ? a + ' · ' : '') + 'SUN ' + b.replace('RISE ', '').replace(' · SET ', '–')); if (fits()) return L;
   join('WIND', 'PRESSURE', (a, b) => a.replace(' km/h', '').replace(' · GUSTS ', ' G') + ' · ' + b.replace('TREND ', '')); if (fits()) return L;
+  fold('FINANCE', 'TO CHECK', (a, b) => a + ' · CHECK ' + b.replace(' IN KLAD', '')); if (fits()) return L;
+  join('LIVE LEFT', 'MONTH', (a, b) => a + ' · ' + b.replace(' €', '')); if (fits()) return L;
   fold('NIGHT', '7 NIGHTS', (a, b) => a + ' · 7N ' + b.replace('SURPLUS', '+').replace('DEBT', '−').replace(' · REG ', ' ±').replace('±±', '±')); if (fits()) return L;
   const t0 = at('TODAY'); if (t0 < 0) return L;
-  let end = t0 + 1; while (end < L.length && L[end][0] !== 'STATUS' && (L[end][0] || L[end][1])) end++;
+  let end = t0 + 1; while (end < L.length && !['STATUS', 'FINANCE'].includes(L[end][0]) && (L[end][0] || L[end][1])) end++;
   const evs = L.slice(t0 + 1, end), more = evs.length && /^\+ /.test(evs[evs.length - 1][1]) ? evs.pop() : null;
   const extra = more ? parseInt(more[1].slice(2), 10) || 0 : 0, keep = Math.max(1, evs.length - (L.length - room) - (more ? 0 : 1));
   if (keep < evs.length) L.splice(t0 + 1, end - t0 - 1, ...evs.slice(0, keep), ['', '+ ' + (evs.length - keep + extra) + ' MORE · ' + pageAddr('M42')]);
