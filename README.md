@@ -140,6 +140,12 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.16.1
+
+- **7.1 FINANCE**, résumé Klad 0.5 / 0.6 : ligne `TO CHECK IN KLAD` (nouveautés, à classer, comptes à vérifier, sauvegarde),
+  `LEFT TO LIVE` (reste à vivre du cycle, avec sa base BUDGET / ACCOUNTS) en tête du mois, carte avec sa date `due_since`,
+  alertes affichées avec leur code (TO REVIEW, ACCOUNT CHECK, BACKUP DUE, UPDATE AVAILABLE…). Repli `fortuneo_after_amex` retiré.
+
 ## 1.16.0
 
 - **7.1 FINANCE** : résumé de l'app de finances **Klad** (`io.github.orbitalvkl.klad`), lu sur le téléphone par son
