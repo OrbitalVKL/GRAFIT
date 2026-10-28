@@ -31,6 +31,12 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
+    <!-- 7.1 FINANCE : lecture du résumé de l'app de finances Klad (ContentProvider local, signature vérifiée) -->
+    <queries>
+        <package android:name="io.github.orbitalvkl.klad" />
+        <provider android:authorities="io.github.orbitalvkl.klad.grafit" />
+    </queries>
+
     <application
         android:label="Grafit"
         android:icon="@mipmap/ic_launcher"

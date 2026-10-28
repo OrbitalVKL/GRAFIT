@@ -24,7 +24,7 @@ arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargemen
 Code de format = M + adresse : 1 SYSTEMS (M11 BRIEF, M12 OVERVIEW, M13 BARO, M14 TEMPS, M15 POWER, M16 MOTION) ·
 2 ALARMS (M21 ALARMS, M22 FAIL, M23 FEED, M24 SOURCES) · 3 WEATHER (M31 WEATHER, M32 RADAR, M33 FORECAST, M34 WEEK) ·
 4 DAY (M41 DAY, M42 AGENDA, M43 HEALTH) · 5 COMMS (M51 NETWORK, M52 TOWERS, M53 SATCOM, M54 S-16) ·
-6 NAV (M61 ROUTE, M62 GNSS, M63 SATS, M64 TRACK, M65 SKY, M66 KURS) · 7 FINANCE (M71, réservé) ·
+6 NAV (M61 ROUTE, M62 GNSS, M63 SATS, M64 TRACK, M65 SKY, M66 KURS) · 7 FINANCE (M71 FINANCE, Klad) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
 Les adresses citées dans les notes de version ci-dessous sont celles de l'époque.
 
@@ -139,6 +139,19 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.16.0
+
+- **7.1 FINANCE** : résumé de l'app de finances **Klad** (`io.github.orbitalvkl.klad`), lu sur le téléphone par son
+  ContentProvider en lecture seule (`content://io.github.orbitalvkl.klad.grafit/summary`). Klad n'est lu que si son
+  certificat de release correspond à l'empreinte épinglée (SHA-256 `48B6…9F1C`) ; Klad ne répond qu'à Grafit. Aucun
+  réseau ; le résumé n'est jamais écrit par Grafit (en mémoire seulement).
+- Affichage : alertes de Klad, soldes par compte (carte : montant dû), total, compte principal − carte, mois en cours
+  face au budget (barre avec repère du jour), postes en dépassement, fin de mois du compte commun, échéances à venir.
+  Les champs que Klad ne fournit pas encore sont simplement absents. `*1` relit ; relecture aussi à l'ouverture, au
+  retour au premier plan, à chaque changement signalé par Klad et toutes les 15 min page affichée.
+- Alertes de Klad au journal (`FEED FIN`), une fois par jour chacune ; Klad absent, mal signé ou refusant Grafit :
+  état affiché en 7.1, sans erreur.
 
 ## 1.15.1
 

@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.15.1', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.16.0', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -3557,17 +3557,120 @@ PAGES.M81 = { code: 'M81', name: 'CHRONO', ru: 'СЕКУНДОМЕР', words: ['
     if (y < ir.b) scr.put(ir.x, y++, clip('LASER · PRINT · SOLDER', ir.w), t.F);
   } };
 
-// ------------------------------------------------------------------ M71 FINANCE (1.15, réservé)
-// Groupe 7 réservé au carnet de comptes : la façon dont Grafit recevra ses données (appli de finances sur le
-// téléphone, ou lien local) reste à choisir. Rien n'est lu ni envoyé tant que ce n'est pas réglé.
-PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINANCE', 'FIN', 'MONEY', 'BUDGET', 'COMPTES'], fps: 1,
+// ------------------------------------------------------------------ M71 FINANCE : résumé de l'app de finances Klad (APK)
+// Lu sur le téléphone par le ContentProvider de Klad (io.github.orbitalvkl.klad.grafit), certificat de Klad vérifié
+// par l'APK ; rien ne passe par le réseau. Le résumé reste en mémoire (jamais écrit par Grafit) et il est relu au
+// démarrage, au retour au premier plan, à chaque changement signalé par Klad, toutes les 15 min page affichée, et *1.
+// Format v1 (Interface_Finance_Grafit.md) : accounts, total, main_after_card (repli fortuneo_after_amex), month,
+// commun, upcoming, alerts ; un champ absent n'est pas affiché.
+const KLAD = { state: APK ? 'wait' : 'web', s: null, t: 0, upd: 0, msg: '', askT: 0, seen: {} };
+function kladAsk(force = false) {
+  if (!APK || (!force && now() - KLAD.askT < 5)) return;
+  KLAD.askT = now(); nativeCmd({ cmd: 'klad' });
+}
+function kladIngest(k) {
+  const prev = KLAD.state; KLAD.state = k.state || 'error'; KLAD.msg = k.msg || ''; KLAD.t = now();
+  if (KLAD.state === 'ok') {
+    try {
+      const j = JSON.parse(k.json || '{}');
+      if (j.state === 'empty') { KLAD.state = 'empty'; KLAD.s = null; }
+      else { KLAD.s = j; KLAD.upd = +k.updated || +j.generated || 0; }
+    } catch (e) { KLAD.state = 'error'; KLAD.msg = 'BAD JSON'; KLAD.s = null; }
+  } else KLAD.s = null;
+  if (prev !== KLAD.state && prev !== 'wait') log('FIN', 'KLAD ' + KLAD.state.toUpperCase() + (KLAD.msg ? ' · ' + KLAD.msg.toUpperCase().slice(0, 40) : ''), ['untrusted', 'denied', 'error'].includes(KLAD.state));
+  if (prev === 'wait' && KLAD.state === 'untrusted') log('FIN', 'KLAD SIGNATURE MISMATCH · IGNORED', true);
+  // alertes de Klad au journal, une fois chacune par jour
+  const d = ymdOf(now());
+  for (const a of (KLAD.s && Array.isArray(KLAD.s.alerts) ? KLAD.s.alerts : [])) {
+    const key = d + '|' + a.code + '|' + a.text; if (KLAD.seen[key]) continue; KLAD.seen[key] = 1;
+    log('FIN', (a.code ? a.code.replace(/_/g, ' ') + ' · ' : '') + String(a.text || '').toUpperCase(), a.level === 'crit' || a.level === 'caut');
+  }
+}
+window.addEventListener('grafit-native', e => { const d = e.detail || {}; if (d.klad) kladIngest(d.klad); });
+const eur = (v, sign = false) => {
+  if (v == null || !isFinite(v)) return '—';
+  const n = Math.abs(+v), [i, c] = n.toFixed(2).split('.'), g = i.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return (v < 0 ? '−' : (sign && v > 0 ? '+' : '')) + g + '.' + c + ' €';
+};
+const KLAD_TXT = { web: 'APK ONLY', wait: 'READING …', missing: 'KLAD NOT INSTALLED', untrusted: 'KLAD SIGNATURE MISMATCH', denied: 'KLAD REFUSED GRAFIT', error: 'READ ERROR', empty: 'NO DATA IN KLAD YET' };
+PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINANCE', 'FIN', 'MONEY', 'BUDGET', 'COMPTES', 'KLAD'], fps: 1,
+  keys: [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
-    const ir = W.panel(scr, r, this.code, this.name, 'NOT LINKED', t.TF);
+    if (APK && (KLAD.state === 'wait' ? now() - KLAD.askT > 10 : now() - KLAD.t > 900)) kladAsk();
+    const S = KLAD.s, ok = KLAD.state === 'ok' && S;
+    const age = KLAD.upd ? ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '';
+    const ir = W.panel(scr, r, this.code, this.name, ok ? 'KLAD' + (age ? ' · ' + age : '') : (KLAD.state === 'web' ? 'APK ONLY' : 'NOT LINKED'), ok ? t.TD : (['untrusted', 'denied', 'error'].includes(KLAD.state) ? t.TR : t.TF));
     let y = ir.y;
-    const L = [['SOURCE', 'CARNET DE COMPTES'], ['LINK', 'NOT SET UP YET'], ['', ''], ['WILL SHOW', ''],
-      ['', 'ACCOUNT BALANCES · TOTAL'], ['', 'FORTUNEO − AMEX DUE'], ['', 'MONTH SPENDING VS BUDGET'], ['', 'COMMUN · END OF MONTH'], ['', 'UPCOMING DIRECT DEBITS']];
-    for (const [k, v] of L) { if (y >= ir.b) break; if (!k && !v) { y++; continue; } if (k && !v) { sub(scr, ir.x, y++, ir.w, k, '', t.D); continue; } if (!k) { scr.put(ir.x + 2, y++, clip('· ' + v, ir.w - 2), t.D); continue; } W.kv(scr, ir.x, y++, ir.w, k, v, t.D, t.N); }
-    if (y + 1 < ir.b) { y++; noData(scr, ir.x, y++, ir.w, 'NOTHING READ OR SENT UNTIL LINKED'); }
+    if (!ok) {
+      W.kv(scr, ir.x, y++, ir.w, 'SOURCE', 'KLAD (ON THIS PHONE)', t.D, t.N);
+      W.kv(scr, ir.x, y++, ir.w, 'STATE', KLAD_TXT[KLAD.state] || KLAD.state.toUpperCase(), t.D, ['untrusted', 'denied', 'error'].includes(KLAD.state) ? t.RB : t.N);
+      if (KLAD.msg && y < ir.b) scr.put(ir.x, y++, clip(KLAD.msg.toUpperCase(), ir.w), t.F);
+      y++;
+      const help = { missing: ['INSTALL KLAD (RELEASE BUILD)', 'GRAFIT READS ITS SUMMARY ON THE PHONE'], untrusted: ['THE INSTALLED KLAD IS NOT SIGNED', 'WITH THE EXPECTED RELEASE KEY · IGNORED'],
+        denied: ['KLAD DID NOT RECOGNISE GRAFIT', 'CHECK THE GRAFIT KEY PINNED IN KLAD'], empty: ['OPEN KLAD AND SYNC ONCE'], web: ['THE WEB VERSION CANNOT READ OTHER APPS'] }[KLAD.state] || [];
+      for (const l of help) if (y < ir.b) noData(scr, ir.x, y++, ir.w, l);
+      if (y + 1 < ir.b) { y++; noData(scr, ir.x, y++, ir.w, 'NOTHING SENT · LOCAL READ ONLY · [*1]'); }
+      return;
+    }
+    // lignes candidates, puis repli si l'écran est court : écarts, échéances, postes, comptes au-delà de 6
+    const acc = Array.isArray(S.accounts) ? S.accounts : [], up = Array.isArray(S.upcoming) ? S.upcoming : [], al = Array.isArray(S.alerts) ? S.alerts : [];
+    const M = S.month, C = S.commun, top = M && Array.isArray(M.top) ? M.top : [], mac = S.main_after_card != null ? S.main_after_card : S.fortuneo_after_amex;
+    let nAcc = Math.min(acc.length, 8), nUp = Math.min(up.length, 6), nTop = Math.min(top.length, 3), gaps = true;
+    const need = () => (acc.length ? 1 + nAcc : 0) + (S.total || mac != null ? 1 : 0) + (S.total && S.total.savings != null ? 0 : 0) + (mac != null && S.total ? 1 : 0)
+      + (M ? 3 + nTop : 0) + (C ? 2 : 0) + (up.length ? 1 + nUp : 0) + (al.length ? 1 + Math.min(al.length, 3) : 0) + (gaps ? [acc.length, M, C, up.length, al.length].filter(Boolean).length - 1 : 0);
+    const room = ir.b - ir.y;
+    while (need() > room) { if (gaps) gaps = false; else if (nUp > 2) nUp--; else if (nTop > 0) nTop--; else if (nAcc > 4) nAcc--; else if (nUp > 0) nUp--; else break; }
+    const gap = () => { if (gaps) y++; };
+    if (al.length) {
+      sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length + '', t.D);
+      for (const a of al.slice(0, 3)) { if (y >= ir.b) break; const st = a.level === 'crit' ? t.RB : (a.level === 'caut' ? t.B : t.D);
+        scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : (a.level === 'caut' ? 'CAUT' : 'INFO'), st); scr.put(ir.x + 6, y++, clip(String(a.text || a.code || '').toUpperCase(), ir.w - 6), a.level === 'info' ? t.D : t.N); }
+      gap();
+    }
+    if (acc.length) {
+      sub(scr, ir.x, y++, ir.w, 'ACCOUNTS', 'BALANCE', t.D);
+      for (const a of acc.slice(0, nAcc)) {
+        if (y >= ir.b) break;
+        const card = a.kind === 'card', v = card ? (a.due != null ? -a.due : null) : a.balance;
+        const note = card ? 'DUE' : (a.manual ? 'MAN' : (a.stale ? 'OLD' : (a.kind === 'savings' ? 'SAV' : '')));
+        W.kv(scr, ir.x, y, ir.w - 5, clip(String(a.label || a.id || '?').toUpperCase(), 16), eur(v), t.D, v != null && v < 0 && !card ? t.RB : (a.stale ? t.D : t.N));
+        W.rjust(scr, ir.r, y++, note, a.stale ? t.B : t.F);
+      }
+      if (S.total && S.total.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 5, 'TOTAL', eur(S.total.all), t.D, S.total.all < 0 ? t.RB : t.B);
+      if (mac != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 5, 'MAIN − CARD', eur(mac), t.D, mac < 0 ? t.RB : t.B);
+      gap();
+    }
+    if (M && y + 2 < ir.b) {
+      const over = M.budget != null && M.spent != null && M.spent > M.budget;
+      sub(scr, ir.x, y++, ir.w, 'MONTH' + (M.cycle ? ' ' + M.cycle : ''), M.left != null ? 'LEFT ' + eur(M.left) : '', over ? t.RB : t.D);
+      W.kv(scr, ir.x, y++, ir.w, 'SPENT / BUDGET', eur(M.spent) + ' / ' + eur(M.budget).replace(' €', ''), t.D, over ? t.RB : t.N);
+      if (M.budget > 0) {
+        const f = Math.max(0, Math.min(1.25, M.spent / M.budget)), from = M.from ? new Date(M.from + 'T00:00') : null, to = M.to ? new Date(M.to + 'T23:59') : null;
+        const tf = from && to ? Math.max(0, Math.min(1, (Date.now() - from) / (to - from))) : null;
+        scr.vector(ir.x, y, ir.w, 1, (c, b) => {
+          const mid = b.y + b.ch * 0.5, hh = b.ch * 0.28, W1 = b.w / 1.25;
+          c.fillStyle = COL.K; c.fillRect(b.x, mid - hh, W1, 2 * hh);
+          c.fillStyle = over ? COL.RR : COL.N; c.fillRect(b.x, mid - hh, f * W1, 2 * hh);
+          c.fillStyle = COL.D; c.fillRect(b.x + W1 - b.d, b.y + b.ch * 0.1, b.d, b.ch * 0.8);                  // budget
+          if (tf != null) { c.fillStyle = COL.L; c.fillRect(b.x + tf * W1 - 0.5 * b.d, b.y + b.ch * 0.15, b.d, b.ch * 0.7); }   // aujourd'hui
+        });
+        y++;
+      }
+      for (const p of top.slice(0, nTop)) { if (y >= ir.b) break; const o = p.budget != null && p.spent > p.budget;
+        W.kv(scr, ir.x + 2, y++, ir.w - 2, clip(String(p.label || '').toUpperCase(), 18), eur(p.spent).replace(' €', '') + (p.budget != null ? ' / ' + eur(p.budget).replace(' €', '') : ''), t.D, o ? t.RB : t.N); }
+      gap();
+    }
+    if (C && y + 1 < ir.b) {
+      sub(scr, ir.x, y++, ir.w, 'COMMUN', C.reserve ? 'RESERVE ' + eur(C.reserve) : '', t.D);
+      W.kv(scr, ir.x, y++, ir.w, 'END OF MONTH', eur(C.end_of_month) + (C.overdraft_risk ? ' · RISK' : ''), t.D, C.end_of_month < 0 || C.overdraft_risk ? t.RB : t.N);
+      gap();
+    }
+    if (up.length && nUp && y + 1 < ir.b) {
+      sub(scr, ir.x, y++, ir.w, 'UPCOMING', up.length > nUp ? '+' + (up.length - nUp) + ' MORE' : '', t.D);
+      for (const u of up.slice(0, nUp)) { if (y >= ir.b) break;
+        const dd = String(u.date || ''), lab = dd.length >= 10 ? dd.slice(8, 10) + '/' + dd.slice(5, 7) : '--/--';
+        scr.put(ir.x, y, lab, t.D); W.kv(scr, ir.x + 6, y++, ir.w - 6, clip(String(u.label || '').toUpperCase(), 20), eur(u.amount), t.N, u.amount > 0 ? t.B : t.N); }
+    }
   } };
 
 // ------------------------------------------------------------------ M91 QUICK SET

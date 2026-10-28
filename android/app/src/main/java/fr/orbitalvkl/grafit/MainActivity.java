@@ -59,6 +59,7 @@ public class MainActivity extends Activity {
 
     WebView web;
     Probes probes;
+    final Klad klad = new Klad(this);
     Updater updater;
     long updT = 0;
     boolean pageReady = false, loaded = false;
@@ -115,6 +116,7 @@ public class MainActivity extends Activity {
                 if (probes != null) probes.pushAll();
                 updater.report();
                 autoCheck();
+                klad.read(); klad.watch();
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -234,6 +236,9 @@ public class MainActivity extends Activity {
                     // le bouton « Réinitialiser Internet » est en haut de la page Internet (Android 12+ : action Wi-Fi)
                     try { startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)); }
                     catch (Exception e) { startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
+                    break;
+                case "klad":                                     // 7.1 FINANCE : relecture du résumé de Klad
+                    klad.read();
                     break;
                 case "bgRead":
                     bgPush(o.optLong("since", 0));
@@ -457,13 +462,14 @@ public class MainActivity extends Activity {
         if (loaded) {
             probes.start(); probes.pushAll();
             try { JSONObject d = new JSONObject(); d.put("resumed", true); push(d); } catch (Exception e) { /* */ }
-            if (pageReady) autoCheck();
+            if (pageReady) { autoCheck(); klad.read(); klad.watch(); }
         }
     }
 
     @Override
     protected void onPause() {
         resumed = false;
+        klad.unwatch();
         probes.stop();
         web.onPause();
         super.onPause();
