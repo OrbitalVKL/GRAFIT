@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.17.1', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.17.2', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -3055,6 +3055,24 @@ PAGES.M34 = { code: 'M34', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     const wetDays = days.filter(d => d.pop >= 50 || d.psum >= 1).map(d => DOW[new Date(d.date + 'T12:00').getDay()]);
     const dT = d0 ? days.slice(0, 3).reduce((a, d) => a + d.tmax, 0) / Math.min(3, days.length) - d0.tmax : 0;
     sub(scr, ir.x, y++, ir.w, 'NEXT ' + days.length + ' DAYS', (Math.abs(dT) >= 1.5 ? (dT > 0 ? 'WARMER ' : 'COOLER ') + sgn(dT, 0) + '° · ' : 'STEADY · ') + (wetDays.length ? 'WET ' + wetDays.join(' ') : 'DRY'), t.D);
+    // échelle commune des barres : températures de la semaine en graduations, repère du maxi d'aujourd'hui,
+    // en-tête de la colonne pluie (% de risque · mm · heures de pluie)
+    const bw = ir.w - 17, span0 = Math.max(1, hiT - lo), colX = v => ir.x + 3 + Math.round((v - lo) / span0 * (bw - 1));
+    if (bw >= 8 && y < ir.b) {
+      const labs = [[lo, Math.round(lo) + '°']], st = Math.max(5, Math.ceil(span0 / 3 / 5) * 5);
+      for (let v = Math.ceil((lo + 1) / st) * st; v < hiT - 1; v += st) labs.push([v, v + '°']);
+      labs.push([hiT, Math.round(hiT) + '°']);
+      scr.put(ir.x, y, '°C', t.F);
+      let end = ir.x + 2;
+      for (const [v, l] of labs) { const x = Math.max(end + 1, Math.min(ir.x + 3 + bw - slen(l), colX(v) - Math.floor(slen(l) / 2))); if (x + slen(l) <= ir.x + 3 + bw) { scr.put(x, y, l, t.D); end = x + slen(l); } }
+      W.rjust(scr, ir.r, y, 'RAIN %·MM·H', t.F); y++;
+      if (d0 && y < ir.b) {
+        // repère du maxi d'aujourd'hui au-dessus des barres, son libellé collé au repère
+        const tx = Math.min(Math.max(ir.x + 3, colX(d0.tmax)), ir.x + 3 + bw - 1), tl = 'TODAY MAX ' + Math.round(d0.tmax) + '°';
+        let lx; if (tx + 2 + slen(tl) <= ir.r) { scr.put(tx, y, '┊ ' + tl, t.D); lx = tx; } else { lx = tx - slen(tl) - 1; scr.put(lx, y, tl + ' ┊', t.D); }
+        scr.put(ir.x, y, clip('▬ DAY MIN → MAX', Math.max(0, lx - ir.x - 1)), t.F); y++;
+      }
+    }
     const per = Math.floor((ir.b - y) / days.length), rows = Math.max(2, Math.min(5, per));
     days.forEach((d, k) => {
       if (y + 2 > ir.b) return;
@@ -3067,12 +3085,11 @@ PAGES.M34 = { code: 'M34', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
       y++;
       // ligne 2 : barre mini/maxi sur l'échelle de la semaine + pluie
       const pr = (d.pop != null ? d.pop + '%' : '—') + ' ' + (d.psum >= 0.05 ? d.psum.toFixed(1) + 'mm' : 'dry') + (d.ph ? ' ' + Math.round(d.ph) + 'h' : '');
-      const bw = ir.w - 17;
       if (bw >= 8) scr.vector(ir.x + 3, y, bw, 1, (c, b) => {
         const yy = b.y + b.ch * 0.5, lw = Math.max(2, b.ch * 0.24), span = b.w - 2 * lw, f0 = (d.tmin - lo) / Math.max(1, hiT - lo), f1 = (d.tmax - lo) / Math.max(1, hiT - lo);
         c.lineCap = 'round'; c.lineWidth = lw; c.strokeStyle = COL.K; c.beginPath(); c.moveTo(b.x + lw, yy); c.lineTo(b.x + b.w - lw, yy); c.stroke();
         c.strokeStyle = COL.N; c.beginPath(); c.moveTo(b.x + lw + f0 * span, yy); c.lineTo(b.x + lw + Math.max(f1 * span, f0 * span + 1), yy); c.stroke();
-        if (d0) { const fx = b.x + lw + (d0.tmax - lo) / Math.max(1, hiT - lo) * span; c.strokeStyle = COL.D; c.lineWidth = b.d; c.beginPath(); c.moveTo(fx, yy - b.ch * 0.35); c.lineTo(fx, yy + b.ch * 0.35); c.stroke(); }
+        if (d0) { const fx = b.x + lw + (d0.tmax - lo) / Math.max(1, hiT - lo) * span; c.strokeStyle = COL.D; c.lineWidth = b.d; dash(c, b.d, 2, 2); c.beginPath(); c.moveTo(fx, b.y); c.lineTo(fx, b.y + b.ch); c.stroke(); dash(c, b.d, 0); }
       });
       W.rjust(scr, ir.r, y, clip(pr, 13), wet ? t.B : t.D);
       y++;

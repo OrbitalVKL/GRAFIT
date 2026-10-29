@@ -140,6 +140,11 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.17.2
+
+- **3.4 WEEK** : barres expliquées — échelle de la semaine graduée en °C au-dessus, légende `▬ DAY MIN → MAX`,
+  repère `┊ TODAY MAX` en pointillés sur toutes les barres, en-tête de la colonne pluie `RAIN %·MM·H`.
+
 ## 1.17.1
 
 - **9.1 `*5` AUTO** : la luminosité repasse en automatique (réglage d'Android) ; un 2e appui reprend la dernière valeur
