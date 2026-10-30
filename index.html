@@ -923,7 +923,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.17.2', BUILD: '20261028', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.18.0', BUILD: '20261030', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -962,7 +962,7 @@ const GROUPS = [
   ['1', 'SYSTEMS', 'СИСТ', ['M11', 'M12', 'M13', 'M14', 'M15', 'M16']], ['2', 'ALARMS', 'АВАР', ['M21', 'M22', 'M23', 'M24']],
   ['3', 'WEATHER', 'ПОГОДА', ['M31', 'M32', 'M33', 'M34']], ['4', 'DAY', 'СУТКИ', ['M41', 'M42', 'M43']],
   ['5', 'COMMS', 'СВЯЗЬ', ['M51', 'M52', 'M53', 'M54']], ['6', 'NAV', 'НАВ', ['M61', 'M62', 'M63', 'M64', 'M65', 'M66']],
-  ['7', 'FINANCE', 'ФИН', ['M71']], ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
+  ['7', 'FINANCE', 'ФИН', ['M71', 'M72', 'M73']], ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
 
@@ -1731,7 +1731,7 @@ const FAIL_DOC = {
   BHEALTH: ['Android battery health is not GOOD: overheat, overvoltage, dead cell or failure (CRIT), too cold (CAUT).',
     ['Unplug the charger and let the phone rest', 'Try another charger / cable', 'If it persists: battery service']],
   FINANCE: ['Klad (finances, on this phone) reports a caution or critical alert (overdraft, negative balance, budget over, sync or bank consent), an account to check, or a negative left-to-live.',
-    ['Open Klad and review the alert', 'Details in ' + pageAddr('M71') + ' FINANCE (accounts, month, upcoming)', 'Clears by itself once Klad no longer reports it']],
+    ['Open Klad and review the alert', 'Overview in ' + pageAddr('M71') + ' FINANCE, ' + pageAddr('M72') + ' ACCOUNTS, ' + pageAddr('M73') + ' MONTH', 'Clears by itself once Klad no longer reports it']],
   STORAGE: ['Internal storage almost full: apps, camera and updates fail; Android slows down below a few %.',
     ['Delete large videos / downloads', 'Back up photos then free space (Files › Clean)', 'Clear caches of big apps']],
   THERMAL: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
@@ -3627,70 +3627,102 @@ const eur = (v, sign = false) => {
   return (v < 0 ? '−' : (sign && v > 0 ? '+' : '')) + g + '.' + c + ' €';
 };
 const KLAD_TXT = { web: 'APK ONLY', wait: 'READING …', missing: 'KLAD NOT INSTALLED', untrusted: 'KLAD SIGNATURE MISMATCH', denied: 'KLAD REFUSED GRAFIT', error: 'READ ERROR', empty: 'NO DATA IN KLAD YET' };
-PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINANCE', 'FIN', 'MONEY', 'BUDGET', 'COMPTES', 'KLAD'], fps: 1,
-  keys: [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']]],
+const KLAD_BAD = ['untrusted', 'denied', 'error'];
+// Groupe 7 = vue d'ensemble de Klad, pas son détail : 7.1 FINANCE (situation, alertes), 7.2 ACCOUNTS (soldes, Commun),
+// 7.3 MONTH (budget du cycle, postes en dépassement, prélèvements à venir). Le détail (opérations, postes dans le
+// budget, nouveautés à classer…) reste dans Klad.
+// Commun aux trois formats : relecture (15 min page affichée), cadre, état « non relié ». Renvoie le cadre si Klad est lu.
+function kladPanel(pg, scr, r) {
+  if (APK && (KLAD.state === 'wait' ? now() - KLAD.askT > 10 : now() - KLAD.t > 900)) kladAsk();
+  const ok = KLAD.state === 'ok' && KLAD.s, age = KLAD.upd ? ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '';
+  const ir = W.panel(scr, r, pg.code, pg.name, ok ? 'KLAD' + (age ? ' · ' + age : '') : (KLAD.state === 'web' ? 'APK ONLY' : 'NOT LINKED'), ok ? t.TD : (KLAD_BAD.includes(KLAD.state) ? t.TR : t.TF));
+  if (ok) return ir;
+  let y = ir.y;
+  W.kv(scr, ir.x, y++, ir.w, 'SOURCE', 'KLAD (ON THIS PHONE)', t.D, t.N);
+  W.kv(scr, ir.x, y++, ir.w, 'STATE', KLAD_TXT[KLAD.state] || KLAD.state.toUpperCase(), t.D, KLAD_BAD.includes(KLAD.state) ? t.RB : t.N);
+  if (KLAD.msg && y < ir.b) scr.put(ir.x, y++, clip(KLAD.msg.toUpperCase(), ir.w), t.F);
+  y++;
+  const help = { missing: ['INSTALL KLAD (RELEASE BUILD)', 'GRAFIT READS ITS SUMMARY ON THE PHONE'], untrusted: ['THE INSTALLED KLAD IS NOT SIGNED', 'WITH THE EXPECTED RELEASE KEY · IGNORED'],
+    denied: ['KLAD DID NOT RECOGNISE GRAFIT', 'CHECK THE GRAFIT KEY PINNED IN KLAD'], empty: ['OPEN KLAD AND SYNC ONCE'], web: ['THE WEB VERSION CANNOT READ OTHER APPS'] }[KLAD.state] || [];
+  for (const l of help) if (y < ir.b) noData(scr, ir.x, y++, ir.w, l);
+  if (y + 1 < ir.b) { y++; noData(scr, ir.x, y++, ir.w, 'NOTHING SENT · LOCAL READ ONLY · [*1]'); }
+  return null;
+}
+const kladKeys = () => [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']]];
+const kDay = d => { const s = String(d || ''); return s.length >= 10 ? s.slice(8, 10) + '/' + s.slice(5, 7) : '--/--'; };
+const kArr = v => Array.isArray(v) ? v : [];
+// compte courant principal : le premier compte courant de Klad (ordre du Carnet)
+const kladMain = S => kArr(S.accounts).find(a => a.kind === 'current' && a.balance != null) || null;
+// alertes à traiter (caut / crit, crit d'abord) ; les « info » de Klad restent dans Klad
+const kladAlerts = S => kArr(S.alerts).filter(a => a.level === 'crit' || a.level === 'caut').sort((a, b) => (b.level === 'crit') - (a.level === 'crit'));
+const kladAlTxt = a => ((a.code ? a.code.replace(/_/g, ' ') + (a.text ? ' · ' : '') : '') + String(a.text || '')).toUpperCase();
+const kladAtN = At => At && typeof At === 'object' ? (+At.unseen || 0) + (+At.unclassified || 0) + (+At.accounts_to_check || 0) + (At.backup_days ? 1 : 0) : 0;
+// reste à vivre : depuis le début du cycle (dernier salaire)
+const kladLtl = M => M && M.left_to_live != null ? M.left_to_live : null;
+
+// ------------------------------------------------------------------ M71 FINANCE : situation et alertes
+PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINANCE', 'FIN', 'MONEY', 'KLAD', 'ARGENT'], fps: 1, keys: kladKeys(),
   draw(scr, r) {
-    if (APK && (KLAD.state === 'wait' ? now() - KLAD.askT > 10 : now() - KLAD.t > 900)) kladAsk();
-    const S = KLAD.s, ok = KLAD.state === 'ok' && S;
-    const age = KLAD.upd ? ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '';
-    const ir = W.panel(scr, r, this.code, this.name, ok ? 'KLAD' + (age ? ' · ' + age : '') : (KLAD.state === 'web' ? 'APK ONLY' : 'NOT LINKED'), ok ? t.TD : (['untrusted', 'denied', 'error'].includes(KLAD.state) ? t.TR : t.TF));
+    const ir = kladPanel(this, scr, r); if (!ir) return;
+    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), mac = S.main_after_card, al = kladAlerts(S), atN = kladAtN(S.attention);
+    const card = kArr(S.accounts).find(a => a.kind === 'card' && a.due);
     let y = ir.y;
-    if (!ok) {
-      W.kv(scr, ir.x, y++, ir.w, 'SOURCE', 'KLAD (ON THIS PHONE)', t.D, t.N);
-      W.kv(scr, ir.x, y++, ir.w, 'STATE', KLAD_TXT[KLAD.state] || KLAD.state.toUpperCase(), t.D, ['untrusted', 'denied', 'error'].includes(KLAD.state) ? t.RB : t.N);
-      if (KLAD.msg && y < ir.b) scr.put(ir.x, y++, clip(KLAD.msg.toUpperCase(), ir.w), t.F);
+    // situation : reste à vivre, compte courant, après la carte, total
+    sub(scr, ir.x, y++, ir.w, 'SITUATION', M.from ? 'CYCLE FROM ' + kDay(M.from) : '', t.D);
+    if (ltl != null) W.kv(scr, ir.x, y++, ir.w, 'LEFT TO LIVE', eur(ltl), t.D, ltl < 0 ? t.RB : t.B);
+    if (main && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT · ' + clip(String(main.label || main.id || '').toUpperCase(), 14), eur(main.balance), t.D, main.balance < 0 ? t.RB : (main.stale ? t.D : t.N));
+    if (mac != null && card && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT − ' + clip(String(card.label || 'CARD').toUpperCase(), 12), eur(mac), t.D, mac < 0 ? t.RB : t.N);
+    if (S.total && S.total.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'TOTAL', eur(S.total.all), t.D, S.total.all < 0 ? t.RB : t.N);
+    y++;
+    // alertes
+    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? String(al.length) : 'NONE', al.some(a => a.level === 'crit') ? t.RB : (al.length ? t.B : t.D));
+    const nA = Math.max(0, Math.min(al.length, ir.b - y - (atN ? 2 : 0)));
+    for (const a of al.slice(0, al.length > nA ? Math.max(0, nA - 1) : nA)) {
+      scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : 'CAUT', a.level === 'crit' ? t.RB : t.B); scr.put(ir.x + 6, y++, clip(kladAlTxt(a), ir.w - 6), t.N);
+    }
+    if (al.length > nA && y < ir.b) noData(scr, ir.x + 6, y++, ir.w - 6, '+' + (al.length - Math.max(0, nA - 1)) + ' MORE · IN KLAD');
+    // à vérifier dans Klad : un seul compteur, le détail est dans Klad
+    if (atN && y + 1 < ir.b) { y++; W.kv(scr, ir.x, y++, ir.w, 'TO CHECK IN KLAD', String(atN), t.D, S.attention.accounts_to_check ? t.RB : t.B); }
+  } };
+
+// ------------------------------------------------------------------ M72 ACCOUNTS : soldes, total, fin de mois du Commun
+PAGES.M72 = { code: 'M72', name: 'ACCOUNTS', ru: 'СЧЕТА', words: ['ACCOUNTS', 'ACCOUNT', 'COMPTES', 'BALANCE', 'SOLDES', 'COMMUN'], fps: 1, keys: kladKeys(),
+  draw(scr, r) {
+    const ir = kladPanel(this, scr, r); if (!ir) return;
+    const S = KLAD.s, acc = kArr(S.accounts), C = S.commun, tot = S.total || {};
+    const nC = C ? 3 : 0, nT = (tot.all != null ? 1 : 0) + (tot.savings != null ? 1 : 0);
+    let y = ir.y;
+    const nAcc = Math.max(0, Math.min(acc.length, ir.b - y - 1 - nT - nC - (nC ? 1 : 0)));
+    sub(scr, ir.x, y++, ir.w, 'BALANCES', acc.length > nAcc ? '+' + (acc.length - nAcc) + ' IN KLAD' : '', t.D);
+    for (const a of acc.slice(0, nAcc)) {
+      const isCard = a.kind === 'card', v = isCard ? (a.due != null ? -a.due : null) : a.balance;
+      const note = isCard ? 'DUE' + (a.due_since ? ' ' + kDay(a.due_since) : '') : (a.stale ? 'OLD' : (a.kind === 'savings' ? 'SAV' : ''));
+      W.kv(scr, ir.x, y, ir.w - 10, clip(String(a.label || a.id || '?').toUpperCase(), 16), eur(v), t.D, v != null && v < 0 && !isCard ? t.RB : (a.stale ? t.D : t.N));
+      W.rjust(scr, ir.r, y++, note, a.stale ? t.B : t.F);
+    }
+    if (tot.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'TOTAL', eur(tot.all), t.D, tot.all < 0 ? t.RB : t.B);
+    if (tot.savings != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'OF WHICH SAVINGS', eur(tot.savings), t.D, t.N);
+    // Commun : où il finira le mois
+    if (C && y + 2 < ir.b) {
       y++;
-      const help = { missing: ['INSTALL KLAD (RELEASE BUILD)', 'GRAFIT READS ITS SUMMARY ON THE PHONE'], untrusted: ['THE INSTALLED KLAD IS NOT SIGNED', 'WITH THE EXPECTED RELEASE KEY · IGNORED'],
-        denied: ['KLAD DID NOT RECOGNISE GRAFIT', 'CHECK THE GRAFIT KEY PINNED IN KLAD'], empty: ['OPEN KLAD AND SYNC ONCE'], web: ['THE WEB VERSION CANNOT READ OTHER APPS'] }[KLAD.state] || [];
-      for (const l of help) if (y < ir.b) noData(scr, ir.x, y++, ir.w, l);
-      if (y + 1 < ir.b) { y++; noData(scr, ir.x, y++, ir.w, 'NOTHING SENT · LOCAL READ ONLY · [*1]'); }
-      return;
+      sub(scr, ir.x, y++, ir.w, 'COMMUN', C.overdraft_risk ? 'OVERDRAFT RISK' : '', C.overdraft_risk ? t.RB : t.D);
+      W.kv(scr, ir.x, y++, ir.w, 'END OF MONTH', eur(C.end_of_month), t.D, C.end_of_month < 0 || C.overdraft_risk ? t.RB : t.B);
+      if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'STILL TO PAY', C.debits_due != null ? eur(-C.debits_due) + (C.reserve ? ' · RES ' + eur(C.reserve).replace(' €', '') : '') : '—', t.D, t.N);
     }
-    // lignes candidates, puis repli si l'écran est court : écarts, échéances, postes, comptes au-delà de 6
-    const acc = Array.isArray(S.accounts) ? S.accounts : [], up = Array.isArray(S.upcoming) ? S.upcoming : [], al = Array.isArray(S.alerts) ? S.alerts : [];
-    const M = S.month, C = S.commun, top = M && Array.isArray(M.top) ? M.top : [], mac = S.main_after_card;
-    // à vérifier dans Klad (chaque champ omis s'il vaut 0)
-    const At = S.attention && typeof S.attention === 'object' ? S.attention : null;
-    const atL = At ? [['NEW', At.unseen], ['SORT', At.unclassified], ['ACCT', At.accounts_to_check], ['BACKUP', At.backup_days != null ? At.backup_days + ' D' : null]].filter(e => e[1] != null && e[1] !== 0) : [];
-    const atN = At ? (+At.unseen || 0) + (+At.unclassified || 0) + (+At.accounts_to_check || 0) + (At.backup_days ? 1 : 0) : 0;
-    const ltl = M && M.left_to_live != null ? M.left_to_live : null;
-    let nAcc = Math.min(acc.length, 8), nUp = Math.min(up.length, 6), nTop = Math.min(top.length, 3), gaps = true;
-    const need = () => (atL.length ? 2 : 0) + (ltl != null ? 1 : 0) + (acc.length ? 1 + nAcc : 0) + (S.total || mac != null ? 1 : 0) + (S.total && S.total.savings != null ? 0 : 0) + (mac != null && S.total ? 1 : 0)
-      + (M ? 3 + nTop : 0) + (C ? 2 : 0) + (up.length ? 1 + nUp : 0) + (al.length ? 1 + Math.min(al.length, 3) : 0) + (gaps ? [atL.length, acc.length, M, C, up.length, al.length].filter(Boolean).length - 1 : 0);
-    const room = ir.b - ir.y;
-    while (need() > room) { if (gaps) gaps = false; else if (nUp > 2) nUp--; else if (nTop > 0) nTop--; else if (nAcc > 4) nAcc--; else if (nUp > 0) nUp--; else break; }
-    const gap = () => { if (gaps) y++; };
-    if (al.length) {
-      sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length + '', t.D);
-      for (const a of al.slice(0, 3)) { if (y >= ir.b) break; const st = a.level === 'crit' ? t.RB : (a.level === 'caut' ? t.B : t.D);
-        scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : (a.level === 'caut' ? 'CAUT' : 'INFO'), st); scr.put(ir.x + 6, y++, clip(((a.code ? a.code.replace(/_/g, ' ') + (a.text ? ' · ' : '') : '') + String(a.text || '')).toUpperCase(), ir.w - 6), a.level === 'info' ? t.D : t.N); }
-      gap();
-    }
-    if (atL.length) {
-      W.kv(scr, ir.x, y++, ir.w, 'TO CHECK IN KLAD', String(atN), t.D, At.accounts_to_check ? t.RB : t.B);
-      if (y < ir.b) scr.put(ir.x + 2, y++, clip(atL.map(e => e[0] + ' ' + e[1]).join(' · '), ir.w - 2), t.D);
-      gap();
-    }
-    if (acc.length) {
-      sub(scr, ir.x, y++, ir.w, 'ACCOUNTS', 'BALANCE', t.D);
-      for (const a of acc.slice(0, nAcc)) {
-        if (y >= ir.b) break;
-        const card = a.kind === 'card', v = card ? (a.due != null ? -a.due : null) : a.balance;
-        const note = card ? 'DUE' : (a.manual ? 'MAN' : (a.stale ? 'OLD' : (a.kind === 'savings' ? 'SAV' : '')));
-        const ds = card && a.due_since && String(a.due_since).length >= 10 ? ' ' + String(a.due_since).slice(8, 10) + '/' + String(a.due_since).slice(5, 7) : '';
-        W.kv(scr, ir.x, y, ir.w - 5, clip(String(a.label || a.id || '?').toUpperCase(), 16 - slen(ds)) + ds, eur(v), t.D, v != null && v < 0 && !card ? t.RB : (a.stale ? t.D : t.N));
-        W.rjust(scr, ir.r, y++, note, a.stale ? t.B : t.F);
-      }
-      if (S.total && S.total.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 5, 'TOTAL', eur(S.total.all), t.D, S.total.all < 0 ? t.RB : t.B);
-      if (mac != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 5, 'MAIN − CARD', eur(mac), t.D, mac < 0 ? t.RB : t.B);
-      gap();
-    }
-    if (M && y + 2 < ir.b) {
+  } };
+
+// ------------------------------------------------------------------ M73 MONTH : budget du cycle, dépassements, à venir
+PAGES.M73 = { code: 'M73', name: 'MONTH', ru: 'МЕСЯЦ', words: ['MONTH', 'BUDGET', 'MOIS', 'UPCOMING', 'ECHEANCES', 'DEBITS'], fps: 1, keys: kladKeys(),
+  draw(scr, r) {
+    const ir = kladPanel(this, scr, r); if (!ir) return;
+    const S = KLAD.s, M = S.month, up = kArr(S.upcoming).filter(u => u.amount < 0);
+    let y = ir.y;
+    if (M) {
       const over = M.budget != null && M.spent != null && M.spent > M.budget;
-      sub(scr, ir.x, y++, ir.w, 'MONTH' + (M.cycle ? ' ' + M.cycle : ''), M.left != null ? 'LEFT ' + eur(M.left) : '', over ? t.RB : t.D);
-      if (ltl != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'LEFT TO LIVE' + (M.left_to_live_basis ? ' · ' + String(M.left_to_live_basis).toUpperCase() : ''), eur(ltl), t.D, ltl < 0 ? t.RB : t.B);
-      W.kv(scr, ir.x, y++, ir.w, 'SPENT / BUDGET', eur(M.spent) + ' / ' + eur(M.budget).replace(' €', ''), t.D, over ? t.RB : t.N);
-      if (M.budget > 0) {
+      sub(scr, ir.x, y++, ir.w, 'CYCLE' + (M.from && M.to ? ' ' + kDay(M.from) + ' → ' + kDay(M.to) : (M.cycle ? ' ' + M.cycle : '')), over ? 'OVER BUDGET' : '', over ? t.RB : t.D);
+      if (M.income != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'INCOME', eur(M.income), t.D, t.N);
+      if (M.spent != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SPENT / BUDGET', eur(M.spent) + (M.budget != null ? ' / ' + eur(M.budget).replace(' €', '') : ''), t.D, over ? t.RB : t.N);
+      if (M.budget > 0 && M.spent != null && y < ir.b) {
         const f = Math.max(0, Math.min(1.25, M.spent / M.budget)), from = M.from ? new Date(M.from + 'T00:00') : null, to = M.to ? new Date(M.to + 'T23:59') : null;
         const tf = from && to ? Math.max(0, Math.min(1, (Date.now() - from) / (to - from))) : null;
         scr.vector(ir.x, y, ir.w, 1, (c, b) => {
@@ -3702,20 +3734,26 @@ PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINAN
         });
         y++;
       }
-      for (const p of top.slice(0, nTop)) { if (y >= ir.b) break; const o = p.budget != null && p.spent > p.budget;
-        W.kv(scr, ir.x + 2, y++, ir.w - 2, clip(String(p.label || '').toUpperCase(), 18), eur(p.spent).replace(' €', '') + (p.budget != null ? ' / ' + eur(p.budget).replace(' €', '') : ''), t.D, o ? t.RB : t.N); }
-      gap();
+      if (M.left != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BUDGET LEFT', eur(M.left), t.D, M.left < 0 ? t.RB : t.B);
+      // postes : seulement ceux qui dépassent (le reste est dans Klad)
+      const ov = kArr(M.top).filter(p => p.budget != null && p.spent > p.budget);
+      if (ov.length && y + 1 < ir.b) {
+        y++;
+        sub(scr, ir.x, y++, ir.w, 'OVER BUDGET', String(ov.length), t.RB);
+        for (const p of ov.slice(0, 3)) { if (y >= ir.b) break;
+          W.kv(scr, ir.x + 2, y++, ir.w - 2, clip(String(p.label || '').toUpperCase(), 18), '+' + eur(p.spent - p.budget), t.D, t.RB); }
+      }
     }
-    if (C && y + 1 < ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'COMMUN', C.reserve ? 'RESERVE ' + eur(C.reserve) : '', t.D);
-      W.kv(scr, ir.x, y++, ir.w, 'END OF MONTH', eur(C.end_of_month) + (C.overdraft_risk ? ' · RISK' : ''), t.D, C.end_of_month < 0 || C.overdraft_risk ? t.RB : t.N);
-      gap();
-    }
-    if (up.length && nUp && y + 1 < ir.b) {
-      sub(scr, ir.x, y++, ir.w, 'UPCOMING', up.length > nUp ? '+' + (up.length - nUp) + ' MORE' : '', t.D);
-      for (const u of up.slice(0, nUp)) { if (y >= ir.b) break;
-        const dd = String(u.date || ''), lab = dd.length >= 10 ? dd.slice(8, 10) + '/' + dd.slice(5, 7) : '--/--';
-        scr.put(ir.x, y, lab, t.D); W.kv(scr, ir.x + 6, y++, ir.w - 6, clip(String(u.label || '').toUpperCase(), 20), eur(u.amount), t.N, u.amount > 0 ? t.B : t.N); }
+    // prélèvements à venir : total puis les prochains
+    if (up.length && y + 2 < ir.b) {
+      y++;
+      const sum = up.reduce((s, u) => s + (+u.amount || 0), 0), last = up[up.length - 1].date;
+      sub(scr, ir.x, y++, ir.w, 'UPCOMING DEBITS', 'TO ' + kDay(last) + ' ' + eur(sum), t.D);
+      const room = ir.b - y, n = up.length > room ? Math.max(0, room - 1) : up.length;
+      for (const u of up.slice(0, n)) {
+        scr.put(ir.x, y, kDay(u.date), t.D); W.kv(scr, ir.x + 6, y++, ir.w - 6, clip(String(u.label || '').toUpperCase(), 20), eur(u.amount), t.N, t.N);
+      }
+      if (n < up.length && y < ir.b) noData(scr, ir.x + 6, y++, ir.w - 6, '+' + (up.length - n) + ' MORE · IN KLAD');
     }
   } };
 
@@ -4550,18 +4588,14 @@ function briefLines() {
   ev.slice(0, 4).forEach(o => L.push([o.allDay ? 'ALL DAY' : hhmm(o.start), o.title.toUpperCase()]));
   if (ev.length > 4) L.push(['', '+ ' + (ev.length - 4) + ' MORE · ' + pageAddr('M42')]);
   // état : défauts, batterie (vitesse), S-16, pas
-  // finances (Klad) : reste à vivre, mois, prochain prélèvement (7 j), à vérifier, alerte
+  // finances (Klad), l'essentiel seulement : reste à vivre sur le dernier salaire, compte courant, alertes éventuelles
   if (typeof KLAD !== 'undefined' && KLAD.state === 'ok' && KLAD.s) {
-    const S = KLAD.s, M = S.month || {}, up = Array.isArray(S.upcoming) ? S.upcoming : [], At = S.attention || {};
-    const atN = (+At.unseen || 0) + (+At.unclassified || 0) + (+At.accounts_to_check || 0) + (At.backup_days ? 1 : 0);
+    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), al = kladAlerts(S);
     L.push(['', ''], ['FINANCE', 'KLAD' + (KLAD.upd ? ' · ' + ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '')]);
-    if (M.left_to_live != null) L.push(['LIVE LEFT', eur(M.left_to_live) + (M.left_to_live_basis ? ' · ' + String(M.left_to_live_basis).toUpperCase() : ''), M.left_to_live < 0 ? t.RB : undefined]);
-    if (M.spent != null && M.budget != null) L.push(['MONTH', eur(M.spent).replace(' €', '') + ' / ' + eur(M.budget) + (M.spent > M.budget ? ' · OVER' : ''), M.spent > M.budget ? t.RB : undefined]);
-    const lim = new Date(); lim.setDate(lim.getDate() + 7); const limD = lim.toISOString().slice(0, 10);
-    const nd = up.filter(u => u.amount < 0 && String(u.date) <= limD);
-    if (nd.length) L.push(['DEBITS 7 D', nd.slice(0, 2).map(u => String(u.date).slice(8, 10) + '/' + String(u.date).slice(5, 7) + ' ' + String(u.label || '').toUpperCase() + ' ' + eur(u.amount).replace(' €', '')).join(' · ') + (nd.length > 2 ? ' +' + (nd.length - 2) : '')]);
-    if (atN) L.push(['TO CHECK', atN + ' IN KLAD', At.accounts_to_check ? t.RB : undefined]);
-    const fa = finAnn(); if (fa && fa[0] && !/^LEFT TO LIVE|TO CHECK$/.test(fa[1])) L.push(['ALERT', fa[1], fa[0] >= 2 ? t.RB : t.B]);
+    if (ltl != null) L.push(['LIVE LEFT', eur(ltl) + (M.from ? ' · SINCE ' + kDay(M.from) : ''), ltl < 0 ? t.RB : undefined]);
+    if (main) L.push(['CURRENT', eur(main.balance) + ' · ' + String(main.label || main.id || '').toUpperCase(), main.balance < 0 ? t.RB : undefined]);
+    al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', kladAlTxt(a), a.level === 'crit' ? t.RB : t.B]));
+    if (al.length > 2) L.push(['', '+ ' + (al.length - 1) + ' MORE · ' + pageAddr('M71'), t.D]);
   }
   L.push(['', ''], ['STATUS', '']);
   const fs = failStats(), fa = FAIL.list.find(e => !e.tend && e.sev >= 2);
@@ -4590,8 +4624,7 @@ function briefFit(L, room) {
   join('BATTERY', 'STEPS', (a, b) => a + ' · ' + b + ' STEPS'); if (fits()) return L;
   fold('WEATHER', 'SUN', (a, b) => (a ? a + ' · ' : '') + 'SUN ' + b.replace('RISE ', '').replace(' · SET ', '–')); if (fits()) return L;
   join('WIND', 'PRESSURE', (a, b) => a.replace(' km/h', '').replace(' · GUSTS ', ' G') + ' · ' + b.replace('TREND ', '')); if (fits()) return L;
-  fold('FINANCE', 'TO CHECK', (a, b) => a + ' · CHECK ' + b.replace(' IN KLAD', '')); if (fits()) return L;
-  join('LIVE LEFT', 'MONTH', (a, b) => a + ' · ' + b.replace(' €', '')); if (fits()) return L;
+  join('LIVE LEFT', 'CURRENT', (a, b) => a.replace(' €', '').replace(/ · SINCE .*/, '') + ' · CUR ' + b.replace(' €', '')); if (fits()) return L;
   fold('NIGHT', '7 NIGHTS', (a, b) => a + ' · 7N ' + b.replace('SURPLUS', '+').replace('DEBT', '−').replace(' · REG ', ' ±').replace('±±', '±')); if (fits()) return L;
   const t0 = at('TODAY'); if (t0 < 0) return L;
   let end = t0 + 1; while (end < L.length && !['STATUS', 'FINANCE'].includes(L[end][0]) && (L[end][0] || L[end][1])) end++;
