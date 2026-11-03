@@ -252,7 +252,8 @@ public class MainActivity extends Activity {
                 }
                 case "route": {                                  // 7.1 ROUTE : Google Routes API, requête native (empreinte de l'appli)
                     final String id = o.optString("id"), key = o.optString("key"), body = o.optString("body"), fields = o.optString("fields", "routes.duration,routes.staticDuration,routes.distanceMeters");
-                    new Thread(() -> routeCall(id, key, body, fields)).start();
+                    final double sent = o.optDouble("sent", 0);         // heure de la requête (page), renvoyée avec la réponse
+                    new Thread(() -> routeCall(id, key, body, fields, sent)).start();
                     break;
                 }
                 case "bfEvents": {                               // évènements Bison Futé dans une emprise [latMin, lonMin, latMax, lonMax]
@@ -348,10 +349,11 @@ public class MainActivity extends Activity {
         try { JSONObject d = new JSONObject(); d.put("price", r); push(d); } catch (Exception e) { /* */ }
     }
 
-    void routeCall(String id, String key, String body, String fields) {
+    void routeCall(String id, String key, String body, String fields, double sent) {
         JSONObject r = new JSONObject();
         try {
             r.put("id", id);
+            if (sent > 0) r.put("sent", sent);
             java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL("https://routes.googleapis.com/directions/v2:computeRoutes").openConnection();
             c.setRequestMethod("POST"); c.setDoOutput(true); c.setConnectTimeout(8000); c.setReadTimeout(12000);
             c.setRequestProperty("Content-Type", "application/json");

@@ -62,6 +62,7 @@ t.R = S(REDT); t.RB = S(REDT, BG, true); t.RR = S(RED); t.RZ = S(REDDIM);
 t.INV = S(INK, WHITE, true); t.INVN = S(INK, WHITE); t.ALERT = S(REDINK, RED, true); t.INKB = S(INK, BG, true);
 t.T = S(WHITE, BGT, true); t.TD = S(DIM, BGT); t.TF = S(FAINT, BGT); t.TR = S(REDT, BGT, true);
 t.TB = S(FAINT, BGT); // bande titre : filets
+t.G = S(mix(WHITE, 0.28));  // estompé (28 %) : ancienne valeur en attente de mise à jour, voyant acquitté en pause
 
 // ---------------------------------------------------------------------------------------- texte
 // Une cellule = un caractère (les diacritiques combinants restent dans la cellule précédente).
@@ -234,7 +235,7 @@ W.box = (scr, x, y, w, h, style = t.L, fill = null) => {
 
 const TILE = {
   nom: [t.F, t.D, t.F, null], caut: [t.RR, t.RB, t.R, null], crit: [t.ALERT, t.ALERT, t.ALERT, t.ALERT],
-  critoff: [t.RR, t.R, t.R, null], on: [t.INV, t.INV, t.INVN, t.INV], lit: [t.N, t.B, t.N, null], na: [t.K, t.F, t.F, null],
+  critoff: [t.RR, t.R, t.R, null], ack: [t.K, t.G, t.G, null], on: [t.INV, t.INV, t.INVN, t.INV], lit: [t.N, t.B, t.N, null], na: [t.K, t.F, t.F, null],
 };
 // Voyant allumé (CRIT, ou test des voyants) : fond rouge vif (blanc au test) posé exactement entre les axes des
 // filets, filets blancs par-dessus, texte blanc gras. Rien ne dépasse du cadre : le fond n'est plus une couleur de
@@ -923,14 +924,19 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.18.0', BUILD: '20261030', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.19.0', BUILD: '20261103', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
   // Annonciateurs du téléphone (équivalent d'Alarms.inc [Variables])
   AL: { BattLowCaut: 20, BattLowCrit: 10, HystPct: 3, BattTempCaut: 40, BattTempCrit: 45, HystTemp: 3,
     GLoadCaut: 2.5, GLoadCrit: 4.0, GLatchSecs: 10, NetRttCaut: 300, HystRtt: 30, GnssAccCaut: 50, HystAcc: 10,
-    GnssLostSecs: 300, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5 },
+    GnssLostSecs: 300, NoiseCaut: -10, NoiseSecs: 3, CellCaut: -120, CellCautSecs: 180, CellNoneSecs: 60, HystCell: 5, StoreCaut: 10, StoreCrit: 5, SensorsFrozen: 10, SensorsGrace: 15, ConfirmSecs: 5,
+    // voyant FINANCE acquitté : silencieux FinanceAckHours, sauf aggravation (découvert plus profond d'au moins FinanceWorsenEur €)
+    FinanceAckHours: 48, FinanceWorsenEur: 50 },
+  // trajet (6.1 ROUTE) : donnée périmée au-delà de StaleMins ; attente de la première réponse après le démarrage / le réveil
+  // (WaitSecs) ; durée « anormale » : UsualPct % et UsualMins min au-dessus de la durée habituelle sans incident signalé
+  RT: { StaleMins: 15, WaitSecs: 45, UsualPct: 25, UsualMins: 5 },
   TLE: 'ISS (ZARYA)\n1 25544U 98067A   26285.14422154  .00005771  00000+0  11345-3 0  9992\n2 25544  51.6314  81.3064 0006731 252.4466 107.5787 15.48833724589888',
   WX_URL: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day,precipitation&minutely_15=precipitation&hourly=pressure_msl,temperature_2m,apparent_temperature,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,cloud_cover,uv_index,visibility,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,precipitation_hours,wind_speed_10m_max,wind_gusts_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset&past_days=1&forecast_days=7&timezone=auto',
   WX_URL_LITE: 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&current=temperature_2m,apparent_temperature,dew_point_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day,precipitation&hourly=pressure_msl,temperature_2m,precipitation_probability&past_days=1&forecast_days=2&timezone=auto',
@@ -945,6 +951,98 @@ const durHM = s => s == null || !isFinite(s) ? '—' : Math.floor(s / 3600) + 'h
 const fmtLL = (lat, lon) => Math.abs(lat).toFixed(2) + (lat >= 0 ? 'N' : 'S') + ' ' + Math.abs(lon).toFixed(2) + (lon >= 0 ? 'E' : 'W');
 const CARD = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const card = az => CARD[Math.round(A.norm360(az) / 45) % 8];
+
+// ---------------------------------------------------------------------------------------- logique pure (testée)
+// Sans DOM ni état global : tools/test_logic.js extrait ce bloc (entre les deux marqueurs) et le teste sous Node.
+// <logic>
+// Fraîcheur d'un résultat de trajet. r = { t: heure de la requête (s) } ou null. o = { now, wake (démarrage ou dernier
+// retour au premier plan), fail (dernier échec), busy (requête en cours depuis), every (rythme de mise à jour), stale (seuil
+// de péremption), wait (attente d'une réponse) }, tout en secondes. Renvoie { st, age, why } :
+//  · 'upd'   : pas encore de réponse depuis le démarrage / le réveil (ou donnée périmée) et requête en cours → UPDATE IN PROGRESS ;
+//  · 'stale' : échec de l'API (why 'fail'), requête restée sans réponse ('noreply') ou donnée plus vieille que le seuil ('age') ;
+//  · 'fresh' : à jour ; 'none' : rien à afficher.
+function rteFresh(r, o) {
+  const inFlight = !!o.busy && o.now - o.busy <= o.wait, woke = o.now - o.wake <= o.wait;
+  if (!r) {
+    if (inFlight || (woke && !o.fail)) return { st: 'upd', age: null, why: '' };
+    return o.fail ? { st: 'stale', age: null, why: 'fail' } : { st: 'none', age: null, why: '' };
+  }
+  const age = Math.max(0, o.now - r.t), failed = !!o.fail && o.fail > r.t, failedNow = failed && o.fail >= o.wake;
+  const old = r.t < o.wake ? age > o.every : age > o.stale;       // rien reçu depuis le réveil (mise à jour due), ou seuil dépassé
+  if (old && !failedNow && (inFlight || (r.t < o.wake && woke))) return { st: 'upd', age, why: '' };
+  if (failed) return { st: 'stale', age, why: 'fail' };
+  if (o.busy && !inFlight) return { st: 'stale', age, why: 'noreply' };
+  if (age > o.stale) return { st: 'stale', age, why: 'age' };
+  return { st: 'fresh', age, why: '' };
+}
+// Durée habituelle d'un sens : médiane des jours précédents (historique [ts, sens, durée, sans trafic]) à ± 1 h de l'heure
+// actuelle (2 relevés au moins), sinon médiane de tous les relevés des jours précédents (3 au moins), sinon null.
+// tod(ts) = secondes depuis minuit (heure locale).
+function rteUsual(hist, dir, T, today, tod) {
+  const cur = tod(T), near = [], all = [];
+  for (const d of Object.keys(hist || {})) {
+    if (d === today) continue;
+    for (const e of hist[d] || []) {
+      if (e[1] !== dir || !(e[2] > 0)) continue;
+      all.push(e[2]); let dt = Math.abs(tod(e[0]) - cur); dt = Math.min(dt, 86400 - dt); if (dt <= 3600) near.push(e[2]);
+    }
+  }
+  const med = a => { const s = a.slice().sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  if (near.length >= 2) return { dur: med(near), n: near.length, how: 'SAME HOUR' };
+  if (all.length >= 3) return { dur: med(all), n: all.length, how: '7 DAYS' };
+  return null;
+}
+// Durée franchement au-dessus de l'habituelle (pct % et mins min au moins), sans incident signalé sur le trajet
+const rteSuspect = (dur, usual, incidents, pct, mins) => !!(dur && usual && !incidents && dur >= usual * (1 + pct / 100) && dur - usual >= mins * 60);
+// Montant en euros dans un texte (« −1 234,56 € », « 85.20 EUR ») : valeur absolue, ou null
+function parseEur(s) {
+  const m = String(s || '').match(/(\d{1,3}(?:[   .]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(?:€|EUR\b)/i);
+  return m ? parseFloat(m[1].replace(/[   .]/g, '') + (m[2] ? '.' + m[2] : '')) : null;
+}
+// Signaux financiers du résumé Klad qui allument le voyant FINANCE : [{ k, lvl 1|2, mag, u: 'eur'|'n' }].
+// k identifie le type (code de l'alerte Klad, LTL reste à vivre négatif, ACC comptes à vérifier) ; mag sert à juger une
+// aggravation (montant du découvert, nombre de comptes). Découvert sans montant : solde négatif le plus profond.
+function finSignals(S) {
+  if (!S) return [];
+  const arr = v => Array.isArray(v) ? v : [], num = v => v != null && v !== '' && isFinite(+v) ? Math.abs(+v) : null, out = {};
+  const main = arr(S.accounts).find(a => a.kind === 'current' && a.balance != null), C = S.commun || {};
+  const depth = Math.max(0, main && main.balance < 0 ? -main.balance : 0, S.main_after_card < 0 ? -S.main_after_card : 0, C.end_of_month < 0 ? -C.end_of_month : 0);
+  const add = s => { const o = out[s.k]; if (!o) out[s.k] = s; else { o.lvl = Math.max(o.lvl, s.lvl); if (s.mag != null) o.mag = Math.max(o.mag || 0, s.mag); } };
+  for (const a of arr(S.alerts)) {
+    if (a.level !== 'crit' && a.level !== 'caut') continue;
+    const id = a.code ? String(a.code) : String(a.text || '?').replace(/[-−+]?\d[\d   .,]*\s*(€|EUR\b)?/gi, '#');
+    const k = 'AL:' + id.toUpperCase().replace(/[^A-Z0-9#]+/g, '_').replace(/^_|_$/g, '');
+    let mag = num(a.amount); if (mag == null) mag = num(a.value); if (mag == null) mag = parseEur(a.text);
+    if (mag == null && depth && /OVERDRAFT|DECOUVERT|NEGATIVE|BALANCE/.test(k)) mag = depth;
+    add({ k, lvl: a.level === 'crit' ? 2 : 1, mag, u: 'eur' });
+  }
+  const ltl = S.month && S.month.left_to_live;
+  if (ltl != null && ltl < 0) add({ k: 'LTL', lvl: 1, mag: -ltl, u: 'eur' });
+  const ac = S.attention && +S.attention.accounts_to_check;
+  if (ac) add({ k: 'ACC', lvl: 1, mag: ac, u: 'n' });
+  return Object.values(out);
+}
+// Acquittement du voyant FINANCE : instantané des signaux au moment de l'ACK, pause de `hours` heures
+const finAckMake = (sigs, T, hours) => ({ t: T, until: T + hours * 3600, sig: Object.fromEntries(sigs.map(s => [s.k, { lvl: s.lvl, mag: s.mag }])) });
+// État d'un acquittement face aux signaux du moment :
+//  · 'none' (pas d'ACK) ; 'cleared' (Klad ne signale plus rien : ACK effacé) ;
+//  · 'back' : nouvelle alerte d'un autre type (why 'new'), CAUT → CRIT ('crit') ou aggravation ('worse', delta) ;
+//  · 'expired' : fin de la pause, toujours signalé ; 'paused' : silencieux, left = secondes restantes, sig = instantané
+//    réduit aux signaux encore présents (un signal disparu qui revient pendant la pause compte comme nouveau).
+function finAckEval(ack, sigs, T, worseEur) {
+  if (!ack) return { st: 'none' };
+  if (!sigs.length) return { st: 'cleared' };
+  for (const s of sigs) {
+    const b = ack.sig[s.k];
+    if (!b) return { st: 'back', why: 'new', k: s.k };
+    if (s.lvl > b.lvl) return { st: 'back', why: 'crit', k: s.k };
+    if (s.mag != null && b.mag != null && (s.u === 'n' ? s.mag > b.mag : s.mag - b.mag >= worseEur)) return { st: 'back', why: 'worse', k: s.k, delta: s.mag - b.mag, u: s.u };
+  }
+  if (T >= ack.until) return { st: 'expired' };
+  const sig = {}; for (const s of sigs) sig[s.k] = ack.sig[s.k];
+  return { st: 'paused', left: ack.until - T, sig };
+}
+// </logic>
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
 const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', micUnit: 'DBA', micCal: null, vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
@@ -1664,11 +1762,60 @@ function finAnn() {
   const S = KLAD.s, al = (Array.isArray(S.alerts) ? S.alerts : []).filter(a => a.level === 'crit' || a.level === 'caut');
   const M = S.month || {}, ltl = M.left_to_live, ac = S.attention && S.attention.accounts_to_check;
   let lvl = 0, txt = '';
+  // même niveau que les signaux qui servent à l'acquittement (finSignals)
   const a2 = al.find(a => a.level === 'crit') || al[0];
   if (a2) { lvl = a2.level === 'crit' ? 2 : 1; txt = (a2.code ? a2.code.replace(/_/g, ' ') + ' ' : '') + String(a2.text || '').toUpperCase(); if (al.length > 1) txt += ' +' + (al.length - 1); }
   if (ltl != null && ltl < 0) { lvl = Math.max(lvl, 1); txt = txt || 'LEFT TO LIVE ' + eur(ltl); }
   if (ac) { lvl = Math.max(lvl, 1); txt = txt || ac + ' ACCOUNT' + (ac > 1 ? 'S' : '') + ' TO CHECK'; }
   return [lvl, lvl ? txt.trim() : (ltl != null ? 'LIVE ' + eur(ltl).replace(' €', '') : 'OK')];
+}
+// Acquittement du voyant FINANCE (ACK sur 2.2 FAIL PAGE, ou 7.1 [*2]) : pause de FinanceAckHours (48 h), enregistrée sur
+// le téléphone (survit à un redémarrage). Pendant la pause : voyant estompé « ACK · 31h », sans clignotement, hors du
+// compte des CAUT / CRIT. Retour de l'alarme (CAUTION + ligne FEED FIN) à la fin de la pause si Klad signale toujours, ou
+// tout de suite si la situation s'aggrave (découvert plus profond de FinanceWorsenEur €, CAUT → CRIT, alerte d'un autre
+// type). ACK effacé dès que Klad ne signale plus rien.
+let FINACK = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.finack') || 'null'); return j && j.until && j.sig ? j : null; } catch (e) { return null; } })();
+const finAckSave = () => { try { if (FINACK) localStorage.setItem('grafit.finack', JSON.stringify(FINACK)); else localStorage.removeItem('grafit.finack'); } catch (e) { /* */ } };
+const finKladOk = () => typeof KLAD !== 'undefined' && KLAD.state === 'ok' && !!KLAD.s;
+const finPaused = () => !!FINACK && now() < FINACK.until;
+const finLeftTxt = s => s >= 3600 ? Math.ceil(s / 3600) + 'h' : Math.max(1, Math.ceil(s / 60)) + 'm';
+const finSigTxt = k => k === 'LTL' ? 'LEFT TO LIVE < 0' : (k === 'ACC' ? 'ACCOUNTS TO CHECK' : k.replace(/^AL:/, '').replace(/_/g, ' '));
+// ACK demandé : renvoie un message, ou '' si rien à acquitter
+function finAckSet() {
+  if (!finKladOk()) return '';
+  const sigs = finSignals(KLAD.s); if (!sigs.length) return '';
+  if (finPaused()) return 'FINANCE · ALREADY ACK · ' + finLeftTxt(FINACK.until - now()) + ' LEFT';
+  FINACK = finAckMake(sigs, now(), AL.FinanceAckHours); finAckSave();
+  const e = failOpenOf('FINANCE'); if (e && !e.ack) { e.ack = true; e.ackT = now(); failSave(); }
+  log('FIN', 'FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h · UNTIL ' + DOW3[new Date(FINACK.until * 1000).getDay()] + ' ' + hhmm(FINACK.until) + ' · ' + sigs.map(x => finSigTxt(x.k)).join(' · '));
+  return 'FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h';
+}
+// l'alarme revient : l'entrée de la FAIL PAGE redevient à acquitter
+function finRearm(msg) {
+  FINACK = null; finAckSave();
+  const e = failOpenOf('FINANCE'); if (e) { e.ack = false; e.ackT = 0; e.esc = now(); failSave(); }
+  log('FIN', msg, true); haptic([90]);
+}
+// à chaque tour des annonciateurs : renvoie le temps restant (s) si le voyant est en pause, sinon 0
+function finAckStep() {
+  if (!FINACK) return 0;
+  if (!finKladOk()) return Math.max(0, FINACK.until - now());          // Klad pas (encore) lu : on garde l'état
+  const sigs = finSignals(KLAD.s), r = finAckEval(FINACK, sigs, now(), AL.FinanceWorsenEur);
+  if (r.st === 'cleared') { FINACK = null; finAckSave(); log('FIN', 'FINANCE ACK CLEARED · KLAD NO LONGER REPORTS IT'); return 0; }
+  if (r.st === 'expired') { finRearm('FINANCE ACK EXPIRED (' + AL.FinanceAckHours + 'h) · STILL REPORTED · ' + sigs.map(x => finSigTxt(x.k)).join(' · ')); return 0; }
+  if (r.st === 'back') {
+    finRearm('FINANCE WORSE · ' + (r.why === 'new' ? 'NEW ALERT ' + finSigTxt(r.k) : (r.why === 'crit' ? finSigTxt(r.k) + ' CAUT → CRIT'
+      : finSigTxt(r.k) + ' ' + (r.u === 'n' ? '+' + r.delta : '+' + eur(r.delta)))) + ' · ACK CANCELLED');
+    return 0;
+  }
+  if (Object.keys(r.sig).length !== Object.keys(FINACK.sig).length) { FINACK.sig = r.sig; finAckSave(); }
+  return r.left;
+}
+function finCmdAck(app) {
+  if (!finKladOk()) return app && app.say('FINANCE · KLAD NOT READ', true);
+  const m = finAckSet();
+  app && app.say(m || 'FINANCE · NOTHING TO ACKNOWLEDGE', !m);
+  if (m) haptic(15);
 }
 const BATT_HEALTH = { 1: 'UNKNOWN', 2: 'GOOD', 3: 'OVERHEAT', 4: 'DEAD', 5: 'OVERVOLTAGE', 6: 'FAILURE', 7: 'COLD' };
 const ANN_INFO = new Set(ANN.filter(a => a.info).map(a => a.key));
@@ -1684,15 +1831,25 @@ function alarmsTick() {
       if (a.pend !== raw) { a.pend = raw; a.since = t; }
       if (t - a.since >= a.confirm) { a.pend = null; setLevel(a, raw); }
     } else { a.pend = null; if (raw < a.lvl) setLevel(a, raw); }
+    if (a.key === 'FINANCE') {                                              // acquittement avec pause (FINACK)
+      const left = finAckStep(); a.ackd = !!(left && a.lvl);
+      if (a.ackd) {
+        a.val = 'ACK · ' + finLeftTxt(left);
+        const e = failOpenOf('FINANCE'); if (e && !e.ack) { e.ack = true; e.ackT = FINACK.t; failSave(); }   // après un redémarrage
+      }
+    }
   }
-  ALS.caut = ANN.filter(a => a.lvl === 1 && !a.info).length; ALS.crit = ANN.filter(a => a.lvl === 2 && !a.info).length; ALS.info = ANN.filter(a => a.lvl && a.info).length;
+  ALS.caut = ANN.filter(a => a.lvl === 1 && !a.info && !a.ackd).length; ALS.crit = ANN.filter(a => a.lvl === 2 && !a.info && !a.ackd).length; ALS.info = ANN.filter(a => a.lvl && a.info).length;
+  ALS.ack = ANN.filter(a => a.lvl && a.ackd).length;
   for (const a of ANN) if (a.lvl) failCur(a.key, a.val);
 }
 function setLevel(a, n) {
   const old = a.lvl; a.lvl = n;
   if (n > 0) failOpen(a.key, a.info ? 1 : n + 1, a.tag, a.lab + ' ' + (a.info ? 'INFO' : SEV[n]), { title: a.title, val: a.val, thr: a.lim, act: a.act });
   else failClose(a.key, a.val);
-  if (n > old) { log(a.tag, a.lab + ' ' + (a.info ? 'INFO' : SEV[n]) + ' · ' + a.val, !a.info); if (!a.info) haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
+  const quiet = a.key === 'FINANCE' && finPaused();                      // acquitté (pause en cours, ex. au redémarrage)
+  if (n > old && quiet) log(a.tag, a.lab + ' ' + SEV[n] + ' · ' + a.val + ' · ACK ' + finLeftTxt(FINACK.until - now()) + ' LEFT');
+  else if (n > old) { log(a.tag, a.lab + ' ' + (a.info ? 'INFO' : SEV[n]) + ' · ' + a.val, !a.info); if (!a.info) haptic(n === 2 ? [120, 80, 120, 80, 120] : [90]); }
   else if (n === 0) log(a.tag, a.lab + ' NOMINAL · ' + a.val);
   else log(a.tag, a.lab + ' CRIT → CAUT · ' + a.val, true);
 }
@@ -1700,6 +1857,7 @@ function annState(lvl, val, blink, lt, key) {
   if (lt && lt.ann) return lt.ann === 1 ? 'caut' : 'crit';
   if (val === '—') return 'na';
   if (lvl && ANN_INFO.has(key)) return 'lit';                                   // information : blanc, jamais rouge
+  if (lvl && key && (ANN.find(a => a.key === key) || {}).ackd) return 'ack';    // acquitté, en pause : estompé, sans clignotement
   if (lvl >= 2) return blink || (key && !failUnack(key, 3)) ? 'crit' : 'critoff';      // acquitté : rouge fixe
   return lvl === 1 ? 'caut' : 'nom';
 }
@@ -1731,7 +1889,7 @@ const FAIL_DOC = {
   BHEALTH: ['Android battery health is not GOOD: overheat, overvoltage, dead cell or failure (CRIT), too cold (CAUT).',
     ['Unplug the charger and let the phone rest', 'Try another charger / cable', 'If it persists: battery service']],
   FINANCE: ['Klad (finances, on this phone) reports a caution or critical alert (overdraft, negative balance, budget over, sync or bank consent), an account to check, or a negative left-to-live.',
-    ['Open Klad and review the alert', 'Overview in ' + pageAddr('M71') + ' FINANCE, ' + pageAddr('M72') + ' ACCOUNTS, ' + pageAddr('M73') + ' MONTH', 'Clears by itself once Klad no longer reports it']],
+    ['Open Klad and review the alert', 'Overview in ' + pageAddr('M71') + ' FINANCE, ' + pageAddr('M72') + ' ACCOUNTS, ' + pageAddr('M73') + ' MONTH', 'ACK silences it for ' + AL.FinanceAckHours + ' h (ACK FINANCE, or ' + pageAddr('M71') + ' [*2]); it comes back after that if still reported, at once if it gets worse (+' + AL.FinanceWorsenEur + ' € deeper, CAUT → CRIT, a new kind of alert)', 'Clears by itself once Klad no longer reports it']],
   STORAGE: ['Internal storage almost full: apps, camera and updates fail; Android slows down below a few %.',
     ['Delete large videos / downloads', 'Back up photos then free space (Files › Clean)', 'Clear caches of big apps']],
   THERMAL: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
@@ -1775,7 +1933,7 @@ function failStats() {
 // ordre d'affichage (et de numérotation) : pannes d'abord, puis informations, chacune du plus récent au plus ancien
 const failView = () => FAIL.list.filter(e => e.sev >= 2).concat(FAIL.list.filter(e => e.sev < 2));
 function failAck(e) { if (!e || e.ack) return 0; e.ack = true; e.ackT = now(); return 1; }
-function failAckAll() { const n = FAIL.list.reduce((a, e) => a + failAck(e), 0); if (n) { log('ACK', 'ACK ALL · ' + n + ' FAULT' + (n > 1 ? 'S' : '')); failSave(); } return n; }
+function failAckAll() { const n = FAIL.list.reduce((a, e) => a + failAck(e), 0); if (failOpenOf('FINANCE') && !finPaused()) finAckSet(); if (n) { log('ACK', 'ACK ALL · ' + n + ' FAULT' + (n > 1 ? 'S' : '')); failSave(); } return n; }
 function failClear(only) {                                     // efface les défauts acquittés ET refermés
   const keep = [], gone = [];
   for (const e of FAIL.list) ((only ? only.includes(e) : true) && e.ack && e.tend ? gone : keep).push(e);
@@ -2144,8 +2302,8 @@ PAGES.M21 = { code: 'M21', name: 'ALARMS', ru: 'АВАР', words: ['ALARMS', 'AN
       y++;
       const a = ANN.find(x => x.key === this.sel);
       if (a) {
-        sub(scr, ir.x, y++, ir.w, a.lab, SEV[a.lvl], a.lvl ? t.RB : t.D);
-        if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, a.title, a.val, t.D, a.lvl ? t.RB : t.B);
+        sub(scr, ir.x, y++, ir.w, a.lab, a.ackd ? 'ACK · UNTIL ' + DOW3[new Date(FINACK.until * 1000).getDay()] + ' ' + hhmm(FINACK.until) : SEV[a.lvl], a.ackd ? t.D : (a.lvl ? t.RB : t.D));
+        if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, a.title, a.val, t.D, a.ackd ? t.D : (a.lvl ? t.RB : t.B));
         if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'LIMITS', a.lim, t.D, t.F);
         if (y < ir.b) scr.put(ir.x, y++, clip('▸ ' + a.act, ir.w), t.D);
       }
@@ -2177,8 +2335,10 @@ function failCmdAck(app, arg) {
   if (!FAIL.list.length) return app.say('ACK · NO FAULT RECORDED');
   if (!es.length) return app.say('ACK · NO FAULT ' + arg + ' · SEE ' + pageAddr('M22'), true);
   const n = es.reduce((k, e) => k + failAck(e), 0);
+  // FINANCE encore active : l'ACK met le voyant en pause (48 h), même si l'entrée était déjà acquittée
+  const fin = es.some(e => e.key === 'FINANCE' && !e.tend && e.sev >= 2) && !finPaused() ? finAckSet() : '';
   if (n) { failSave(); log('ACK', (arg === 'ALL' ? 'ACK ALL · ' : 'ACK · ') + (es.length === 1 ? es[0].msg : n + ' FAULTS')); haptic(15); }
-  app.say(n ? 'ACK · ' + n + ' FAULT' + (n > 1 ? 'S' : '') + ' ACKNOWLEDGED' : 'ACK · ALREADY ACKNOWLEDGED');
+  app.say(n ? 'ACK · ' + n + ' FAULT' + (n > 1 ? 'S' : '') + ' ACKNOWLEDGED' + (fin ? ' · ' + fin : '') : (fin || 'ACK · ALREADY ACKNOWLEDGED'));
 }
 function failCmdClear(app, arg) {
   if (!FAIL.list.length) return app.say('CLEAR · NO FAULT RECORDED');
@@ -2281,7 +2441,7 @@ PAGES.M22 = { code: 'M22', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
 
 // ------------------------------------------------------------------ M23 FEED
 // Filtre : FEED SCR, FEED NET, FEED PWR… (une catégorie), FEED WARN (avertissements), FEED ALL ; [*4] passe au suivant.
-const FEED_TAGS = ['SCR', 'NET', 'PWR', 'TMP', 'DAY', 'BARO', 'WX', 'MOT', 'VIB', 'S16', 'SYS', 'VIS', 'BRF', 'CAL', 'ACK', 'AUD', 'ISS', 'SAT', 'NAV', 'TMR'];
+const FEED_TAGS = ['SCR', 'NET', 'PWR', 'TMP', 'DAY', 'BARO', 'WX', 'MOT', 'VIB', 'S16', 'SYS', 'VIS', 'BRF', 'CAL', 'ACK', 'AUD', 'ISS', 'SAT', 'NAV', 'TMR', 'TRF', 'FIN'];
 const feedTags = () => { const n = {}; for (const e of FEED) n[e[1]] = (n[e[1]] || 0) + 1; return ['ALL', 'WARN'].concat(Object.keys(n).sort((a, b) => n[b] - n[a]).slice(0, 14)); };
 const feedRows = () => { const f = PAGES.M23.flt || 'ALL'; return f === 'ALL' ? FEED : FEED.filter(e => f === 'WARN' ? e[3] : e[1] === f); };
 PAGES.M23 = { code: 'M23', name: 'FEED', ru: 'ЖУРН', words: ['FEED', 'LOG', 'JOURNAL'], fps: 2, off: 0, flt: 'ALL',
@@ -3648,7 +3808,8 @@ function kladPanel(pg, scr, r) {
   if (y + 1 < ir.b) { y++; noData(scr, ir.x, y++, ir.w, 'NOTHING SENT · LOCAL READ ONLY · [*1]'); }
   return null;
 }
-const kladKeys = () => [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']]];
+const kladKeys = () => [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']],
+  ['2', 'ACK', finCmdAck, ['ACK', 'FINACK', 'SILENCE'], 'ACK (FINANCE LAMP, ' + CFG.AL.FinanceAckHours + ' H)']];
 const kDay = d => { const s = String(d || ''); return s.length >= 10 ? s.slice(8, 10) + '/' + s.slice(5, 7) : '--/--'; };
 const kArr = v => Array.isArray(v) ? v : [];
 // compte courant principal : le premier compte courant de Klad (ordre du Carnet)
@@ -3675,7 +3836,8 @@ PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINAN
     if (S.total && S.total.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'TOTAL', eur(S.total.all), t.D, S.total.all < 0 ? t.RB : t.N);
     y++;
     // alertes
-    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? String(al.length) : 'NONE', al.some(a => a.level === 'crit') ? t.RB : (al.length ? t.B : t.D));
+    const ack = finPaused() ? 'ACK · ' + finLeftTxt(FINACK.until - now()) : '';
+    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? (ack ? ack + ' · ' : '') + al.length + (ack ? '' : ' · [*2] ACK') : 'NONE', ack ? t.D : (al.some(a => a.level === 'crit') ? t.RB : (al.length ? t.B : t.D)));
     const nA = Math.max(0, Math.min(al.length, ir.b - y - (atN ? 2 : 0)));
     for (const a of al.slice(0, al.length > nA ? Math.max(0, nA - 1) : nA)) {
       scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : 'CAUT', a.level === 'crit' ? t.RB : t.B); scr.put(ir.x + 6, y++, clip(kladAlTxt(a), ir.w - 6), t.N);
@@ -4575,9 +4737,13 @@ function briefLines() {
   try { const hh = here(), si = A.sunInfo(T, hh.lat, hh.lon); if (si.rise && si.set) L.push(['SUN', 'RISE ' + hhmm(si.rise) + ' · SET ' + hhmm(si.set)]); } catch (e) { /* */ }
   // trajet du moment (7.1 ROUTE), si la clé et les lieux sont réglés
   if (RTE.key && RTE.home && RTE.work) {
-    const dir = rteMain(), rr = RTE.res[dir], st = rteState(rr);
+    const dir = rteMain(), rr = RTE.res[dir], st = rteState(rr), f = rteView(dir);
     const sev = evOnRoute(dir).filter(e => e.severe);
-    L.push(['TRAFFIC', rr && now() - rr.t < 1800 ? RTE_DIR[dir][2] + ' ' + minTxt(rr.dur) + ' · ' + st + (rr.stat ? ' +' + Math.max(0, Math.round((rr.dur - rr.stat) / 60)) : '') : (RTE.busy[dir] ? 'ASKING GOOGLE …' : (RTE.err ? RTE.err.slice(0, 26) + ' · ' + pageAddr('M61') : '— · ' + pageAddr('M61'))), RTE.err && !(rr && now() - rr.t < 1800) ? t.RB : undefined]);
+    const val = rr ? RTE_DIR[dir][2] + ' ' + minTxt(rr.dur) + (st ? ' · ' + st : '') + (rr.stat ? ' +' + Math.max(0, Math.round((rr.dur - rr.stat) / 60)) : '') + ' · ' + rteUpd(rr) : '';
+    if (f.st === 'fresh') L.push(['TRAFFIC', val]);
+    else if (f.st === 'upd') { L.push(['TRAFFIC', Math.floor(Date.now() / 500) % 2 === 0 ? 'UPDATE IN PROGRESS' : '', t.B]); if (rr) L.push(['', val, t.G]); }
+    else if (f.st === 'stale') { L.push(['TRAFFIC', rteStaleTxt(f) + (RTE.err && f.why !== 'age' ? ' · ' + RTE.err.slice(0, 20) : '') + ' · ' + pageAddr('M61'), t.RB]); if (rr) L.push(['', val, t.G]); }
+    else L.push(['TRAFFIC', (RTE.err ? RTE.err.slice(0, 26) : '—') + ' · ' + pageAddr('M61'), RTE.err ? t.RB : undefined]);
     if (sev.length) L.push(['', sev[0].lab + ' KM ' + sev[0].km.toFixed(1) + (sev[0].road ? ' · ' + sev[0].road : '') + (sev.length > 1 ? ' · +' + (sev.length - 1) : ''), t.RB]);
   }
   // agenda du jour
@@ -4634,7 +4800,7 @@ function briefFit(L, room) {
   return L;
 }           // BRIEF, 5.1 [*2] : format 1.1
 function briefRefresh(force = false) {                       // trajet du moment (sens selon l'heure / la position) et météo
-  if (RTE.key && RTE.home && RTE.work) { const dir = rteMain(); if (force || !RTE.res[dir] || now() - RTE.res[dir].t > 900) rteFetch(dir, force); evTick(force); }
+  if (RTE.key && RTE.home && RTE.work) { const dir = rteMain(); if (force || !RTE.res[dir] || now() - RTE.res[dir].t > ROUTE_EVERY) rteFetch(dir, force); evTick(force); }
   if (force) fetchWx();
 }
 function briefAuto(app) {                                    // premier réveil du jour : la console passe sur 1.1 BRIEF
@@ -5727,6 +5893,12 @@ PAGES.M54 = { code: 'M54', name: 'S-16', ru: 'С-16', words: ['S16', 'PC', 'ARGO
 //    Pro » baisse, le plafond de Grafit descend à 80 % de la nouvelle valeur ; tarif illisible 3 semaines : plafond 2000 ;
 //  · mise à jour seulement page affichée (10 min le sens utile, 30 min l'autre) et au briefing ;
 //  · APK : requête native avec l'empreinte de l'appli (clé restreinte à Grafit côté Google).
+// Fraîcheur (1.19) : chaque résultat garde l'heure de SA requête (le trafic est calculé pour un départ à cette heure-là),
+// pas l'heure où la page reçoit la réponse : une réponse partie la veille au soir et remise à la page au réveil (WebView en
+// pause) n'est plus datée du matin. Affichage : « UPD 07:42 » ; au démarrage / au réveil, tant que Google n'a pas répondu,
+// UPDATE IN PROGRESS clignotant et ancienne valeur estompée ; échec ou donnée plus vieille que CFG.RT.StaleMins : STALE
+// rouge avec l'âge, et ligne NET (réseau) ou TRF au FEED. Durée franchement au-dessus de l'habituelle sans incident : ligne
+// TRF au FEED avec la durée avec et sans trafic.
 // Évènements sur le trajet (sans Google) : Bison Futé (réseau national non concédé, données ouvertes : fermetures,
 // voies fermées, travaux, déviations) et, avec INCIDENTKEY <clé TomTom gratuite>, accidents, bouchons, routes fermées.
 const ROUTE_DAY = 100, ROUTE_MONTH = 4000, ROUTE_EVERY = 600, ROUTE_URL = 'https://routes.googleapis.com/directions/v2:computeRoutes';
@@ -5734,8 +5906,8 @@ const ROUTE_FIELDS = 'routes.duration,routes.staticDuration,routes.distanceMeter
 const TT_DAY = 60, TT_MONTH = 2000;                           // TomTom : 2500 gratuits par mois
 const RTE0 = () => ({ key: '', ttKey: '', home: null, work: null, res: {}, hist: {}, cnt: { d: '', n: 0, m: '', nm: 0, tn: 0, tnm: 0 }, price: { t: 0, okT: 0, cap: null, sku: '', fails: 0 }, ev: { bf: null, tt: null }, okAt: {}, okSha: '', errT: 0 });
 const RTE = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.route') || '{}'), o = Object.assign(RTE0(), j); o.cnt = Object.assign(RTE0().cnt, j.cnt || {}); o.price = Object.assign(RTE0().price, j.price || {}); o.ev = Object.assign(RTE0().ev, j.ev || {}); return o; } catch (e) { return RTE0(); } })();
-RTE.busy = {}; RTE.evBusy = {}; RTE.fail = {};
-const rteSave = () => { try { const { busy, evBusy, fail, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
+RTE.busy = {}; RTE.evBusy = {}; RTE.fail = {}; RTE.staleLog = {}; RTE.trfT = {};
+const rteSave = () => { try { const { busy, evBusy, fail, staleLog, trfT, ...o } = RTE; localStorage.setItem('grafit.route', JSON.stringify(o)); } catch (e) { /* */ } };
 const RTE_DIR = { hw: ['home', 'work', 'HOME → WORK'], wh: ['work', 'home', 'WORK → HOME'] };
 const rtePlaceTxt = p => !p ? '—' : (p.addr ? p.addr.toUpperCase() : fmtLL(p.lat, p.lon));
 const rteWp = p => p.addr ? { address: p.addr } : { location: { latLng: { latitude: p.lat, longitude: p.lon } } };
@@ -5768,29 +5940,64 @@ function rteFetch(dir, force = false) {
   const [a, b] = RTE_DIR[dir], A = RTE[a], B = RTE[b];
   if (!RTE.key || !A || !B || (RTE.busy[dir] && now() - RTE.busy[dir] < 60)) return false;
   if (!force && RTE.fail[dir] && now() - RTE.fail[dir] < 300) return false;     // échec récent : nouvel essai dans 5 min
-  const q = rteQuota(); if (!q.ok) { RTE.err = 'SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH'); return false; }
-  RTE.cnt.n++; RTE.cnt.nm++; RTE.busy[dir] = now(); rteSave();
+  const q = rteQuota(); if (!q.ok) { if (!/^SAFE STOP/.test(RTE.err || '')) log('TRF', 'ROUTE ' + RTE_DIR[dir][2] + ' · SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH') + (RTE.res[dir] ? ' · DATA STAYS STALE (UPD ' + hhmm(RTE.res[dir].t) + ')' : ''), true); RTE.err = 'SAFE STOP · ' + (q.day >= ROUTE_DAY ? ROUTE_DAY + ' TODAY' : q.cap + ' THIS MONTH'); RTE.fail[dir] = now(); return false; }
+  const sent = now(); RTE.cnt.n++; RTE.cnt.nm++; RTE.busy[dir] = sent; rteSave();
+  // pas de departureTime : Google calcule pour un départ immédiat, c'est-à-dire à l'heure `sent`
   const body = JSON.stringify({ origin: rteWp(A), destination: rteWp(B), travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE_OPTIMAL', languageCode: 'fr-FR', units: 'METRIC' });
-  if (APK && nativeCmd({ cmd: 'route', id: dir, key: RTE.key, body, fields: ROUTE_FIELDS })) return true;
+  if (APK && nativeCmd({ cmd: 'route', id: dir, key: RTE.key, body, fields: ROUTE_FIELDS, sent })) return true;
   fetch(ROUTE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': RTE.key, 'X-Goog-FieldMask': ROUTE_FIELDS }, body })
-    .then(r => r.text().then(tx => rteIngest({ id: dir, code: r.status, body: tx }))).catch(e => rteIngest({ id: dir, code: -1, err: String(e.message || e) }));
+    .then(r => r.text().then(tx => rteIngest({ id: dir, code: r.status, body: tx, sent }))).catch(e => rteIngest({ id: dir, code: -1, err: String(e.message || e), sent }));
   return true;
 }
 function rteIngest(d) {
-  const dir = d.id; if (!RTE_DIR[dir]) return; delete RTE.busy[dir];
+  const dir = d.id; if (!RTE_DIR[dir]) return;
+  // heure de la requête (renvoyée par l'APK, ou gardée par fetch) ; à défaut celle de l'envoi en cours, sinon maintenant
+  const T = now(), sent = +d.sent > 0 && +d.sent <= T ? +d.sent : (RTE.busy[dir] || T), prev = RTE.res[dir];
+  if (RTE.busy[dir] && RTE.busy[dir] <= sent) delete RTE.busy[dir];
+  if (prev && prev.t > sent) return;                          // réponse en retard, plus vieille que celle affichée : ignorée
   let j = null; try { j = JSON.parse(d.body || 'null'); } catch (e) { /* */ }
   if (d.code !== 200 || !j || !j.routes || !j.routes.length) {
     const st = j && j.error ? j.error.status || '' : '', msg = st === 'RESOURCE_EXHAUSTED' ? 'GOOGLE QUOTA REACHED (CONSOLE CAP)' : (st === 'PERMISSION_DENIED' ? 'KEY REFUSED · CHECK ITS RESTRICTIONS' : (j && j.error ? st + ' ' + (j.error.message || '') : (d.err || 'HTTP ' + d.code)));
-    RTE.fail[dir] = now(); RTE.errT = now(); RTE.err = String(msg).toUpperCase().slice(0, 80); log('NAV', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err, true); rteSave(); return;
+    RTE.fail[dir] = T; RTE.errT = T; RTE.err = String(msg).toUpperCase().slice(0, 80);
+    // NET : pas de réseau (aucune réponse HTTP) ; TRF : Google a répondu par une erreur
+    log(d.code > 0 ? 'TRF' : 'NET', 'ROUTE ' + RTE_DIR[dir][2] + ' · ' + RTE.err + (prev ? ' · STALE · DATA ' + ageTxt(T - prev.t) + ' OLD (UPD ' + hhmm(prev.t) + ')' : ''), true); rteSave(); return;
   }
   const r = j.routes[0], sec = x => x ? parseFloat(String(x).replace('s', '')) : null;
-  const res = { t: now(), dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
+  const res = { t: sent, rx: T, dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
     poly: r.polyline && r.polyline.encodedPolyline ? r.polyline.encodedPolyline : (RTE.res[dir] && RTE.res[dir].poly) || '' };
   RTE.res[dir] = res; RTE.err = ''; delete RTE.fail[dir]; (RTE.okAt = RTE.okAt || {}).g = now(); if (APPINFO.sha1) RTE.okSha = APPINFO.sha1;
   const day = ymdOf(now()); (RTE.hist[day] = RTE.hist[day] || []).push([Math.round(res.t), dir, Math.round(res.dur), Math.round(res.stat || 0)]);
   const ks = Object.keys(RTE.hist).sort(); while (ks.length > 7) delete RTE.hist[ks.shift()];
+  if (T - sent > 120) log('TRF', 'ROUTE ' + RTE_DIR[dir][2] + ' · LATE REPLY · ASKED ' + hhmm(sent) + ', RECEIVED ' + hhmm(T));
+  rteCheck(dir, res);
   rteSave(); evTick();
 }
+// Contrôle de cohérence : durée franchement au-dessus de l'habituelle sans incident signalé → ligne TRF au FEED (au plus une
+// par sens et par 30 min) avec la durée avec et sans trafic, pour vérifier la valeur.
+const rteTod = ts => { const d = new Date(ts * 1000); return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds(); };
+function rteCheck(dir, res) {
+  if (!res.dur) return;
+  const u = rteUsual(RTE.hist, dir, res.t, ymdOf(res.t), rteTod), usual = u ? u.dur : res.stat;
+  const inc = evOnRoute(dir).some(e => e.severe || e.lab === 'JAM' || e.delay >= 60 || /CLOSED|DIVERSION|OBSTACLE|ACCIDENT|INCIDENT/.test(e.lab));
+  if (!rteSuspect(res.dur, usual, inc, CFG.RT.UsualPct, CFG.RT.UsualMins) || now() - (RTE.trfT[dir] || 0) < 1800) return;
+  RTE.trfT[dir] = now();
+  log('TRF', 'CHECK ' + RTE_DIR[dir][2] + ' ' + minTxt(res.dur) + ' · NO TRAFFIC ' + minTxt(res.stat) + ' · USUAL ' + minTxt(usual) + (u ? ' (' + u.how + ')' : ' (= NO TRAFFIC)')
+    + ' · NO INCIDENT REPORTED · UPD ' + hhmm(res.t), true);
+}
+// État affiché d'un sens (rteFresh) ; une ligne au FEED quand le sens principal devient périmé (une fois par résultat).
+// Sens secondaire (mis à jour toutes les 30 min) : seuil relevé, pas de ligne au FEED.
+function rteView(dir, secondary = false) {
+  const r = RTE.res[dir], st = CFG.RT.StaleMins * 60;
+  const f = rteFresh(r, { now: now(), wake: VIS.fg, fail: RTE.fail[dir] || 0, busy: RTE.busy[dir] || 0, every: secondary ? 3 * ROUTE_EVERY : ROUTE_EVERY,
+    stale: secondary ? Math.max(st, 3 * ROUTE_EVERY + 300) : st, wait: CFG.RT.WaitSecs });
+  if (!secondary && r && f.st === 'stale' && f.why !== 'fail') {
+    const k = r.t + '|' + f.why;
+    if (RTE.staleLog[dir] !== k) { RTE.staleLog[dir] = k; log(f.why === 'noreply' ? 'NET' : 'TRF', 'ROUTE ' + RTE_DIR[dir][2] + ' STALE · DATA ' + ageTxt(f.age) + ' OLD · UPD ' + hhmm(r.t) + (f.why === 'noreply' ? ' · NO REPLY FROM GOOGLE' : ''), true); }
+  }
+  return f;
+}
+const rteUpd = r => r ? 'UPD ' + hhmm(r.t) : '';
+const rteStaleTxt = f => 'STALE' + (f.age != null ? ' ' + ageTxt(f.age) : ' · NO DATA');
 // sens affiché : le matin maison → travail ; à partir de midi, ou dès que la position est au travail, travail → maison
 const rteNear = k => { const p = RTE[k]; if (!p || p.lat == null || !(live('geo') && SRC.geo.mode === 'live')) return false; const g = SRC.geo.v; return A.dist(g.lat, g.lon, p.lat, p.lon) < 0.5; };
 const rteMain = () => (new Date().getHours() >= 12 || rteNear('work')) ? 'wh' : 'hw';
@@ -5924,7 +6131,7 @@ PAGES.M61 = { code: 'M61', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
     [['ROUTEKEY'], app => cmdKey(app, 'key', 'ROUTE', /^[A-Za-z0-9_\-]{30,60}$/), 'ROUTEKEY <GOOGLE KEY>|OFF'],
     [['INCIDENTKEY'], app => cmdKey(app, 'ttKey', 'INCIDENT', /^[A-Za-z0-9_\-]{20,64}$/), 'INCIDENTKEY <TOMTOM KEY>|OFF']],
   dir() { const m = rteMain(); return this.swap ? (m === 'hw' ? 'wh' : 'hw') : m; },
-  draw(scr, r) {
+  draw(scr, r, app) {
     const q = rteQuota(), ready = RTE.key && RTE.home && RTE.work;
     if (ready) { rteTick(); evTick(); }
     const capLow = q.cap < ROUTE_MONTH;
@@ -5941,17 +6148,23 @@ PAGES.M61 = { code: 'M61', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
     }
     const main = this.dir(), other = main === 'hw' ? 'wh' : 'hw';
     // sens affiché : afficheur durée + voyant trafic
-    const rm = RTE.res[main], stm = rteState(rm), [hw, x2] = twoUp(ir);
-    sub(scr, ir.x, y++, ir.w, RTE_DIR[main][2], rm ? (rm.km != null ? rm.km.toFixed(1) + ' km' : '') + (rm.via ? ' · ' + rm.via.toUpperCase().slice(0, 14) : '') : (RTE.busy[main] ? 'UPDATING …' : ''), t.D);
-    W.readout(scr, ir.x, y, hw, 'NOW · TRAFFIC', rm ? String(Math.round(rm.dur / 60)) : '', 'MIN', t.N, false, true, 3);
-    W.tileGrid(scr, x2, y, 1, ir.r - x2 - 2, [['TRAFFIC', 'nom'], [stm || '—', stm ? RTE_LAMP[stm] : 'na']]);
-    y += 6;
+    const rm = RTE.res[main], stm = rteState(rm), [hw, x2] = twoUp(ir), fm = rteView(main), cur = fm.st === 'fresh', blink = app ? app.blink() : true;
+    sub(scr, ir.x, y++, ir.w, RTE_DIR[main][2], rm ? (rm.km != null ? rm.km.toFixed(1) + ' km' : '') + (rm.via ? ' · ' + rm.via.toUpperCase().slice(0, 14) : '') : '', t.D);
+    // durée : normale si à jour, estompée (28 %) en attente de mise à jour ou périmée
+    W.readout(scr, ir.x, y, hw, cur && rm ? rteUpd(rm) : 'NOW · TRAFFIC', rm ? String(Math.round(rm.dur / 60)) : '', 'MIN', cur ? t.N : t.G, false, cur, 3);   // estompée : sans le fantôme des segments
+    W.tileGrid(scr, x2, y, 1, ir.r - x2 - 2, [['TRAFFIC', 'nom'], [stm || '—', stm && cur ? RTE_LAMP[stm] : 'na']]);
+    y += 5;
+    // état de la donnée, sous la durée : UPD 07:42 · UPDATE IN PROGRESS (clignote 1 Hz) · STALE 9h (rouge)
+    if (fm.st === 'upd') { scr.put(ir.x, y, blink ? 'UPDATE IN PROGRESS' : '', t.B); if (rm) W.rjust(scr, ir.r, y, rteUpd(rm), t.G); }
+    else if (fm.st === 'stale') { scr.put(ir.x, y, rteStaleTxt(fm), t.RB); W.rjust(scr, ir.r, y, clip((fm.why === 'fail' ? (RTE.err ? RTE.err.split(' · ')[0] : 'API FAILED') : (fm.why === 'noreply' ? 'NO REPLY' : 'TOO OLD')) + (rm ? ' · ' + rteUpd(rm) : ''), Math.max(0, ir.w - 14)), t.R); }
+    else if (rm) { scr.put(ir.x, y, rteUpd(rm), t.D); W.rjust(scr, ir.r, y, ageTxt(fm.age) + ' AGO', t.F); }
+    y++;
     if (rm) {
-      const dl = rm.stat ? rm.dur - rm.stat : null;
-      kv('NO TRAFFIC', minTxt(rm.stat) + (dl != null ? ' · ' + (dl >= 30 ? '+' + Math.round(dl / 60) + ' MIN (+' + Math.round(100 * dl / rm.stat) + ' %)' : 'NO DELAY') : ''), dl >= 300 ? t.B : t.N);
-      kv('LEAVE NOW → ARRIVE', hhmm(now() + rm.dur), t.B);
-      kv('UPDATED', hhmm(rm.t) + ' · ' + ageTxt(now() - rm.t) + ' AGO', now() - rm.t > 1800 ? t.F : t.D);
-    } else kv('STATUS', RTE.err || (RTE.busy[main] ? 'ASKING GOOGLE …' : 'WAITING'), RTE.err ? t.RB : t.F);
+      const dl = rm.stat ? rm.dur - rm.stat : null, vs = s => cur ? s : t.G;
+      kv('NO TRAFFIC', minTxt(rm.stat) + (dl != null ? ' · ' + (dl >= 30 ? '+' + Math.round(dl / 60) + ' MIN (+' + Math.round(100 * dl / rm.stat) + ' %)' : 'NO DELAY') : ''), vs(dl >= 300 ? t.B : t.N));
+      kv('LEAVE NOW → ARRIVE', cur ? hhmm(now() + rm.dur) : '—', vs(t.B));
+      if (fm.st === 'stale' && RTE.err && fm.why === 'fail') kv('ERROR', RTE.err, t.RB);
+    } else kv('STATUS', RTE.err || (fm.st === 'upd' ? 'ASKING GOOGLE …' : 'WAITING'), RTE.err ? t.RB : t.F);
     // évènements sur le trajet affiché
     const ev = evOnRoute(main), srcs = [RTE.ev.bf && !RTE.ev.bf.err ? 'BISON FUTE' : null, RTE.ttKey ? (RTE.ev.tt && !RTE.ev.tt.err ? 'TOMTOM' : 'TOMTOM ?') : null].filter(Boolean).join(' · ');
     y++; sub(scr, ir.x, y++, ir.w, 'ON THE ROUTE', srcs || (APK ? 'WAITING' : 'APK ONLY'), t.F);
@@ -5962,9 +6175,10 @@ PAGES.M61 = { code: 'M61', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
     if (ev.length > 3 && y < ir.b) scr.put(ir.x + 8, y++, '+ ' + (ev.length - 3) + ' MORE', t.F);
     // l'autre sens, en deux lignes
     y++;
-    const ro = RTE.res[other], sto = rteState(ro), evo = evOnRoute(other).filter(e => e.severe);
-    sub(scr, ir.x, y++, ir.w, RTE_DIR[other][2], ro && ro.km != null ? ro.km.toFixed(1) + ' km' : '', t.D);
-    kv('NOW', ro ? minTxt(ro.dur) + ' ' + sto + (ro.stat ? ' +' + Math.max(0, Math.round((ro.dur - ro.stat) / 60)) : '') + (evo.length ? ' · ' + evo[0].lab : '') : (RTE.busy[other] ? 'UPDATING …' : '—'), sto === 'JAMMED' || evo.length ? t.RB : (sto === 'HEAVY' ? t.B : t.N));
+    const ro = RTE.res[other], sto = rteState(ro), evo = evOnRoute(other).filter(e => e.severe), fo = rteView(other, true);
+    sub(scr, ir.x, y++, ir.w, RTE_DIR[other][2], (ro && ro.km != null ? ro.km.toFixed(1) + ' km · ' : '') + (fo.st === 'stale' ? rteStaleTxt(fo) : (fo.st === 'upd' ? 'UPDATING' : rteUpd(ro))), fo.st === 'stale' ? t.R : t.D);
+    kv('NOW', ro ? minTxt(ro.dur) + ' ' + (sto || '') + (ro.stat ? ' +' + Math.max(0, Math.round((ro.dur - ro.stat) / 60)) : '') + (evo.length ? ' · ' + evo[0].lab : '') : (fo.st === 'upd' ? 'UPDATING …' : '—'),
+      fo.st !== 'fresh' ? t.G : (sto === 'JAMMED' || evo.length ? t.RB : (sto === 'HEAVY' ? t.B : t.N)));
     // la journée : durée du sens affiché à chaque mise à jour (05 h → 22 h), si la place le permet
     const pts = (RTE.hist[ymdOf(now())] || []).filter(e => e[1] === main);
     if (ir.b - y >= 6) {

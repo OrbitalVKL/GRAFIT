@@ -140,6 +140,30 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.19.0
+
+- **6.1 ROUTE, fraîcheur du temps de trajet.**
+  - Chaque résultat garde l'heure de **sa requête** (Google calcule pour un départ à cette heure-là), et non l'heure
+    où la page reçoit la réponse. Avant, une réponse partie le soir et remise à la page au réveil (WebView en pause)
+    était datée du matin. Une réponse plus vieille que celle affichée est ignorée.
+  - `UPD 07:42` à côté de la durée (6.1 et briefing).
+  - Au démarrage ou au réveil, tant que Google n'a pas répondu : `UPDATE IN PROGRESS` clignote (1 Hz) et l'ancienne
+    valeur reste estompée (28 %), sans heure d'arrivée.
+  - Échec de l'API, requête sans réponse, plafond atteint, ou donnée plus vieille que `CFG.RT.StaleMins` (15 min) :
+    `STALE` en rouge avec l'âge, et une ligne au FEED : `NET` sans réseau, `TRF` pour une erreur Google ou une donnée trop vieille.
+  - Contrôle de cohérence : une durée franchement au-dessus de l'habituelle (médiane des jours précédents à ± 1 h ;
+    `CFG.RT.UsualPct` 25 % et `UsualMins` 5 min) sans incident signalé ajoute une ligne `TRF` au FEED, avec la durée
+    avec et sans trafic.
+- **Voyant FINANCE acquittable.** `ACK FINANCE` (2.2 FAIL PAGE) ou `7.1 *2` met le voyant en pause pendant
+  `CFG.AL.FinanceAckHours` (48 h). Pendant la pause, le voyant est estompé `ACK · 31h`, ne clignote pas et n'entre pas
+  dans le compte `n CAUT` ni dans CAUTION.
+  - À la fin de la pause, si Klad signale toujours, l'alarme revient (CAUTION et ligne FEED `FIN`).
+  - Retour immédiat en cas d'aggravation : découvert plus profond d'au moins `CFG.AL.FinanceWorsenEur` (50 €),
+    CAUT → CRIT, ou nouvelle alerte d'un autre type.
+  - Si Klad ne signale plus rien, l'acquittement est effacé.
+  - L'acquittement et son heure sont enregistrés sur le téléphone et survivent à un redémarrage.
+- **Tests** : `node tools/test_logic.js` (logique de fraîcheur, de durée habituelle, des signaux financiers et de l'acquittement).
+
 ## 1.18.0
 
 - **Groupe 7 FINANCE en trois formats**, vue d'ensemble de Klad (le détail reste dans Klad) :
