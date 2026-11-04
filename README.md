@@ -140,6 +140,20 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.19.1
+
+- **3.4 WEEK refait en colonnes** : une colonne par jour (les 5 jours suivants), lue de gauche à droite.
+  - Titre `NEXT 5 DAYS` avec la tendance (`WARMER` / `COOLER` / `STEADY`, sans chiffre) et les jours de pluie.
+  - En-têtes : jour (en inversé pour le jour choisi), date, pictogramme, ciel en 7 caractères au plus.
+  - `TEMP °C` : barres flottantes mini → maxi sur l'échelle commune de la semaine, maxi collé au-dessus de la barre,
+    mini collé dessous ; pointillés au maxi d'aujourd'hui, coupés sous les chiffres.
+  - `RAIN` : risque en %, barres de cumul (échelle 0–2/5/10/20/50 mm), mm et heures de pluie.
+  - `GUSTS km/h` : direction dominante et rafale maxi, en rouge à partir de 60.
+  - Détail du jour choisi : `MORNING` / `AFTERNOON` / `EVENING` (ciel, températures, risque, mm), puis `SUN · UV`.
+  - Choix du jour : `*2` ◂ / `*3` ▸, `SEL n` (1–5), `SEL+` / `SEL-`. `DAY` n'est pas une commande de 3.4 et ouvre
+    toujours 4.1 (M41).
+  - Écran court : une section qui ne tient pas est omise entière, sans déborder sur le cadre.
+
 ## 1.19.0
 
 - **6.1 ROUTE, fraîcheur du temps de trajet.**
