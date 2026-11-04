@@ -256,6 +256,12 @@ public class MainActivity extends Activity {
                     new Thread(() -> routeCall(id, key, body, fields, sent)).start();
                     break;
                 }
+                case "mbGet": {                                  // 3.x météo : prévision meteoblue (clé de l'utilisateur), GET seulement
+                    final String u = o.optString("url");
+                    final double la = o.optDouble("lat", 0), lo = o.optDouble("lon", 0);
+                    if (u.startsWith("https://my.meteoblue.com/packages/")) new Thread(() -> mbCall(u, la, lo)).start();
+                    break;
+                }
                 case "bfEvents": {                               // évènements Bison Futé dans une emprise [latMin, lonMin, latMax, lonMax]
                     org.json.JSONArray bx = o.optJSONArray("box");
                     if (bx != null && bx.length() == 4) {
@@ -369,6 +375,21 @@ public class MainActivity extends Activity {
             r.put("code", code); r.put("body", bo.toString("UTF-8"));
         } catch (Exception e) { try { r.put("code", -1); r.put("err", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ } }
         try { JSONObject d = new JSONObject(); d.put("route", r); push(d); } catch (Exception e) { /* */ }
+    }
+
+    void mbCall(String url, double lat, double lon) {
+        JSONObject r = new JSONObject();
+        try {
+            r.put("lat", lat); r.put("lon", lon);
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(10000); c.setReadTimeout(20000);
+            int code = c.getResponseCode();
+            java.io.InputStream is = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            if (is != null) try (java.io.InputStream in = is) { byte[] buf = new byte[16384]; int n; while ((n = in.read(buf)) > 0 && bo.size() < 4_000_000) bo.write(buf, 0, n); }
+            r.put("code", code); r.put("body", bo.toString("UTF-8"));
+        } catch (Exception e) { try { r.put("code", -1); r.put("err", String.valueOf(e.getMessage())); } catch (Exception x) { /* */ } }
+        try { JSONObject d = new JSONObject(); d.put("mb", r); push(d); } catch (Exception e) { /* */ }
     }
 
     void saveFile(String name, String text) {

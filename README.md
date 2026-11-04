@@ -140,6 +140,31 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.20.0
+
+- **Températures meteoblue** (`MBKEY <clé>`, `MBKEY OFF`) : prévision meteoblue (une requête au plus toutes les 4 h ou
+  après 15 km, 7 par jour et 200 par mois au plus : l'offre gratuite donne ~2 500 appels par an). Maintenant, heure par
+  heure, mini et maxi des jours ; pluie, vent, ciel et radar restent Open-Meteo. Repli : Open-Meteo modèles Météo-France
+  (AROME/ARPEGE), signalé `BACKUP AROME` en rouge dans le titre des formats météo et du briefing, avec une ligne `WX` au
+  FEED à la bascule et au retour. Sans clé : Météo-France, sans voyant. État et compteurs : 2.4 `*8` (API).
+- **Nuits (4.3 HEALTH)** : la nuit est la plus longue période de repos entre 18:00 la veille et 18:00 (écran, mouvement,
+  pas ; téléphone branché noté), coups d'œil fondus ; une nuit décalée (couché 07:05, levé 14:30) est trouvée. Graphe
+  18h → 18h avec repères verticaux (minuit et midi pleins, toutes les 3 h en pointillés). Semaine passée recalculée une
+  fois. `SLEPT 23:40 07:10`, `SLEPT 01/11 07:05 14:30` : nuit saisie à la main ; `SLEPT [JJ/MM] AUTO` la rend à la détection.
+- **Éveil prolongé** : 13e voyant `AWAKE`, CAUT après 16 h d'éveil (`MAXAWAKE <h>`, `MAXAWAKE OFF`).
+- **Coucher conseillé** : briefing, ligne `TONIGHT` le soir (`BED BY` = alarme du lendemain ou lever habituel − objectif).
+- **Trajet selon la position** (6.1) : à la maison HOME → WORK, au travail WORK → HOME, ailleurs selon l'heure. Un lieu
+  saisi par adresse prend les coordonnées du tracé Google.
+- **Départ conseillé** (`ARRIVE 08:30`, lundi–vendredi, `ARRIVE 08:30 ALL`, `ARRIVE OFF`) : briefing et 6.1, `LEAVE` avec
+  la durée la plus longue entre trafic et habituelle + 5 min, et la pluie sur le trajet.
+- **7.1 FINANCE** : CAUT en rouge (CRIT en inversé), `TOTAL PERSO` = tout sauf le commun ; 7.2 donne aussi le total avec le commun.
+- **Limites d'API** (Google, TomTom, meteoblue) : compteurs affichés seulement à partir de 80 % du plafond (CAUT) ou au plafond (rouge).
+- **3.2 RADAR** : animation en lecture à chaque ouverture.
+- **Batterie** : `BATT LOW` en CAUT aussi quand la décharge depuis le débranchement videra la batterie avant le coucher
+  habituel (`EMPTY ~19:40`) ; 1.5 POWER : `TO BED`, et temps passé branché à 100 % par nuit (conseil limite de charge 80 %).
+- **Carte du signal** (5.2 TOWERS) : signal mobile relevé quand Grafit est ouvert avec une position précise, en cases de
+  ~200 m sur le téléphone ; zones faibles (< −110 dBm) en rouge sur le cadran. `SIGMAP CLEAR`.
+
 ## 1.19.1
 
 - **3.4 WEEK refait en colonnes** : une colonne par jour (les 5 jours suivants), lue de gauche à droite.

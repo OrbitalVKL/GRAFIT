@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const m = html.match(/\/\/ <logic>\n([\s\S]*?)\/\/ <\/logic>/);
 if (!m) { console.error('bloc // <logic> introuvable dans index.html'); process.exit(1); }
-const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finAckMake, finAckEval };')();
+const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
 
 let ok = 0, ko = 0;
 const test = (name, fn) => { try { fn(); ok++; console.log('  ok   ' + name); } catch (e) { ko++; console.log('  FAIL ' + name + '\n       ' + e.message); } };
@@ -145,6 +145,81 @@ test('l\'ACK survit à un redémarrage (aller-retour JSON, comme le stockage)', 
   assert.strictEqual(L.finAckEval(back, S(-120), T + 47 * H, 50).st, 'paused');
   assert.strictEqual(L.finAckEval(back, S(-120), T + 49 * H, 50).st, 'expired');
 });
+
+// ------------------------------------------------------------------ 1.20 : sommeil (nuit la plus longue, 18:00 → 18:00)
+console.log('\nSLEEP · NIGHT FIND');
+const D3 = 1_793_847_600;                      // un jour à 03:00 (heure locale du test sans importance : tout est relatif)
+const mk = (from, to, step, f) => { const r = []; for (let t = from; t <= to; t += step) r.push(f(t)); return r; };
+// relevés : immobile (g 0,001) sauf intervalles actifs [a, b] (mouvement 0,2 g, 20 pas / min)
+const SM = (active, chg = []) => { let c = 1000; return mk(D3 - 10 * H, D3 + 16 * H, 60, t => { const on = active.some(([a, b]) => t >= a && t <= b); if (on) c += 20; return [t, c, on ? 0.2 : 0.001, chg.some(([a, b]) => t >= a && t <= b) ? 1 : 0]; }); };
+test('nuit ordinaire 23:40 → 07:00', () => {
+  const r = L.nightFind(D3, [], SM([[D3 - 9 * H, D3 - 3.33 * H], [D3 + 4 * H, D3 + 6 * H]]), null, D3 + 15 * H);
+  assert.ok(r); assert.ok(Math.abs(r.bed - (D3 - 3.33 * H)) <= 120); assert.ok(Math.abs(r.wake - (D3 + 4 * H)) <= 120);
+});
+test('nuit décalée : debout toute la nuit, couché 07:05, levé 14:30 (le 1er novembre)', () => {
+  const sm = SM([[D3 - 9 * H, D3 + 4.08 * H], [D3 + 11.5 * H, D3 + 13 * H]], [[D3 + 4.1 * H, D3 + 10.4 * H]]);
+  const r = L.nightFind(D3, [], sm, null, D3 + 15 * H);
+  assert.ok(r, 'nuit trouvée'); assert.ok(Math.abs(r.bed - (D3 + 4.08 * H)) <= 120); assert.ok(Math.abs(r.wake - (D3 + 11.5 * H)) <= 120); assert.ok(r.chg);
+  assert.ok(L.nightShifted(r.bed, r.wake, D3));
+});
+test('coup d\'œil nocturne (1 min à 03:30) fondu dans la nuit', () => {
+  const ev = [[D3 + 0.5 * H, 'UNLOCK'], [D3 + 0.5 * H + 50, 'OFF']];
+  const r = L.nightFind(D3, ev, SM([[D3 - 9 * H, D3 - 3 * H], [D3 + 4 * H, D3 + 5 * H]]), null, D3 + 15 * H);
+  assert.strictEqual(r.g, 1); assert.ok(Math.abs(r.bed - (D3 - 3 * H)) <= 120);
+});
+test('session à l\'alarme : réveil à l\'alarme même brève', () => {
+  const al = D3 + 4 * H, ev = [[al + 10, 'UNLOCK'], [al + 70, 'OFF']];
+  const r = L.nightFind(D3, ev, SM([[D3 - 9 * H, D3 - 3 * H], [D3 + 5 * H, D3 + 6 * H]]), al, D3 + 15 * H);
+  assert.ok(Math.abs(r.wake - (al + 10)) <= 60);
+});
+test('soirée sans toucher le téléphone (3 h 30) : la vraie nuit gagne', () => {
+  const sm = SM([[D3 - 9 * H, D3 - 8 * H], [D3 - 4.5 * H, D3 - 2 * H], [D3 + 4.5 * H, D3 + 6 * H]]);
+  const r = L.nightFind(D3, [], sm, null, D3 + 15 * H);
+  assert.ok(Math.abs(r.bed - (D3 - 2 * H)) <= 120);
+});
+test('nuit en cours (pas de réveil encore) → rien', () => {
+  assert.strictEqual(L.nightFind(D3, [], SM([[D3 - 9 * H, D3 - 3 * H]]), null, D3 + 2 * H), null);
+});
+
+// ------------------------------------------------------------------ 1.20 : températures meteoblue / repli
+console.log('\nWEATHER · TEMPERATURES');
+const pT = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13), 0);
+const hours = mk(0, 47, 1, i => '2026-11-05 ' + String(i % 24).padStart(2, '0') + ':00').map((x, i) => i < 24 ? x : x.replace('11-05', '11-06'));
+const MBJ = { data_1h: { time: hours, temperature: hours.map((_, i) => 10 + i * 0.1), felttemperature: hours.map((_, i) => 8 + i * 0.1) },
+  data_day: { time: ['2026-11-05', '2026-11-06'], temperature_max: [14.2, 15.1], temperature_min: [6.3, 7.4] } };
+test('mbParse : heures, ressenti, mini/maxi par jour', () => {
+  const S = L.mbParse(MBJ, pT);
+  assert.strictEqual(S.ms.length, 48); assert.strictEqual(S.t[1], 10.1); assert.deepStrictEqual(S.days['2026-11-06'], [15.1, 7.4]);
+});
+test('mbParse : réponse sans data_1h → FORMAT', () => { assert.throws(() => L.mbParse({ metadata: {} }, pT), /FORMAT/); });
+test('wxOverlay : maintenant interpolé, heures et jours remplacés, le reste gardé', () => {
+  const S = L.mbParse(MBJ, pT), hms = [pT('2026-11-05 01:00'), pT('2026-11-07 01:00')];
+  const O = { temp: 0, feel: 0, ht: [1, 2], happ: [3, 4], days: [[20, 0], [21, 1], [22, 2]] };
+  const r = L.wxOverlay(O, hms, ['2026-11-05', '2026-11-06', '2026-11-07'], S, pT('2026-11-05 01:00') + 1800000);
+  assert.ok(Math.abs(r.temp - 10.15) < 1e-9); assert.deepStrictEqual(r.ht, [10.1, 2]); assert.deepStrictEqual(r.days, [[14.2, 6.3], [15.1, 7.4], [22, 2]]);
+});
+test('wxOverlay sans source : Open-Meteo inchangé', () => {
+  const O = { temp: 5, feel: 4, ht: [1], happ: [2], days: [[3, 1]] };
+  assert.deepStrictEqual(L.wxOverlay(O, [0], ['x'], null, 0), O);
+});
+test('quotaRoll : remise à zéro au changement de jour et de mois', () => {
+  const c = { day: '20261104', n: 6, mon: '202611', nm: 150 };
+  L.quotaRoll(c, '20261105'); assert.deepStrictEqual([c.n, c.nm], [0, 150]);
+  L.quotaRoll(c, '20261201'); assert.deepStrictEqual([c.n, c.nm], [0, 0]);
+});
+test('quotaLvl : rien sous 80 %, CAUT dès 80 %, plafond à 100 %', () => {
+  assert.deepStrictEqual([L.quotaLvl(79, 100), L.quotaLvl(80, 100), L.quotaLvl(100, 100), L.quotaLvl(5, 0)], [0, 1, 2, 0]);
+});
+
+// ------------------------------------------------------------------ 1.20 : autonomie face au coucher
+console.log('\nBATTERY · TO BEDTIME');
+test('drainRate : −6 %/h sur 1 h', () => { const r = L.drainRate(mk(0, 3600, 300, t => [t, 60 - t / 600])); assert.ok(Math.abs(r + 6) < 1e-9); });
+test('drainRate : moins de 45 min → null', () => { assert.strictEqual(L.drainRate(mk(0, 1800, 300, t => [t, 50])), null); });
+test('battPlan : 40 % à −6 %/h à 13:00, coucher 23:30 → vide ~19:40, brancher avant ~16:20', () => {
+  const T = 13 * H, p = L.battPlan(40, -6, T, 23.5 * H, 20);
+  assert.ok(Math.abs(p.empty - (T + 6.667 * H)) < 60); assert.ok(Math.abs(p.by - (T + 3.333 * H)) < 60);
+});
+test('battPlan : tient jusqu\'au coucher → null', () => { assert.strictEqual(L.battPlan(80, -5, 13 * H, 23.5 * H, 20), null); });
 
 console.log('\n' + ok + ' ok · ' + ko + ' failed');
 process.exit(ko ? 1 : 0);

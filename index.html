@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.19.1', BUILD: '20261104', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.20.0', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1042,10 +1042,121 @@ function finAckEval(ack, sigs, T, worseEur) {
   const sig = {}; for (const s of sigs) sig[s.k] = ack.sig[s.k];
   return { st: 'paused', left: ack.until - T, sig };
 }
+// ---- sommeil (1.20) : nuit qui se termine le jour D (day3 = 03:00 de D). Fenêtre de 18:00 la veille à 18:00 (ou
+// maintenant). Signes d'éveil : sessions d'écran (déverrouillage → extinction), téléphone manipulé (mouvement ≥ 0,04 g)
+// ou porté (≥ 10 pas depuis le relevé précédent). Repos = intervalle sans aucun signe. Coup d'œil nocturne = signe bref
+// (< 3 min) entouré de repos (1 h avant, 45 min après), sans marche juste après et avant l'alarme − 30 min : fondu dans
+// la nuit. Nuit = repos le plus long d'au moins 3 h, réveil après 03:00 ; à égalité de durée, celle qui recouvre le plus
+// 22:00 → 10:00. Une nuit décalée (coucher 07:00, lever 14:00) est donc trouvée. Branché pendant le repos : noté (chg).
+const MOVED_G = 0.04;
+// sm : relevés [ts, compteur de pas | null, mouvement g rms | null, en charge 0/1 | null] ; pas entre a et b
+function stepsBetween(sm, a, b) {
+  let n = 0, prev = null;
+  for (const [ts, c] of sm) { if (ts > b) break; if (c == null) continue; if (ts > a && prev != null && c >= prev) n += c - prev; prev = c; }
+  return n;
+}
+// instants où le téléphone a été manipulé ou porté (mouvement, ou ≥ 10 pas depuis le relevé précédent, ≤ 10 min avant)
+function handledTimes(sm, a, b) {
+  const out = []; let prev = null, prevT = null;
+  for (const [ts, c, g] of sm) {
+    if (ts > b) break;
+    const walk = c != null && prev != null && c >= prev + 10 && ts - prevT <= 600;
+    if (ts >= a && ((g != null && g >= MOVED_G) || walk)) out.push(ts);
+    if (c != null) { prev = c; prevT = ts; }
+  }
+  return out;
+}
+function nightFind(day3, ev, sm, alarm, until) {
+  const from = day3 - 9 * 3600, to = Math.min(until, day3 + 15 * 3600), n0 = day3 - 5 * 3600, n1 = day3 + 7 * 3600;
+  const marks = []; let open = null;
+  for (const [ts, k] of ev) {
+    if (ts < from || ts > to) continue;
+    if (k === 'UNLOCK' && open == null) open = ts;
+    else if (k === 'OFF' && open != null) { marks.push([open, ts]); open = null; }
+  }
+  if (open != null) marks.push([open, to]);
+  for (const ts of handledTimes(sm, from, to)) marks.push([ts - 60, ts]);
+  if (!marks.length) return null;
+  marks.sort((x, y) => x[0] - y[0]);
+  const C = [];                                                       // grappes de signes (écart < 2 min fondu)
+  for (const m of marks) { const l = C[C.length - 1]; if (l && m[0] - l[1] < 120) l[1] = Math.max(l[1], m[1]); else C.push([m[0], m[1]]); }
+  const glance = i => {
+    if (i === 0 || i >= C.length - 1) return false;
+    const [a, b] = C[i];
+    if (b - a >= 180 || a - C[i - 1][1] < 3600 || C[i + 1][0] - b < 2700) return false;
+    if (alarm && a >= alarm - 1800) return false;
+    return stepsBetween(sm, b, b + 2700) < 40;
+  };
+  let best = null;
+  for (let i = 0; i < C.length - 1; i++) {
+    if (glance(i)) continue;
+    let j = i + 1, g = 0; while (j < C.length && glance(j)) { g++; j++; }
+    if (j >= C.length) break;
+    const bed = C[i][1], wake = C[j][0], dur = wake - bed;
+    if (dur < 3 * 3600 || wake < day3 || wake > day3 + 15 * 3600) continue;
+    const score = dur + 0.5 * Math.max(0, Math.min(wake, n1) - Math.max(bed, n0));
+    if (!best || score > best.score) best = { bed, wake, g, score, chg: sm.some(r => r[0] > bed && r[0] < wake && r[3]) };
+  }
+  return best;
+}
+const nightShifted = (bed, wake, day3) => bed >= day3 || wake >= day3 + 9 * 3600;   // couché après 03:00 ou levé après 12:00
+// ---- températures (1.20) : prévision meteoblue (basic-1h + basic-day) ou repli Open-Meteo Météo-France, posée sur la
+// météo Open-Meteo. mbParse : réponse meteoblue → { ms, t, f, days: { 'AAAA-MM-JJ': [maxi, mini] } } (heures locales,
+// parseT donné) ; erreur 'FORMAT' si la réponse n'a pas les champs attendus.
+function mbParse(j, parseT) {
+  const h = j && j.data_1h, dd = j && j.data_day;
+  if (!h || !Array.isArray(h.time) || !Array.isArray(h.temperature) || h.time.length !== h.temperature.length || h.time.length < 24) throw new Error('FORMAT');
+  const num = v => v == null || v === '' || !isFinite(+v) ? null : +v;
+  const days = {};
+  if (dd && Array.isArray(dd.time)) dd.time.forEach((d, i) => {
+    const mx = num(dd.temperature_max && dd.temperature_max[i]), mn = num(dd.temperature_min && dd.temperature_min[i]);
+    if (mx != null && mn != null) days[String(d).slice(0, 10)] = [mx, mn];
+  });
+  return { ms: h.time.map(parseT), t: h.temperature.map(num), f: Array.isArray(h.felttemperature) ? h.felttemperature.map(num) : null, days };
+}
+// valeur d'une série horaire à l'instant x (ms), interpolée entre deux heures ; null hors de la série ou si un trou
+function serAt(ms, v, x) {
+  if (!v || !ms.length || x < ms[0] || x > ms[ms.length - 1]) return null;
+  let lo = 0, hi = ms.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ms[m] <= x) lo = m; else hi = m; }
+  if (ms[lo] === x) return v[lo]; if (ms[hi] === x) return v[hi];
+  if (v[lo] == null || v[hi] == null || ms[hi] - ms[lo] > 3 * 3600000) return null;
+  return v[lo] + (v[hi] - v[lo]) * (x - ms[lo]) / (ms[hi] - ms[lo]);
+}
+// O : valeurs Open-Meteo { temp, feel, ht, happ, days: [[maxi, mini]] } ; hms : heures (ms) ; dates : 'AAAA-MM-JJ' des
+// jours ; S : source (mbParse) ou null. Chaque valeur absente de S garde celle d'Open-Meteo.
+function wxOverlay(O, hms, dates, S, T) {
+  const pick = (a, b) => a != null ? a : b;
+  if (!S) return { temp: O.temp, feel: O.feel, ht: O.ht, happ: O.happ, days: O.days };
+  return {
+    temp: pick(serAt(S.ms, S.t, T), O.temp), feel: pick(serAt(S.ms, S.f, T), O.feel),
+    ht: O.ht ? O.ht.map((v, i) => pick(serAt(S.ms, S.t, hms[i]), v)) : O.ht,
+    happ: O.happ ? O.happ.map((v, i) => pick(serAt(S.ms, S.f, hms[i]), v)) : O.happ,
+    days: O.days ? O.days.map((d, i) => S.days[dates[i]] || d) : O.days,
+  };
+}
+// compteurs d'appels (jour, mois), remis à zéro au changement de jour / de mois
+function quotaRoll(c, day) { const mon = day.slice(0, 6); if (c.day !== day) { c.day = day; c.n = 0; } if (c.mon !== mon) { c.mon = mon; c.nm = 0; } return c; }
+// ---- batterie (1.20) : vitesse de décharge (%/h, régression) sur des relevés [ts, %] ; null si moins de 45 min ou 6 relevés
+function drainRate(pts) {
+  if (pts.length < 6) return null;
+  const t0 = Math.min(...pts.map(p => p[0])), t1 = Math.max(...pts.map(p => p[0])); if (t1 - t0 < 2700) return null;
+  const mx = pts.reduce((a, p) => a + p[0], 0) / pts.length, my = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+  const den = pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0); if (!den) return null;
+  return pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / den * 3600;
+}
+// autonomie face au coucher (bed, epoch s) : null si elle tient (vide au plus tôt 30 min avant le coucher) ; sinon
+// { empty, by } : heure du 0 % et heure limite pour brancher (niveau `low`, 20 %)
+function battPlan(lvl, rate, T, bed, low) {
+  if (rate == null || rate > -0.5 || lvl == null || T >= bed) return null;
+  const empty = T + lvl / -rate * 3600; if (empty >= bed - 1800) return null;
+  return { empty, by: T + Math.max(0, lvl - low) / -rate * 3600 };
+}
+// niveau d'un compteur face à son plafond : 0 loin, 1 à partir de 80 % (CAUT), 2 atteint
+const quotaLvl = (n, cap) => !cap ? 0 : (n >= cap ? 2 : (n >= cap * 0.8 ? 1 : 0));
 // </logic>
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
-const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', micUnit: 'DBA', micCal: null, vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
+const SET = { sim: 'AUTO', haptics: true, scale: 1, mapKey: '', lvl: {}, sleepGoal: 8, awakeH: 16, arrive: '', night: 'AUTO', nightLux: 3, bright: 'AUTO', brightN: 'AUTO', micUnit: 'DBA', micCal: null, vibe: true, wake: false, immersive: false, skyRot: true, gi: 0, pi: [0, 0, 0, 0, 0, 0, 0, 0, 0] };
 function loadSettings() {
   try { Object.assign(SET, JSON.parse(localStorage.getItem('grafit.set') || '{}')); } catch (e) { /* stockage indisponible */ }
   SET.scale = 1;                                      // 1.14 : plus de zoom (taille fixe)
@@ -1167,6 +1278,35 @@ function battRate() {
   const sl = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0);
   return sl * 3600 / HIST.batt.every;
 }
+// coucher habituel de ce soir (moyenne des 7 derniers, 23:30 par défaut), epoch s
+function bedTonight() {
+  let tod = null; try { tod = avgTod(health7().map(e => e.bed), 12 * 3600); } catch (e) { /* */ }
+  if (tod == null) tod = 23.5 * 3600;
+  const d = new Date(); d.setHours(0, 0, 0, 0); let b = d.getTime() / 1000 + tod;
+  if (tod < 12 * 3600) b += 86400; if (b - now() > 24 * 3600) b -= 86400;
+  return b;
+}
+// autonomie anticipée : décharge depuis le dernier débranchement (3 h au plus), comparée au coucher habituel ;
+// entre 10:00 et le coucher seulement. null : rien à signaler (ou pas assez de relevés)
+function battProj() {
+  if (!live('batt') || SRC.batt.v.charging || new Date().getHours() < 10) return null;
+  const hb = HIST.batt, hc = HIST.chg, pts = [];
+  for (let k = 0; k < 180 && k < hb.v.length; k++) {
+    const c = hc.v[hc.v.length - 1 - k], v = hb.v[hb.v.length - 1 - k];
+    if (c === 1) break; if (v != null) pts.push([hb.t - k * hb.every, v]);
+  }
+  const rate = drainRate(pts), bed = bedTonight();
+  const pl = battPlan(SRC.batt.v.level * 100, rate, now(), bed, AL.BattLowCaut);
+  return { rate, bed, plan: pl };
+}
+// temps passé branché à 100 % chaque nuit (clé = jour du réveil : relevé + 6 h), d'après le journal continu
+const CHG100 = (() => { try { return JSON.parse(localStorage.getItem('grafit.chg100') || '{}') || {}; } catch (e) { return {}; } })();
+function chg100Add(ts, dt) { const k = ymdOf(ts + 6 * 3600); CHG100[k] = (CHG100[k] || 0) + dt; const ks = Object.keys(CHG100).sort(); while (ks.length > 10) delete CHG100[ks.shift()]; }
+const chg100Save = () => { try { localStorage.setItem('grafit.chg100', JSON.stringify(CHG100)); } catch (e) { /* */ } };
+function chg100Stats() {
+  const last = ymdOf(now() - 6 * 3600), ks = Object.keys(CHG100).filter(k => k <= last).sort().slice(-7);
+  return { last: CHG100[last] != null ? CHG100[last] : null, avg: ks.length ? ks.reduce((a, k) => a + CHG100[k], 0) / ks.length : null, n: ks.length };
+}
 // mode : wait (en attente du 1er relevé), live, sim, na (absent ici), off (désarmé)
 const SRC = {};
 const SOURCES = [
@@ -1231,6 +1371,7 @@ window.addEventListener('grafit-native', e => {
   if (d.restore != null && typeof restoreText === 'function') restoreText(String(d.restore));
   if (d.s16 && typeof s16Ingest === 'function') s16Ingest(d.s16);
   if (d.route && typeof rteIngest === 'function') rteIngest(d.route);
+  if (d.mb && typeof mbIngest === 'function') mbIngest(d.mb);
   if (d.bf && typeof bfIngest === 'function') bfIngest(d.bf);
   if (d.price && typeof priceIngest === 'function') priceIngest(d.price);
   if (d.app && typeof APPINFO === 'object') { Object.assign(APPINFO, d.app); if (typeof apiSigCheck === 'function') apiSigCheck(); }
@@ -1430,6 +1571,7 @@ async function fetchWx() {
       hgust: h.wind_gusts_10m || null, hdir: h.wind_direction_10m || null, hcloud: h.cloud_cover || null, huv: h.uv_index || null, hvis: h.visibility || null, hday: h.is_day || null,
       mt: m && m.time ? m.time.map(abs) : null, mp: m ? m.precipitation : null, days, at: now() });
     if (WX.failed) log('WX', 'WEATHER FEED RESTORED');
+    wxTempsTick(lat, lon);
     failClose('WX');
     WX.failed = false; WX.t = now();
     if (c.pressure_msl < CFG.WXL.StdP) log('WX', 'QNH ' + c.pressure_msl.toFixed(1) + ' hPa < ' + CFG.WXL.StdP);
@@ -1441,6 +1583,99 @@ async function fetchWx() {
   }
 }
 
+// ---------------------------------------------------------------------------------------- températures (1.20)
+// meteoblue (clé personnelle : MBKEY <clé>) : une requête basic-1h + basic-day, au plus toutes les 4 h ou après 15 km de
+// déplacement, plafonnée à 7 par jour et 200 par mois (offre gratuite : 10 M de crédits par an, ~2 500 appels). Les
+// températures (maintenant, heure par heure, mini/maxi des jours) remplacent celles d'Open-Meteo ; pluie, vent, ciel,
+// radar ne changent pas. Repli : Open-Meteo modèles Météo-France (AROME/ARPEGE, BACKUP AROME en rouge dans le titre des
+// formats météo, ligne au FEED à la bascule et au retour). Sans clé : Météo-France aussi, sans voyant.
+const MB_URL = 'https://my.meteoblue.com/packages/basic-1h_basic-day', MB_EVERY = 4 * 3600, MB_MAXAGE = 9 * 3600, MB_MOVE_KM = 15, MB_DAY = 7, MB_MONTH = 200;
+const WXB_URL = 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&hourly=temperature_2m,apparent_temperature&daily=temperature_2m_max,temperature_2m_min&models=meteofrance_seamless&past_days=1&forecast_days=7&timezone=auto';
+const MB = { key: '', d: null, err: '', errT: 0, okT: 0, dead: false, busy: 0, cnt: { day: '', n: 0, mon: '', nm: 0 }, tag: '' };
+try { Object.assign(MB, JSON.parse(localStorage.getItem('grafit.mb') || '{}'), { busy: 0 }); } catch (e) { /* */ }
+const mbSave = () => { try { const { busy, ...o } = MB; localStorage.setItem('grafit.mb', JSON.stringify(o)); } catch (e) { /* */ } };
+const WXB = { d: null, busy: 0, err: '' };
+const mbQuota = () => { const c = quotaRoll(MB.cnt, ymdOf(now())); return { day: c.n, month: c.nm, ok: c.n < MB_DAY && c.nm < MB_MONTH }; };
+const mbNear = d => { const h = here(); return d && A.dist(h.lat, h.lon, d.lat, d.lon) < MB_MOVE_KM; };
+const mbValid = () => !!(MB.key && MB.d && now() - MB.d.at < MB_MAXAGE && mbNear(MB.d));
+const mbLocalT = s => typeof s === 'number' ? s * 1000 : new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13) || 0, +s.slice(14, 16) || 0).getTime();
+function mbTick(lat, lon, force = false) {
+  if (!MB.key || MB.dead || (MB.busy && now() - MB.busy < 60)) return false;
+  const q = mbQuota(), d = MB.d, moved = d && A.dist(lat, lon, d.lat, d.lon) >= MB_MOVE_KM;
+  if (!force && d && now() - d.at < MB_EVERY && !moved) return false;
+  if (!force && MB.errT && now() - MB.errT < 1800 && !moved) return false;   // échec récent : nouvel essai dans 30 min
+  if (!q.ok) { if (MB.err !== 'DAILY CAP' && MB.err !== 'MONTHLY CAP') { MB.err = q.day >= MB_DAY ? 'DAILY CAP' : 'MONTHLY CAP'; mbSave(); log('WX', 'METEOBLUE · ' + MB.err + ' REACHED · ' + (q.day >= MB_DAY ? q.day + '/' + MB_DAY + ' TODAY' : q.month + '/' + MB_MONTH + ' THIS MONTH'), true); wxTempApply(); } return false; }
+  const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Paris'; } catch (e) { return 'Europe/Paris'; } })();
+  const url = MB_URL + '?apikey=' + encodeURIComponent(MB.key) + '&lat=' + lat.toFixed(3) + '&lon=' + lon.toFixed(3) + '&format=json&temperature=C&windspeed=kmh&tz=' + encodeURIComponent(tz);
+  MB.busy = now(); MB.cnt.n++; MB.cnt.nm++; mbSave();
+  const at = { lat: +lat.toFixed(3), lon: +lon.toFixed(3) };
+  if (APK && nativeCmd({ cmd: 'mbGet', url, lat: at.lat, lon: at.lon })) return true;
+  fetch(url, { cache: 'no-store' }).then(r => r.text().then(tx => mbIngest({ code: r.status, body: tx, lat: at.lat, lon: at.lon })))
+    .catch(e => mbIngest({ code: -1, err: String(e.message || e), lat: at.lat, lon: at.lon }));
+  return true;
+}
+function mbIngest(d) {
+  MB.busy = 0;
+  const fail = why => {
+    const was = MB.err; MB.err = why; MB.errT = now(); if (/^KEY/.test(why)) MB.dead = true; mbSave();
+    if (was !== why) log('WX', 'METEOBLUE · ' + why, true);
+    wxTempApply();
+  };
+  if (d.code === 401 || d.code === 403) return fail('KEY REFUSED (' + d.code + ')');
+  if (d.code === 402 || d.code === 429) return fail('NO CREDITS / LIMIT (' + d.code + ')');
+  if (d.code !== 200) return fail(d.code > 0 ? 'HTTP ' + d.code : 'NO NETWORK');
+  let S;
+  try { S = mbParse(JSON.parse(d.body || '{}'), mbLocalT); } catch (e) { return fail(String(e.message) === 'FORMAT' ? 'UNEXPECTED REPLY' : 'BAD JSON'); }
+  MB.d = Object.assign(S, { at: now(), lat: d.lat, lon: d.lon }); MB.err = ''; MB.errT = 0; MB.okT = now(); mbSave();
+  wxTempApply();
+}
+async function wxbFetch(lat, lon) {
+  if (WXB.busy && now() - WXB.busy < 30) return;
+  WXB.busy = now();
+  try {
+    const j = JSON.parse(await getText(WXB_URL.replace('%LAT%', lat.toFixed(3)).replace('%LON%', lon.toFixed(3))));
+    const off = (j.utc_offset_seconds || 0) * 1000, abs = x => Date.parse(x + 'Z') - off, h = j.hourly, dl = j.daily, days = {};
+    if (!h || !Array.isArray(h.time)) throw new Error('FORMAT');
+    if (dl && dl.time) dl.time.forEach((d, i) => { const mx = dl.temperature_2m_max[i], mn = dl.temperature_2m_min[i]; if (mx != null && mn != null) days[d] = [mx, mn]; });
+    WXB.d = { ms: h.time.map(abs), t: h.temperature_2m, f: h.apparent_temperature || null, days, at: now(), lat, lon }; WXB.err = '';
+  } catch (e) { WXB.err = String(e.message || 'ERROR').toUpperCase(); }
+  WXB.busy = 0; wxTempApply();
+}
+// source des températures : meteoblue valide, sinon repli Météo-France récent, sinon Open-Meteo seul
+function wxTempSrc() {
+  if (mbValid()) return { d: MB.d, tag: 'MB' };
+  if (WXB.d && now() - WXB.d.at < 3 * 3600 && A.dist(here().lat, here().lon, WXB.d.lat, WXB.d.lon) < MB_MOVE_KM) return { d: WXB.d, tag: 'AROME' };
+  return null;
+}
+const wxBackup = () => !!MB.key && live('wx') && SRC.wx.mode === 'live' && SRC.wx.v.tsrc !== 'MB';
+function wxTempApply() {
+  if (!live('wx') || SRC.wx.mode !== 'live') return;
+  const w = SRC.wx.v; if (!w || !w.hms) return;
+  if (!w.om) w.om = { temp: w.temp, feel: w.feel, ht: w.ht, happ: w.happ, days: w.days ? w.days.map(d => [d.tmax, d.tmin]) : null };
+  const S = wxTempSrc(), r = wxOverlay(w.om, w.hms, w.days ? w.days.map(d => d.date) : [], S ? S.d : null, Date.now());
+  w.temp = r.temp; w.feel = r.feel; w.ht = r.ht; w.happ = r.happ;
+  if (w.days && r.days) w.days.forEach((d, i) => { if (r.days[i]) { d.tmax = r.days[i][0]; d.tmin = r.days[i][1]; } });
+  w.tsrc = S ? S.tag : 'OM';
+  const tag = !MB.key ? '' : (w.tsrc === 'MB' ? 'MB' : 'BACKUP');
+  if (tag !== MB.tag) {
+    if (tag === 'BACKUP') log('WX', 'TEMPERATURES · BACKUP ' + (w.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') + ' · ' + (MB.err || (MB.d ? 'METEOBLUE DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR METEOBLUE')), true);
+    else if (tag === 'MB' && MB.tag === 'BACKUP') log('WX', 'TEMPERATURES · METEOBLUE RESTORED');
+    MB.tag = tag; mbSave();
+  }
+}
+function wxTempsTick(lat, lon) {
+  mbTick(lat, lon);
+  if (!mbValid() && !(WXB.d && now() - WXB.d.at < 1800 && A.dist(lat, lon, WXB.d.lat, WXB.d.lon) < 5)) wxbFetch(lat, lon);
+  wxTempApply();
+}
+function cmdMbKey(app) {
+  const raw = String(app && app.rawLine || '').trim().split(/\s+/).slice(1).join('');
+  if (/^OFF$/i.test(raw)) { MB.key = ''; MB.d = null; MB.err = ''; MB.dead = false; MB.tag = ''; mbSave(); log('WX', 'METEOBLUE KEY REMOVED'); wxTempApply(); return app && app.say('METEOBLUE OFF · TEMPERATURES FROM MÉTÉO-FRANCE (OPEN-METEO)'); }
+  if (!/^[A-Za-z0-9_\-]{8,64}$/.test(raw)) return app && app.say('MBKEY <METEOBLUE KEY> · MBKEY OFF', true);
+  MB.key = raw; MB.d = null; MB.err = ''; MB.errT = 0; MB.dead = false; mbSave(); log('WX', 'METEOBLUE KEY SET');
+  const h = here(); mbTick(h.lat, h.lon, true);
+  app && app.say('METEOBLUE KEY SET · ' + raw.slice(0, 4) + '… · TESTING');
+}
 // Pluie à venir : quarts d'heure sur 6 h (valeur = cumul des 15 min précédentes), puis heures sur 24 h.
 const RAIN_MM15 = 0.1, RAIN_MMH = 0.2, RAIN_POP = 50;
 const rainInt = r => r < 2.5 ? 'LIGHT' : (r < 7.6 ? 'MODERATE' : 'HEAVY');
@@ -1714,8 +1949,14 @@ function lo(x, cur, caut, crit, h) { let l = 0; if (caut != null && (x < caut ||
 const SEV = ['NOMINAL', 'CAUT', 'CRIT'];
 const CELLD = { weakT: 0, noneT: 0 };
 const ANN = [
-  { key: 'BATT', lab: 'BATT LOW', tag: 'PWR', title: 'BATTERY CHARGE', act: 'PLUG CHARGER · ENABLE BATTERY SAVER', lim: `CAUT < ${AL.BattLowCaut} % · CRIT < ${AL.BattLowCrit} %`,
-    fn: c => { if (!live('batt')) return null; const b = SRC.batt.v, p = b.level * 100; return [b.charging ? 0 : lo(p, c, AL.BattLowCaut, AL.BattLowCrit, AL.HystPct), Math.round(p) + ' %' + (b.charging ? ' ↑' : '')]; } },
+  // 1.20 : CAUT aussi quand la batterie ne tiendra pas jusqu'au coucher habituel (décharge depuis le débranchement)
+  { key: 'BATT', lab: 'BATT LOW', tag: 'PWR', title: 'BATTERY CHARGE', act: 'PLUG CHARGER · ENABLE BATTERY SAVER', lim: `CAUT < ${AL.BattLowCaut} % OR EMPTY BEFORE BEDTIME · CRIT < ${AL.BattLowCrit} %`,
+    fn: c => {
+      if (!live('batt')) return null; const b = SRC.batt.v, p = b.level * 100;
+      const l = b.charging ? 0 : lo(p, c, AL.BattLowCaut, AL.BattLowCrit, AL.HystPct);
+      if (!l && !b.charging) { const pj = battProj(); if (pj && pj.plan) return [1, Math.round(p) + ' % · EMPTY ~' + hhmm(pj.plan.empty)]; }
+      return [l, Math.round(p) + ' %' + (b.charging ? ' ↑' : '')];
+    } },
   { key: 'BTEMP', lab: 'BATT TEMP', tag: 'TMP', title: 'BATTERY THERMISTOR', act: 'STOP CHARGING · REMOVE CASE · SHADE', lim: `CAUT ≥ ${AL.BattTempCaut} °C · CRIT ≥ ${AL.BattTempCrit} °C`,
     fn: c => { if (!live('btemp')) return null; const x = SRC.btemp.v.c; return [hi(x, c, AL.BattTempCaut, AL.BattTempCrit, AL.HystTemp), x.toFixed(1) + ' °C']; } },
   { key: 'BHEALTH', lab: 'BATT HEALTH', sh: 'BATT HLTH', tag: 'PWR', title: 'ANDROID BATTERY HEALTH', act: 'UNPLUG · LET IT COOL · CHECK THE CHARGER', lim: 'CAUT COLD · CRIT OVERHEAT / OVERVOLTAGE / DEAD / FAILURE',
@@ -1755,6 +1996,11 @@ const ANN = [
   // finances (Klad, lu sur le téléphone) : alertes caut/crit de Klad, comptes à vérifier, reste à vivre négatif
   { key: 'FINANCE', lab: 'FINANCE', tag: 'FIN', confirm: 0, title: 'FINANCE · KLAD', act: 'OPEN KLAD · DETAILS IN ' + pageAddr('M71'),
     lim: 'KLAD ALERTS (CAUT / CRIT) · ACCOUNTS TO CHECK · LEFT TO LIVE < 0', fn: () => finAnn() },
+  // éveil prolongé : depuis le réveil du jour (ou d'hier tant que la nuit n'est pas trouvée) ; MAXAWAKE règle le seuil
+  { key: 'AWAKE', lab: 'AWAKE', tag: 'DAY', confirm: 0, title: 'TIME AWAKE', act: 'WIND DOWN · BED BY IN ' + pageAddr('M11') + ' · MAXAWAKE <H> SETS THE LIMIT',
+    lim: 'CAUT ≥ MAXAWAKE HOURS SINCE WAKE (16 H BY DEFAULT)',
+    fn: c => { const a = awakeSecs(), H = (SET.awakeH || 0) * 3600; if (a == null || !H) return null; if (c < 1 && (settling() || (typeof bgWaiting === 'function' && bgWaiting()))) return [c, durHM(a)];
+      return [a >= H || (c >= 1 && a >= H - 600) ? 1 : 0, durHM(a)]; } },
 ];
 // état financier pour le voyant, la page de défaut et le briefing : [niveau 0-2, valeur] ou null (Klad non lu)
 function finAnn() {
@@ -2195,6 +2441,12 @@ PAGES.M15 = { code: 'M15', name: 'POWER', ru: 'ПИТ', words: ['POWER', 'BATTER
         else rt = '−' + (-rate).toFixed(-rate < 10 ? 1 : 0) + ' %/h · EMPTY ~' + (lv / -rate > 48 ? '> 2 DAYS' : hhmm(now() + lv / -rate * 3600));
       }
       W.kv(scr, ir.x, y++, ir.w, b.charging ? 'CHARGE RATE · 1 H' : 'DRAIN RATE · 1 H', rt, t.D, rate != null && rate < -8 ? t.RB : t.N);
+      // 1.20 : autonomie face au coucher habituel ; nuits branché à 100 % (usure)
+      const pj = battProj();
+      if (pj && pj.rate != null) W.kv(scr, ir.x, y++, ir.w, 'TO BED ~' + hhmm(pj.bed), pj.plan ? 'EMPTY ~' + hhmm(pj.plan.empty) + ' · PLUG BY ' + hhmm(pj.plan.by) : 'LASTS ✓', t.D, pj.plan ? t.RB : t.N);
+      const c1 = chg100Stats();
+      if (c1.n && roomy) W.kv(scr, ir.x, y++, ir.w, 'AT 100 % ON CHARGER', (c1.last != null ? 'LAST ' + durHM(c1.last) + ' · ' : '') + 'AVG ' + durHM(c1.avg || 0), t.D, c1.avg > 2 * 3600 ? t.B : t.N);
+      if (c1.n >= 3 && c1.avg > 2 * 3600 && roomy && ir.b - y >= 8) scr.put(ir.x, y++, clip('TIP: TURN ON 80 % CHARGE LIMIT (ANDROID)', ir.w), t.F);
     } else { noData(scr, ir.x, y++, ir.w, SRC.batt.mode === 'na' ? 'NO BATTERY STATUS API IN THIS BROWSER' : 'WAITING FOR BATTERY STATUS'); y++; }
     if (roomy) W.kv(scr, ir.x, y++, ir.w, 'THERMISTOR', live('btemp') ? SRC.btemp.v.c.toFixed(1) + ' °C · ' + tag('btemp') : 'APK ONLY · NO WEB API', t.D, live('btemp') ? t.N : t.F);
     W.kv(scr, ir.x, y++, ir.w, 'ALARMS', 'CAUT <' + AL.BattLowCaut + ' % · CRIT <' + AL.BattLowCrit + ' %', t.D, t.F);
@@ -3024,7 +3276,8 @@ function wxWetRuns(sp) {
 }
 const UV_TXT = u => u == null ? '—' : u < 3 ? 'LOW' : u < 6 ? 'MODERATE' : u < 8 ? 'HIGH' : u < 11 ? 'VERY HIGH' : 'EXTREME';
 const tRange = (a, b) => a == null ? '—' : Math.round(a) + '–' + Math.round(b) + '°';
-const wxHead = (w, pg) => live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : (now() - w.at > 1800 ? 'CACHED · ' : 'OPEN-METEO · ') + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING');
+const wxHead = (w, pg) => live('wx') ? (SRC.wx.mode === 'sim' ? 'SIM' : (now() - w.at > 1800 ? 'CACHED · ' : '') + (wxBackup() ? 'BACKUP ' + (w.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') : ({ MB: 'METEOBLUE', AROME: 'MÉTÉO-FRANCE' }[w.tsrc] || 'OPEN-METEO')) + ' · ' + hhmm(w.at)) : (WX.failed ? 'FEED UNREACHABLE' : 'WAITING');
+const wxStyle = () => wxBackup() ? t.TR : srcStyle('wx');
 const dayOfMs = ms => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const dayRec = (w, ms) => { if (!w.days) return null; const d = new Date(ms), key = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); return w.days.find(x => x.date === key) || null; };
 
@@ -3084,7 +3337,7 @@ PAGES.M33 = { code: 'M33', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORE
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
-    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), wxStyle());
     let y = ir.y;
     if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO FORECAST · NEEDS NETWORK'); return; }
     if (!w.hms) { noData(scr, ir.x, y, ir.w, 'FORECAST NOT IN FEED · [*1] REFRESH'); return; }
@@ -3150,11 +3403,12 @@ PAGES.M33 = { code: 'M33', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORE
 // ------------------------------------------------------------------ 4.2 M31 WEATHER : conditions actuelles + pluie à 6 h
 const WXP = { chart: 'AUTO' };                     // graphique du bas : pluie à 6 h (quart d'heure) ou pression 48 h
 PAGES.M31 = { code: 'M31', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
+  cmds: [[['MBKEY'], app => cmdMbKey(app), 'MBKEY <METEOBLUE KEY|OFF>']],
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']],
     ['2', 'RAIN/PRESS', (app, arg, wd) => { WXP.chart = wd === '6H' ? 'RAIN' : wd === 'PRESS' ? 'PRESS' : (WXP.cur === 'RAIN' ? 'PRESS' : 'RAIN'); }, ['RAINPRESS', 'PRESS', '6H'], 'RAIN · PRESS']],
   draw(scr, r) {
     const w = SRC.wx.v;
-    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), wxStyle());
     let y = ir.y;
     if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO WEATHER DATA · NEEDS NETWORK'); return; }
     const [hw, x2] = twoUp(ir), T = Date.now(), ni = w.hms ? wxHour(w, T) : -1, at = a => a && ni >= 0 ? a[ni] : null;
@@ -3207,7 +3461,7 @@ PAGES.M34 = { code: 'M34', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     ['3', 'DAY ▸', (app, arg) => { WK.sel = /^[1-5]$/.test(arg) ? +arg - 1 : Math.min(4, WK.sel + 1); }, ['SEL', 'SEL+', 'DOWN'], 'SEL [1-5]']],
   draw(scr, r) {
     const w = SRC.wx.v;
-    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), srcStyle('wx'));
+    const ir = W.panel(scr, r, this.code, this.name, wxHead(w), wxStyle());
     let y = ir.y;
     if (!live('wx')) { noData(scr, ir.x, y, ir.w, 'NO FORECAST · NEEDS NETWORK'); return; }
     const T = Date.now(), m0 = dayOfMs(T);
@@ -3332,7 +3586,7 @@ function rainPx(dbz, out, o) {
   out[o] = WHITE[0]; out[o + 1] = WHITE[1]; out[o + 2] = WHITE[2]; out[o + 3] = Math.round(45 + Math.min(1, (dbz - RAIN_DBZ) / 28) * 175);
 }
 
-const RDR = { meta: null, metaT: 0, metaTry: 0, metaErr: '', fc: null, fcT: 0, fcTry: 0, fcKey: '', fcErr: '', R: 15, map: true, play: false, playT0: 0,
+const RDR = { meta: null, metaT: 0, metaTry: 0, metaErr: '', fc: null, fcT: 0, fcTry: 0, fcKey: '', fcErr: '', R: 15, map: true, play: true, playT0: Date.now(),
   pick: null, imgs: new Map(), frames: new Map(), cors: true, mapErr: 0, sim: false };
 const RAD_R = [15, 30, 60], RAD_RINGS = { 15: [5, 10], 30: [10, 25], 60: [25, 50] };
 const wxOf = lon => (lon + 180) / 360, wyOf = lat => { const s = Math.sin(lat * RAD); return 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); };
@@ -3621,6 +3875,7 @@ PAGES.M32 = { code: 'M32', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RA
     SET.mapKey = raw && raw.toUpperCase() !== 'OFF' ? raw : ''; saveSettings(); RDR.imgs.clear();
     app.say(SET.mapKey ? 'MAP · CARTO KEY SET (' + SET.mapKey.length + ' CHARS)' : 'MAP · ESRI DARK GRAY (NO KEY)');
   }, 'MAPKEY <KEY|OFF>']],
+  onOpen() { if (!RDR.play) { RDR.play = true; RDR.pick = null; RDR.playT0 = Date.now(); } },   // 1.20 : en lecture à l'ouverture
   stepF(dd) {
     const F = radFrames(); if (!F.length) return; RDR.play = false;
     let i = RDR.pick == null ? F.map(f => f.k).lastIndexOf('R') : F.findIndex(f => f.t === RDR.pick);
@@ -3789,6 +4044,8 @@ function kladAsk(force = false) {
   if (!APK || (!force && now() - KLAD.askT < 5)) return;
   KLAD.askT = now(); nativeCmd({ cmd: 'klad' });
 }
+// 1.20 : total perso = total de Klad (courants, commun, épargne, moins la dette des cartes) moins le solde du commun
+const kladPerso = S => S && S.total && S.total.all != null && S.commun && S.commun.balance != null ? Math.round((S.total.all - S.commun.balance) * 100) / 100 : null;
 function kladIngest(k) {
   const prev = KLAD.state; KLAD.state = k.state || 'error'; KLAD.msg = k.msg || ''; KLAD.t = now();
   if (KLAD.state === 'ok') {
@@ -3860,14 +4117,15 @@ PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINAN
     if (ltl != null) W.kv(scr, ir.x, y++, ir.w, 'LEFT TO LIVE', eur(ltl), t.D, ltl < 0 ? t.RB : t.B);
     if (main && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT · ' + clip(String(main.label || main.id || '').toUpperCase(), 14), eur(main.balance), t.D, main.balance < 0 ? t.RB : (main.stale ? t.D : t.N));
     if (mac != null && card && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT − ' + clip(String(card.label || 'CARD').toUpperCase(), 12), eur(mac), t.D, mac < 0 ? t.RB : t.N);
-    if (S.total && S.total.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'TOTAL', eur(S.total.all), t.D, S.total.all < 0 ? t.RB : t.N);
+    { const tp = kladPerso(S), tv = tp != null ? tp : (S.total ? S.total.all : null);
+      if (tv != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, tp != null ? 'TOTAL PERSO' : 'TOTAL', eur(tv), t.D, tv < 0 ? t.RB : t.N); }
     y++;
     // alertes
     const ack = finPaused() ? 'ACK · ' + finLeftTxt(FINACK.until - now()) : '';
-    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? (ack ? ack + ' · ' : '') + al.length + (ack ? '' : ' · [*2] ACK') : 'NONE', ack ? t.D : (al.some(a => a.level === 'crit') ? t.RB : (al.length ? t.B : t.D)));
+    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? (ack ? ack + ' · ' : '') + al.length + (ack ? '' : ' · [*2] ACK') : 'NONE', ack ? t.D : (al.length ? t.RB : t.D));
     const nA = Math.max(0, Math.min(al.length, ir.b - y - (atN ? 2 : 0)));
     for (const a of al.slice(0, al.length > nA ? Math.max(0, nA - 1) : nA)) {
-      scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : 'CAUT', a.level === 'crit' ? t.RB : t.B); scr.put(ir.x + 6, y++, clip(kladAlTxt(a), ir.w - 6), t.N);
+      scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : 'CAUT', a.level === 'crit' ? t.ALERT : t.RB); scr.put(ir.x + 6, y++, clip(kladAlTxt(a), ir.w - 6), a.level === 'crit' ? t.RB : t.R);
     }
     if (al.length > nA && y < ir.b) noData(scr, ir.x + 6, y++, ir.w - 6, '+' + (al.length - Math.max(0, nA - 1)) + ' MORE · IN KLAD');
     // à vérifier dans Klad : un seul compteur, le détail est dans Klad
@@ -3879,7 +4137,7 @@ PAGES.M72 = { code: 'M72', name: 'ACCOUNTS', ru: 'СЧЕТА', words: ['ACCOUNTS
   draw(scr, r) {
     const ir = kladPanel(this, scr, r); if (!ir) return;
     const S = KLAD.s, acc = kArr(S.accounts), C = S.commun, tot = S.total || {};
-    const nC = C ? 3 : 0, nT = (tot.all != null ? 1 : 0) + (tot.savings != null ? 1 : 0);
+    const tp = kladPerso(S), nC = C ? 3 : 0, nT = (tot.all != null ? 1 : 0) + (tp != null ? 1 : 0) + (tot.savings != null ? 1 : 0);
     let y = ir.y;
     const nAcc = Math.max(0, Math.min(acc.length, ir.b - y - 1 - nT - nC - (nC ? 1 : 0)));
     sub(scr, ir.x, y++, ir.w, 'BALANCES', acc.length > nAcc ? '+' + (acc.length - nAcc) + ' IN KLAD' : '', t.D);
@@ -3889,7 +4147,8 @@ PAGES.M72 = { code: 'M72', name: 'ACCOUNTS', ru: 'СЧЕТА', words: ['ACCOUNTS
       W.kv(scr, ir.x, y, ir.w - 10, clip(String(a.label || a.id || '?').toUpperCase(), 16), eur(v), t.D, v != null && v < 0 && !isCard ? t.RB : (a.stale ? t.D : t.N));
       W.rjust(scr, ir.r, y++, note, a.stale ? t.B : t.F);
     }
-    if (tot.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'TOTAL', eur(tot.all), t.D, tot.all < 0 ? t.RB : t.B);
+    if (tp != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'TOTAL PERSO', eur(tp), t.D, tp < 0 ? t.RB : t.B);
+    if (tot.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, tp != null ? 'WITH COMMUN' : 'TOTAL', eur(tot.all), t.D, tot.all < 0 ? t.RB : (tp != null ? t.N : t.B));
     if (tot.savings != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'OF WHICH SAVINGS', eur(tot.savings), t.D, t.N);
     // Commun : où il finira le mois
     if (C && y + 2 < ir.b) {
@@ -4265,7 +4524,37 @@ function towersNear(lat, lon, radius = 3000) {
 }
 
 // ------------------------------------------------------------------ M52 TOWERS : antennes-relais autour du téléphone
+// carte du signal (1.20) : signal mobile relevé quand Grafit est ouvert avec une position précise (≤ 100 m), au plus
+// toutes les 30 s, en cases de ~200 m (0,002°) ; 400 cases gardées sur le téléphone (jamais envoyées). M52 les pose sur
+// le cadran (moyenne < −110 dBm : zone faible, en rouge) et donne le signal moyen ici et les zones faibles à portée.
+// SIGMAP CLEAR efface la carte.
+const SIG_WEAK = -110, SIG_STEP = 0.002;
+const SIGMAP = (() => { try { const o = JSON.parse(localStorage.getItem('grafit.sigmap') || '{}'); return o && typeof o === 'object' ? o : {}; } catch (e) { return {}; } })();
+const SIGS = { t: 0, saveT: 0 };
+const sigSave = () => { try { localStorage.setItem('grafit.sigmap', JSON.stringify(SIGMAP)); } catch (e) { /* */ } SIGS.saveT = now(); };
+const sigKey = (lat, lon) => (Math.round(lat / SIG_STEP) * SIG_STEP).toFixed(3) + ',' + (Math.round(lon / SIG_STEP) * SIG_STEP).toFixed(3);
+function sigTick() {
+  const T = now(); if (T - SIGS.t < 30) return; SIGS.t = T;
+  if (!(live('geo') && SRC.geo.mode === 'live') || !(SRC.geo.v.acc <= 100) || !live('cell') || SRC.cell.mode !== 'live') return;
+  const c = SRC.cell.v; if (c.rsrp == null && !c.none) return;
+  const v = c.none ? -140 : c.rsrp, k = sigKey(SRC.geo.v.lat, SRC.geo.v.lon);
+  const e = SIGMAP[k] || (SIGMAP[k] = { n: 0, s: 0, lo: 0, t: 0 });
+  e.n = Math.min(e.n + 1, 500); e.s = e.n === 500 ? e.s / 500 * 499 + v : e.s + v; e.lo = Math.min(e.lo || 0, v); e.t = T;
+  const ks = Object.keys(SIGMAP); if (ks.length > 400) { ks.sort((a, b) => SIGMAP[a].t - SIGMAP[b].t); for (const x of ks.slice(0, ks.length - 400)) delete SIGMAP[x]; }
+  if (T - SIGS.saveT > 300) sigSave();
+}
+// cases à moins de r mètres : [{ lat, lon, avg, n, dist, brg }]
+function sigNear(lat, lon, r) {
+  const out = [];
+  for (const k of Object.keys(SIGMAP)) {
+    const [la, lo] = k.split(',').map(Number), e = SIGMAP[k], dist = A.dist(lat, lon, la, lo) * 1000;
+    if (dist <= r && e.n) out.push({ lat: la, lon: lo, avg: e.s / e.n, n: e.n, dist, brg: bearing(lat, lon, la, lo) });
+  }
+  return out;
+}
 PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', 'TOWER', 'CELL', 'ANTENNA', 'GSM', 'ANFR'], fps: 4, range: 1,
+  cmds: [[['SIGMAP'], (app, arg) => { if (String(arg || '').toUpperCase() === 'CLEAR') { for (const k of Object.keys(SIGMAP)) delete SIGMAP[k]; sigSave(); log('NET', 'SIGNAL MAP CLEARED'); return app && app.say('SIGNAL MAP CLEARED'); }
+    app && app.say('SIGNAL MAP · ' + Object.keys(SIGMAP).length + ' CELLS OF ~200 m · SIGMAP CLEAR', false); }, 'SIGMAP [CLEAR]']],
   keys: [['1', ...K_HDG], ['2', 'RANGE', (app, arg) => { const k = { 1: 0, 2: 1, 5: 2 }[parseInt(arg, 10)]; PAGES.M52.range = k != null ? k : (PAGES.M52.range + 1) % 3; app && app.say('RANGE ' + [1, 2, 5][PAGES.M52.range] + ' km'); }, ['RANGE'], 'RANGE [1|2|5]'], ['3', 'RELOAD', () => { const h = here(); loadCells(h.lat, h.lon, true); }, ['RELOAD', 'REFRESH']]],
   draw(scr, r) {
     this.keys[0][1] = SET.skyRot ? 'NORTH UP' : 'HDG UP';
@@ -4275,6 +4564,7 @@ PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
     const ir = W.panel(scr, r, this.code, this.name, src, CELLS.state === 'LIVE' ? t.TD : (CELLS.state === 'SIM' ? t.T : t.TR));
     const rows = Math.max(6, Math.min(ir.h - 9, Math.ceil(ir.w / CELL.aspect)));
     const nearest = {}; for (const s of all) if (!nearest[s.op]) nearest[s.op] = s;
+    const spots = sigNear(h.lat, h.lon, RANGE), weak = spots.filter(p => p.avg < SIG_WEAK);
     scr.vector(ir.x, ir.y, ir.w, rows, (c, b) => {
       const d = b.d, fs = b.fpx, R = Math.min(b.w, b.h) / 2 - fs * 0.95, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
       const rad = m => R * Math.sqrt(Math.min(1, m / RANGE));             // échelle en racine : le proche reste lisible
@@ -4293,6 +4583,8 @@ PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
         c.font = (lab === 'N' ? '700 ' : '400 ') + (fs * 0.9).toFixed(1) + 'px ' + b.family; c.fillStyle = lab === 'N' ? COL.N : COL.D;
         c.fillText(lab, cx + rr * Math.sin(aa), cy - rr * Math.cos(aa));
       }
+      // carte du signal (1.20) : cases relevées, zones faibles en rouge
+      for (const p of spots) { const [x, y] = P(p.dist, p.brg), w = (p.avg < SIG_WEAK ? 3.2 : 2) * d; c.fillStyle = p.avg < SIG_WEAK ? COL.RR : rgba(WHITE, 0.18); c.fillRect(x - w / 2, y - w / 2, w, w); }
       // stations : secteurs d'antenne (traits), tourné vers toi en blanc, liaison vers la plus proche de chaque opérateur
       for (const s of all.slice().reverse()) {
         const [x, y] = P(s.dist, s.brg), near = nearest[s.op] === s;
@@ -4324,6 +4616,8 @@ PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
     }
     const cl = SRC.cell.v;
     kv('SERVING', live('cell') ? [String(cl.rat || '').replace(/^\dG /, ''), cl.band ? (String(cl.band)[0] === 'n' ? cl.band : 'B' + cl.band) : '', cl.rsrp != null ? cl.rsrp + ' dBm' : '', cl.operator].filter(Boolean).join(' · ') : 'APK ONLY', t.D, live('cell') ? t.N : t.F);
+    { const hk = SIGMAP[sigKey(h.lat, h.lon)], ha = hk && hk.n ? Math.round(hk.s / hk.n) : null;
+      kv('SIGNAL MAP', (ha != null ? 'HERE ' + ha + ' dBm · ' : '') + (spots.length ? weak.length + '/' + spots.length + ' WEAK ■' : 'NO READINGS YET'), ha != null && ha < SIG_WEAK ? t.RB : (weak.length ? t.B : t.N)); }
     if (y < ir.b) scr.put(ir.x, y++, clip('SECT = ANTENNA SECTOR FACING YOU (±60°)', ir.w), t.F);
   } };
 
@@ -4332,7 +4626,8 @@ PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
 //  1. MANUAL : WAKE 7:15 · WAKE NOW, jamais remplacé dans la journée ;
 //  2. ALARM  : l'alarme du réveil Android prévue ce matin (retenue la veille par l'APK), si le premier
 //     déverrouillage durable tombe entre 30 min avant et 90 min après elle, ou s'il n'est pas connu ;
-//  3. UNLOCK : premier déverrouillage durable après 03:00, coups d'œil nocturnes écartés (APK + accès usage) ;
+//  3. UNLOCK : fin de la plus longue période de repos entre 18:00 la veille et 18:00 (écran, mouvement, pas ; coups
+//     d'œil nocturnes fondus ; nuit décalée comprise, 1.20), réveil entre 03:00 et 18:00 (APK, journal continu) ;
 //  4. AUTO   : première activité de Grafit après une coupure de 4 h, entre 03:00 et 14:00 (repli, web surtout).
 // La dernière activité avant la coupure (ou le dernier verrouillage de la veille, APK) sert d'heure de coucher.
 const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '', alarms: {}, ul: null, usage: null };
@@ -4344,6 +4639,7 @@ function dayLoad() {
 function daySave() { try { localStorage.setItem('grafit.day', JSON.stringify(DAYREC)); } catch (e) { /* */ } }
 const ymdOf = ts => { const d = new Date(ts * 1000); return d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()); };
 const isMorning = ts => { const h = new Date(ts * 1000).getHours(); return h >= 3 && h < 14; };
+const isWakeTime = ts => { const h = new Date(ts * 1000).getHours(); return h >= 3 && h < 18; };   // réveil détecté (nuit décalée comprise)
 const WAKE_TAG = { ALARM: 'R', UNLOCK: 'U', AUTO: 'A', MANUAL: 'M' };
 function daySetWake(ts, src) {
   const prevBed = DAYREC.lastSeen && DAYREC.lastSeen < ts ? DAYREC.lastSeen : null;
@@ -4388,7 +4684,7 @@ function dayTick(resume = false) {
 }
 function dayUnlock(fu, bed, glances = 0) {                            // APK : premier déverrouillage durable du jour
   const today = ymdOf(now());
-  if (ymdOf(fu) !== today || !isMorning(fu)) return;
+  if (ymdOf(fu) !== today || !isWakeTime(fu)) return;
   const prev = DAYREC.ul;
   DAYREC.ul = { d: today, t: fu, bed: bed && bed < fu ? bed : null, g: glances };
   if (!prev || prev.d !== today || Math.abs(prev.t - fu) > 60) log('DAY', 'FIRST UNLOCK ' + hhmm(fu) + (glances ? ' · ' + glances + ' NIGHT GLANCE' + (glances > 1 ? 'S' : '') + ' IGNORED' : ''));
@@ -4420,6 +4716,54 @@ function cmdWake(app, arg) {
     daySetWake(ts, 'MANUAL'); return app.say('WAKE · ' + hhmm(ts) + ' · AWAKE ' + durHM(now() - ts));
   }
   app.say('WAKE NOW · WAKE 7:15', true);
+}
+// SLEPT [JJ/MM | JJ] <coucher> <lever> : nuit saisie à la main (la dernière par défaut), jamais recalculée ensuite ;
+// SLEPT [JJ/MM] AUTO : la nuit repasse à la détection (recalculée depuis le journal continu)
+function cmdSlept(app, arg) {
+  const tk = String(arg || '').toUpperCase().split(/\s+/).filter(Boolean), T = now();
+  let day = new Date(); day.setHours(12, 0, 0, 0);
+  const dm = tk.length && tk[0].match(/^(\d{1,2})(?:[/.](\d{1,2}))?$/) && !/[:H]/.test(tk[0]) && (tk.length === 3 || (tk.length === 2 && tk[1] === 'AUTO')) ? tk.shift().match(/^(\d{1,2})(?:[/.](\d{1,2}))?$/) : null;
+  if (dm) { const d = new Date(); d.setHours(12, 0, 0, 0); if (dm[2]) d.setMonth(+dm[2] - 1); d.setDate(+dm[1]); if (d.getTime() / 1000 > T + 43200) d.setFullYear(d.getFullYear() - 1); day = d; }
+  const d = ymdOf(day.getTime() / 1000), dTxt = d.slice(6) + '/' + d.slice(4, 6);
+  if (tk[0] === 'AUTO') {
+    const h = DAYREC.hist.find(x => x.d === d); if (h && h.src === 'MANUAL') { h.src = 'AUTO'; daySave(); }
+    if (d === ymdOf(T) && DAYREC.src === 'MANUAL') DAYREC.src = 'AUTO';
+    BGL.nightsV = 0; bgSave(); bgRequest(true); bgWake();
+    log('DAY', 'NIGHT ' + dTxt + ' · BACK TO DETECTION'); return app && app.say('SLEPT · ' + dTxt + ' · DETECTED AGAIN (RECOMPUTING)');
+  }
+  const hm = x => { const m = String(x || '').match(/^(\d{1,2})[:H.]?(\d{2})?$/); return m && +m[1] < 24 && +(m[2] || 0) < 60 ? [+m[1], +(m[2] || 0)] : null; };
+  const b = hm(tk[0]), w = hm(tk[1]);
+  if (!b || !w) return app && app.say('SLEPT 23:40 07:10 · SLEPT 01/11 07:05 14:30 · SLEPT AUTO', true);
+  const wd = new Date(day); wd.setHours(w[0], w[1], 0, 0); const wake = wd.getTime() / 1000;
+  const bd = new Date(day); bd.setHours(b[0], b[1], 0, 0); let bed = bd.getTime() / 1000; if (bed >= wake) bed -= 86400;
+  if (wake - bed < 2 * 3600 || wake - bed > 16 * 3600 || wake > T + 60) return app && app.say('SLEPT · NIGHT MUST LAST 2–16 H AND BE OVER', true);
+  let h = DAYREC.hist.find(x => x.d === d);
+  if (!h) { h = { d }; DAYREC.hist.push(h); DAYREC.hist.sort((x, y) => x.d < y.d ? -1 : 1); DAYREC.hist = DAYREC.hist.slice(-35); }
+  h.bed = bed; h.wake = wake; h.src = 'MANUAL';
+  if (d === ymdOf(T)) { DAYREC.wake = wake; DAYREC.src = 'MANUAL'; }
+  daySave(); log('DAY', 'NIGHT ' + dTxt + ' SET BY HAND · ' + hhmm(bed) + ' → ' + hhmm(wake) + ' · ' + durHM(wake - bed));
+  app && app.say('SLEPT · ' + dTxt + ' · ' + hhmm(bed) + ' → ' + hhmm(wake) + ' · ' + durHM(wake - bed));
+}
+// éveil prolongé : voyant CAUT AWAKE au-delà de SET.awakeH heures depuis le réveil (MAXAWAKE <h> · MAXAWAKE OFF)
+function cmdMaxAwake(app, arg) {
+  const a = String(arg || '').toUpperCase().trim();
+  if (a === 'OFF') { SET.awakeH = 0; saveSettings(); return app && app.say('AWAKE ALARM OFF'); }
+  const v = parseFloat(a.replace('H', '.').replace(',', '.'));
+  if (!(v >= 8 && v <= 24)) return app && app.say('MAXAWAKE <HOURS 8–24> · MAXAWAKE OFF · NOW ' + (SET.awakeH ? SET.awakeH + ' H' : 'OFF'), true);
+  SET.awakeH = Math.round(v * 2) / 2; saveSettings(); log('DAY', 'AWAKE ALARM AT ' + SET.awakeH + ' H');
+  app && app.say('AWAKE ALARM · CAUT AFTER ' + SET.awakeH + ' H AWAKE');
+}
+// heure de coucher conseillée : prochaine alarme (dans les 20 h), sinon lever habituel (moyenne des 7 derniers), moins
+// l'objectif de sommeil
+function bedPlan() {
+  const T = now(), goal = (SET.sleepGoal || 8) * 3600, al = nextAlarm();
+  let wake = null, how = '';
+  if (al && al - T < 20 * 3600) { wake = al; how = 'ALARM'; }
+  else {
+    const tod = avgTod(health7().map(e => e.wake), 0);
+    if (tod != null) { const d = new Date(); d.setHours(0, 0, 0, 0); wake = d.getTime() / 1000 + tod; if (wake < T + 3600) wake += 86400; how = 'USUAL'; }
+  }
+  return wake == null ? null : { bed: wake - goal, wake, how };
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') dayTick(true); else { DAYREC.lastSeen = now(); daySave(); } });
 
@@ -4526,6 +4870,7 @@ PAGES.M42 = { code: 'M42', name: 'AGENDA', ru: 'ПЛАН', words: ['AGENDA', 'CA
 
 // ------------------------------------------------------------------ M41 DAY : temps éveillé, journée
 PAGES.M41 = { code: 'M41', name: 'DAY', ru: 'СУТКИ', words: ['DAY', 'AWAKE', 'UPTIME', 'REVEIL'], fps: 1,
+  cmds: [[['MAXAWAKE'], (app, arg) => cmdMaxAwake(app, arg), 'MAXAWAKE <HOURS|OFF>']],
   keys: [['1', 'WAKE NOW', (app, arg) => cmdWake(app, arg), ['WAKE', 'UP', 'REVEIL'], 'WAKE [NOW|hh:mm]'], ['2', 'BRIEF', cmdBrief, ['BRIEF', 'BRIEFING']],
     ['3', 'UNLOCK', app => { if (!nativeCmd({ cmd: 'usage' })) app.say('UNLOCK TIME: GRAFIT APK ONLY', true); }, ['UNLOCK', 'USAGE'], 'UNLOCK (ALLOW USAGE ACCESS)']],
   draw(scr, r) {
@@ -4623,7 +4968,19 @@ const todOf = ts => { const d = new Date(ts * 1000); return d.getHours() * 3600 
 const avgOf = a => { const v = a.filter(x => x != null); return v.length ? v.reduce((p, q) => p + q, 0) / v.length : null; };
 const avgTod = (a, pivot) => { const v = a.filter(x => x != null).map(x => (todOf(x) - pivot + 86400) % 86400); return v.length ? (v.reduce((p, q) => p + q, 0) / v.length + pivot) % 86400 : null; };
 const todTxt = s => s == null ? '—' : pad2(Math.floor(s / 3600)) + ':' + pad2(Math.floor(s % 3600 / 60));
+// repères horaires des nuits (18h → 18h) : minuit et midi en trait plein, 21h · 3h · 6h · 9h · 15h en pointillés ;
+// tracés sur toute la hauteur de la ligne, ils se prolongent d'une nuit à l'autre en colonnes
+function nightGrid(c, b, X, m) {
+  const mid = b.y + b.ch * 0.5;
+  c.fillStyle = COL.K; c.fillRect(b.x, mid - 0.5 * b.d, b.w, b.d);
+  for (let hr = -3; hr <= 15; hr += 3) {
+    const x = Math.round(X(m + hr * 3600) - 0.5 * b.d);
+    if (hr === 0 || hr === 12) { c.fillStyle = COL.L; c.fillRect(x, b.y, b.d, b.ch); continue; }
+    c.fillStyle = COL.K; for (let yy = b.y; yy < b.y + b.ch; yy += 3 * b.d) c.fillRect(x, yy, b.d, b.d);
+  }
+}
 PAGES.M43 = { code: 'M43', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEALTH', 'SANTE', 'SLEEP', 'WEEK7', 'HABITS'], fps: 1, view: '7',
+  cmds: [[['SLEPT'], (app, arg) => cmdSlept(app, arg), 'SLEPT [DD/MM] <BED> <WAKE> · SLEPT [DD/MM] AUTO']],
   keys: [['1', '7D/30D', (app, arg, wd) => { PAGES.M43.view = wd === '30D' ? '30' : (wd === '7D' ? '7' : (PAGES.M43.view === '7' ? '30' : '7')); app && app.say('HEALTH · ' + PAGES.M43.view + ' DAYS'); }, ['VIEW', '7D', '30D', '30']],
     ['2', 'GOAL', (app, arg) => { const v = parseFloat(String(arg).replace('H', '.').replace(',', '.')); if (v >= 4 && v <= 12) { SET.sleepGoal = Math.round(v * 4) / 4; saveSettings(); app.say('SLEEP GOAL · ' + durHM(SET.sleepGoal * 3600)); } else app.say('GOAL 7.5 · SLEEP GOAL IN HOURS (4–12)', true); }, ['GOAL', 'SLEEPGOAL'], 'GOAL <HOURS>']],
   draw30(scr, r) {
@@ -4669,7 +5026,7 @@ PAGES.M43 = { code: 'M43', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
     const full = D.slice(0, 6), avg = {
       wake: avgTod(D.map(e => e.wake), 0), bed: avgTod(D.map(e => e.bed), 12 * 3600), sleep: avgOf(D.map(e => e.sleep)),
       steps: avgOf(full.map(e => e.steps)), act: avgOf(full.map(e => e.act)), scr: avgOf(full.map(e => e.scr)), un: avgOf(full.map(e => e.un)) };
-    // NIGHTS : jour · coucher · barre 20h → 12h · réveil · durée
+    // NIGHTS : jour · coucher · barre 18h → 18h (repères verticaux toutes les 3 h) · réveil · durée
     const xB = ir.x + 7, xC = ir.x + 13, xW = ir.r - 11, cw = Math.max(8, xW - 1 - xC);
     sub(scr, ir.x, y++, ir.w, 'NIGHTS', 'GOAL ' + durHM((SET.sleepGoal || 8) * 3600) + ' · [*2]', t.D);
     scr.put(ir.x, y, 'WOKE', t.F); scr.put(xB, y, 'BED', t.F); scr.put(xC + Math.max(0, Math.floor((cw - 6) / 2)), y, 'ASLEEP', t.F); scr.put(xW, y, 'WAKE', t.F); W.rjust(scr, ir.r, y, 'SLEPT', t.F); y++;
@@ -4680,11 +5037,10 @@ PAGES.M43 = { code: 'M43', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
       scr.put(xB, y, e.bed ? todTxt(todOf(e.bed)) : '  —  ', e.bed ? st : t.F);
       scr.put(xW, y, e.wake ? todTxt(todOf(e.wake)) : '  —  ', e.wake ? st : t.F);
       W.rjust(scr, ir.r, y, e.sleep != null ? durHM(e.sleep) : '—', e.sleep != null ? (e.sleep < (SET.sleepGoal || 8) * 3600 - 3600 ? t.D : st) : t.F);
-      const A0 = e.m - 4 * 3600, A1 = e.m + 12 * 3600;
+      const A0 = e.m - 6 * 3600, A1 = e.m + 18 * 3600;
       scr.vector(xC, y, cw, 1, (c, b) => {
         const X = tt => b.x + Math.max(0, Math.min(1, (tt - A0) / (A1 - A0))) * b.w, mid = b.y + b.ch * 0.5, hh = b.ch * 0.3;
-        c.fillStyle = COL.K; c.fillRect(b.x, mid - 0.5 * b.d, b.w, b.d);
-        c.fillStyle = COL.K; c.fillRect(X(e.m) - 0.5 * b.d, b.y + b.ch * 0.15, b.d, b.ch * 0.7);           // minuit
+        nightGrid(c, b, X, e.m);
         if (e.bed && e.wake) { c.fillStyle = e.today ? COL.N : COL.D; c.fillRect(X(e.bed), mid - hh, Math.max(2 * b.d, X(e.wake) - X(e.bed)), 2 * hh); }
         else if (e.wake) { c.fillStyle = COL.N; c.fillRect(X(e.wake) - b.d, mid - hh * 1.3, 2 * b.d, hh * 2.6); }
       });
@@ -4692,7 +5048,7 @@ PAGES.M43 = { code: 'M43', name: 'HEALTH', ru: 'ЗДОРОВЬЕ', words: ['HEAL
     });
     if (y < ir.b) {
       let end = -1;
-      [['20h', 0], ['0h', 0.25], ['4h', 0.5], ['8h', 0.75], ['12h', 1]].forEach(([l, f]) => {
+      [['18', 0], ['0', 0.25], ['6', 0.5], ['12', 0.75], ['18h', 1]].forEach(([l, f]) => {
         const x = Math.min(xC + cw - slen(l), xC + Math.round(f * (cw - 1)) - (f ? Math.floor(slen(l) / 2) : 0));
         if (x > end + 1) { scr.put(x, y, l, t.F); end = x + slen(l) - 1; }
       });
@@ -4743,8 +5099,12 @@ function briefLines() {
     const ss = sleepStats(health7());
     if (ss.n >= 3) L.push(['7 NIGHTS', debtTxt(ss.debt) + ' · REG ' + regTxt(ss.sdWake)]);
   } else L.push(['WOKE UP', 'NOT SET · WAKE 7:15']);
+  { // soir : heure de coucher conseillée, éveil
+    const hr = new Date().getHours(), bp = bedPlan(), aw = awakeSecs(), over = aw != null && SET.awakeH && aw >= SET.awakeH * 3600;
+    if ((hr >= 17 || hr < 3) && bp) L.push(['TONIGHT', 'BED BY ' + hhmm(bp.bed) + ' · ' + (bp.how === 'ALARM' ? 'ALARM ' : 'WAKE ') + hhmm(bp.wake), over || T > bp.bed ? t.RB : t.B]);
+  }
   // météo : maintenant, tranches du jour (comme 4.3), pluie (prévision puis radar)
-  L.push(['', ''], ['WEATHER', live('wx') ? wxHead(w) : '']);
+  L.push(['', ''], ['WEATHER', live('wx') ? wxHead(w) : '', wxBackup() ? t.RB : undefined]);
   if (live('wx')) {
     const d0 = w.days && w.days[0];
     L.push(['NOW', w.temp.toFixed(1) + ' °C · ' + WMO_S(w.code) + (d0 ? ' · ' + Math.round(d0.tmin) + '/' + Math.round(d0.tmax) + ' °C' : '')]);
@@ -4772,6 +5132,7 @@ function briefLines() {
     else if (f.st === 'stale') { L.push(['TRAFFIC', rteStaleTxt(f) + (RTE.err && f.why !== 'age' ? ' · ' + RTE.err.slice(0, 20) : '') + ' · ' + pageAddr('M61'), t.RB]); if (rr) L.push(['', val, t.G]); }
     else L.push(['TRAFFIC', (RTE.err ? RTE.err.slice(0, 26) : '—') + ' · ' + pageAddr('M61'), RTE.err ? t.RB : undefined]);
     if (sev.length) L.push(['', sev[0].lab + ' KM ' + sev[0].km.toFixed(1) + (sev[0].road ? ' · ' + sev[0].road : '') + (sev.length > 1 ? ' · +' + (sev.length - 1) : ''), t.RB]);
+    const lp = leavePlan(); if (lp) L.push(['LEAVE', leaveTxt(lp).replace(/^LEAVE /, ''), lp.late ? t.RB : t.B]);
   }
   // agenda du jour
   L.push(['', ''], ['TODAY', '']);
@@ -4787,7 +5148,7 @@ function briefLines() {
     L.push(['', ''], ['FINANCE', 'KLAD' + (KLAD.upd ? ' · ' + ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '')]);
     if (ltl != null) L.push(['LIVE LEFT', eur(ltl) + (M.from ? ' · SINCE ' + kDay(M.from) : ''), ltl < 0 ? t.RB : undefined]);
     if (main) L.push(['CURRENT', eur(main.balance) + ' · ' + String(main.label || main.id || '').toUpperCase(), main.balance < 0 ? t.RB : undefined]);
-    al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', kladAlTxt(a), a.level === 'crit' ? t.RB : t.B]));
+    al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', kladAlTxt(a), t.RB]));
     if (al.length > 2) L.push(['', '+ ' + (al.length - 1) + ' MORE · ' + pageAddr('M71'), t.D]);
   }
   L.push(['', ''], ['STATUS', '']);
@@ -4797,6 +5158,7 @@ function briefLines() {
     const b = SRC.batt.v, rt = battRate(), pct = Math.round(b.level * 100);
     L.push(['BATTERY', pct + ' %' + (b.charging ? ' · CHARGING' : '') + (rt != null && Math.abs(rt) >= 0.3 ? ' · ' + (rt > 0 ? '+' : '−') + Math.abs(rt).toFixed(1) + ' %/h' : '')
       + (!b.charging && rt != null && rt < -0.3 ? ' · ~' + durHM(pct / -rt * 3600) + ' LEFT' : '')]);
+    const pj = battProj(); if (pj && pj.plan) L.push(['', 'EMPTY ~' + hhmm(pj.plan.empty) + ' BEFORE BED · PLUG BY ' + hhmm(pj.plan.by), t.RB]);
   }
   if (S16.st) { const o = S16.st; L.push(['S-16', s16Online() ? 'CPU ' + (o.cpu && o.cpu.t != null ? Math.round(o.cpu.t) + '°' : '—') + ' GPU ' + (o.gpu && o.gpu.t != null ? Math.round(o.gpu.t) + '°' : '—') + (Object.values(S16.al).some(Boolean) ? ' · CHECK ' + pageAddr('M54') : ' · OK') : 'OFFLINE · ' + ageTxt(T - S16.t)]); }
   if (live('steps')) L.push(['STEPS', String(SRC.steps.v.today)]);
@@ -5006,7 +5368,7 @@ class App {
     this.gi = ((gi % GROUPS.length) + GROUPS.length) % GROUPS.length;
     const n = GROUPS[this.gi][3].length;
     this.pi[this.gi] = pi == null ? 0 : ((pi % n) + n) % n;          // changement de groupe : retour au format .1
-    if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) this.prev = cur;
+    if (this.gi !== cur[0] || this.pi[this.gi] !== cur[1]) { this.prev = cur; const pg = PAGES[GROUPS[this.gi][3][this.pi[this.gi]]]; if (pg && pg.onOpen) pg.onOpen(); }
     this.helpOv = null;
   }
   step(dd) { this.show(this.gi, this.pi[this.gi] + dd); }          // sous-section suivante / précédente du groupe
@@ -5425,7 +5787,7 @@ function slowTick() {                                   // 1 Hz : alarmes, tenda
   if (T - WX.tryT > (WX.failed ? 300 : 900) && (SRC.wx.mode !== 'sim' || SET.sim === 'AUTO') && SET.sim !== 'ON') fetchWx();
   ncTick(); rainWatch();
   agendaTick(); nightTick(); s16Tick();
-  bgCfgTick(); widgetTick();
+  bgCfgTick(); widgetTick(); sigTick();
   if (T - DAYT >= 60) { DAYT = T; dayTick(); persistSave(); }
 }
 let DAYT = 0;
@@ -5483,7 +5845,7 @@ try { const j = JSON.parse(localStorage.getItem('grafit.bg') || 'null'); if (j) 
 function bgSave() { try { localStorage.setItem('grafit.bg', JSON.stringify({ on: BGL.on, last: BGL.last, alt: BGL.alt, n: BGL.n, prev: BGL.prev, ev: BGL.ev, sm: BGL.sm, nightsV: BGL.nightsV })); } catch (e) { /* */ } }
 const bgWaiting = () => BGL.pending && now() - BGL.waitT < 6;
 function bgRequest(replay = false) {
-  const since = replay ? Math.min(BGL.last || 0, Date.now() - (BGL.nightsV !== 2 ? 8 * 24 : 24) * 3600000) : (BGL.last || 0);   // 1.15 : une semaine, une fois
+  const since = replay ? Math.min(BGL.last || 0, Date.now() - (BGL.nightsV !== 3 ? 8 * 24 : 36) * 3600000) : (BGL.last || 0);   // 1.20 : une semaine, une fois
   if (APK && nativeCmd({ cmd: 'bgRead', since })) { BGL.pending = true; BGL.waitT = now(); BGL.replay = replay; }
 }
 function bgSet(app, on) {
@@ -5499,86 +5861,33 @@ function bgEvent(ts, k) {
   BGL.ev.push([ts, k]);
   const lim = now() - 48 * 3600; while (BGL.ev.length && BGL.ev[0][0] < lim) BGL.ev.shift();
 }
-// Réveil et coucher d'après les événements d'écran du journal continu (prioritaires sur les statistiques d'usage) :
-// sessions = déverrouillage → extinction depuis 18:00 la veille. Coup d'œil nocturne = session < 3 min, commencée
-// après 00:30, suivie de 45 min sans déverrouillage, et précédée d'une heure de repos : ni session, ni téléphone
-// manipulé (mouvement ≥ 0,04 g) ni pas ; sans pas juste après (pas levé) et avant l'alarme du matin − 30 min. Réveil =
-// 1re session durable après 03:00 ; coucher = fin de la dernière session qui n'est pas un coup d'œil, avant le réveil,
-// prolongée tant que le téléphone est encore manipulé ou porté (moins de 30 min entre deux signes).
-// 1.15.0 : la dernière vérification avant de dormir (réveil, heure) n'est plus prise pour un coup d'œil nocturne (le
-// coucher retombait sur la session d'avant : nuits trop longues) ; nuits de la semaine recalculées une fois.
 const bgNight = () => BGL.on !== false && BGL.ev.some(([ts]) => ts > now() - 20 * 3600);
-const MOVED_G = 0.04;
-// sm : relevés [ts, compteur de pas | null, mouvement g rms | null] ; pas entre a et b (redémarrage : saut ignoré)
-function stepsBetween(sm, a, b) {
-  let n = 0, prev = null;
-  for (const [ts, c] of sm) { if (ts > b) break; if (c == null) continue; if (ts > a && prev != null && c >= prev) n += c - prev; prev = c; }
-  return n;
-}
-// instants où le téléphone a été manipulé ou porté (mouvement, ou ≥ 10 pas depuis le relevé précédent, ≤ 10 min avant)
-function handledTimes(sm, a, b) {
-  const out = []; let prev = null, prevT = null;
-  for (const [ts, c, g] of sm) {
-    if (ts > b) break;
-    const walk = c != null && prev != null && c >= prev + 10 && ts - prevT <= 600;
-    if (ts >= a && ((g != null && g >= MOVED_G) || walk)) out.push(ts);
-    if (c != null) { prev = c; prevT = ts; }
-  }
-  return out;
-}
-// nuit qui se termine le matin `day3` (03:00, epoch s) ; ev : [[ts, UNLOCK|OFF|ON]] ; alarm : epoch s ou null
-function nightCalc(day3, ev, sm, alarm, until) {
-  const from = day3 - 9 * 3600, m30 = day3 - 2.5 * 3600;
-  let open = null; const ses = [];
-  for (const [ts, k] of ev) {
-    if (ts < from || ts > until) continue;
-    if (k === 'UNLOCK' && open == null) open = ts;
-    else if (k === 'OFF' && open != null) { ses.push([open, ts]); open = null; }
-  }
-  if (open != null) ses.push([open, until]);
-  const glance = i => {
-    if (i >= ses.length - 1) return false;
-    const [a, b] = ses[i], rest = i ? a - ses[i - 1][1] : a - from;
-    if (b - a >= 180 || a < m30 || ses[i + 1][0] - b < 2700 || rest < 3600) return false;
-    if (alarm && a >= alarm - 1800) return false;                       // après l'alarme : levé
-    if (handledTimes(sm, a - 3600, a - 120).length) return false;       // téléphone manipulé juste avant : pas encore couché
-    return stepsBetween(sm, b, b + 2700) < 40;                          // marche juste après : levé
-  };
-  let wi = -1, g = 0;
-  for (let i = 0; i < ses.length; i++) { if (ses[i][0] < day3) continue; if (glance(i)) { g++; continue; } wi = i; break; }
-  if (wi < 0) return null;
-  const wake = ses[wi][0];
-  let bed = null, bi = -1;
-  for (let i = wi - 1; i >= 0; i--) { if (glance(i)) { if (ses[i][0] < day3) g++; continue; } bed = ses[i][1]; bi = i; break; }
-  if (bed != null) {                                                    // encore en main ou en poche après la session
-    const lim = bi + 1 < ses.length ? ses[bi + 1][0] : wake;
-    for (const ts of handledTimes(sm, bed + 1, lim - 120)) { if (ts - bed > 1800) break; bed = ts; }
-  }
-  return { wake, bed, g };
-}
 const day3Of = ts => { const d = new Date(ts * 1000); d.setHours(3, 0, 0, 0); return d.getTime() / 1000; };
 function bgWake() {
   const day3 = day3Of(now()); if (now() < day3) return;
-  const r = nightCalc(day3, BGL.ev, BGL.sm || [], DAYREC.alarms[ymdOf(day3)] || null, now());
+  const r = nightFind(day3, BGL.ev, BGL.sm || [], DAYREC.alarms[ymdOf(day3)] || null, now());
   if (r) dayUnlock(r.wake, r.bed, r.g);
 }
 // nuits passées recalculées depuis le fichier du journal continu (une semaine) : coucher toujours, réveil seulement
-// s'il venait du déverrouillage ou de l'activité de Grafit (ALARM et MANUAL gardés)
+// s'il venait du déverrouillage ou de l'activité de Grafit (ALARM gardé) ; nuit saisie à la main (NIGHT) jamais touchée ;
+// 1.20 : une nuit absente (décalée, ratée par l'ancienne règle) est créée
 function nightsRebuild(ev, sm) {
-  if (!ev.length) return 0;
-  const t0 = ev[0][0], today = ymdOf(now()); let n = 0;
-  for (const h of DAYREC.hist) {
-    if (h.d >= today) continue;
-    const d0 = new Date(+h.d.slice(0, 4), +h.d.slice(4, 6) - 1, +h.d.slice(6, 8), 3, 0, 0, 0), day3 = d0.getTime() / 1000;
+  if (!ev.length && !sm.length) return 0;
+  const t0 = Math.min(ev.length ? ev[0][0] : Infinity, sm.length ? sm[0][0] : Infinity); let n = 0;
+  for (let k = 1; k <= 8; k++) {
+    const d0 = new Date(); d0.setDate(d0.getDate() - k); d0.setHours(3, 0, 0, 0);
+    const day3 = d0.getTime() / 1000, d = ymdOf(day3);
     if (day3 - 9 * 3600 < t0) continue;                                 // journal incomplet pour cette nuit
-    const r = nightCalc(day3, ev, sm, DAYREC.alarms[h.d] || null, day3 + 21 * 3600);
+    let h = DAYREC.hist.find(x => x.d === d); if (h && h.src === 'MANUAL') continue;
+    const r = nightFind(day3, ev, sm, DAYREC.alarms[d] || null, day3 + 15 * 3600);
     if (!r) continue;
+    if (!h) { DAYREC.hist.push({ d, wake: r.wake, src: 'UNLOCK', bed: r.bed }); n++; continue; }
     let ch = false;
     if ((h.src === 'UNLOCK' || h.src === 'AUTO') && Math.abs((h.wake || 0) - r.wake) > 60) { h.wake = r.wake; h.src = 'UNLOCK'; ch = true; }
     if (r.bed != null && r.bed < h.wake && Math.abs((h.bed || 0) - r.bed) > 60) { h.bed = r.bed; ch = true; }
     if (ch) n++;
   }
-  if (n) { daySave(); log('DAY', 'NIGHTS RECOMPUTED · ' + n + ' FROM THE BACKGROUND LOG'); }
+  if (n) { DAYREC.hist.sort((x, y) => x.d < y.d ? -1 : 1); DAYREC.hist = DAYREC.hist.slice(-35); daySave(); log('DAY', 'NIGHTS RECOMPUTED · ' + n + ' FROM THE BACKGROUND LOG'); }
   return n;
 }
 // ---------------------------------------------------------------------------------------- santé (5.4)
@@ -5625,9 +5934,9 @@ function bgIngest(d) {
   if (BGL.replay && d.rows) {                             // démarrage : pression 24 h reconstruite depuis le fichier du journal
     BGL.replay = false;
     if (all.filter(r => r[1] === 'S' && r[2] != null).length >= 30) { HIST.press.v = []; HIST.press.t = 0; }
-    if (BGL.nightsV !== 2 && all.length) {                // 1.15 : nuits de la semaine recalculées avec la nouvelle règle
-      nightsRebuild(all.filter(r => r[1] === 'E').map(r => [r[0] / 1000, r[2]]), all.filter(r => r[1] === 'S').map(r => [r[0] / 1000, r[8], r[12]]));
-      BGL.nightsV = 2;
+    if (BGL.nightsV !== 3 && all.length) {                // 1.20 : nuits de la semaine recalculées avec la règle 18:00 → 18:00
+      nightsRebuild(all.filter(r => r[1] === 'E').map(r => [r[0] / 1000, r[2]]), all.filter(r => r[1] === 'S').map(r => [r[0] / 1000, r[8], r[12], r[4]]));
+      BGL.nightsV = 3;
     }
   }
   for (const r of all) if (r[0] <= (BGL.last || 0) && r[1] === 'S') bgHist(r);         // relecture : courbes seulement
@@ -5653,12 +5962,14 @@ function bgIngest(d) {
       if (P.chg != null && !!chg !== !!P.chg) logAt(ts, 'PWR', (chg ? 'CHARGER PLUGGED · ' : 'UNPLUGGED · ') + batt + ' %');
       if (!chg && P.batt != null) for (const lim of [AL.BattLowCaut, AL.BattLowCrit]) if (P.batt >= lim && batt < lim) logAt(ts, 'PWR', 'BATT LOW · ' + batt + ' % < ' + lim + ' %', true);
       P.batt = batt; P.chg = chg;
+      if (chg && batt >= 100 && P.sT && ts - P.sT <= 600) chg100Add(ts, ts - P.sT);
+      P.sT = ts;
     }
     if (bt != null) { if (P.bt != null && P.bt < AL.BattTempCaut && bt >= AL.BattTempCaut) logAt(ts, 'TMP', 'BATT TEMP ' + bt.toFixed(1) + ' °C', true); P.bt = bt; }
     if (therm != null) { if (P.therm != null && therm !== P.therm) logAt(ts, 'TMP', 'PHONE THERMAL ' + THERM_NAMES[therm], therm >= 3); P.therm = therm; }
     if (health != null) { if (P.health != null && health !== P.health && health !== 2) logAt(ts, 'PWR', 'BATT HEALTH ' + (BATT_HEALTH[health] || health), true); P.health = health; }
     if (steps != null) stepsFeed(steps, ts, true);
-    (BGL.sm || (BGL.sm = [])).push([ts, steps, act]);
+    (BGL.sm || (BGL.sm = [])).push([ts, steps, act, chg ? 1 : 0]);
 
     if (amax != null && amax >= AL.GLoadCaut) logAt(ts, 'MOT', 'SHOCK ' + amax.toFixed(1) + ' g (BACKGROUND)', amax >= AL.GLoadCrit);
     if (rtt != null) {                                    // latence d'arrière-plan ; pertes d'Internet notées au journal
@@ -5671,10 +5982,10 @@ function bgIngest(d) {
     healthSample(ts, act, steps);
   }
   BGL.last = rows[rows.length - 1][0]; BGL.n = (BGL.n || 0) + ns;
-  { const lim = now() - 30 * 3600; while (BGL.sm.length && BGL.sm[0][0] < lim) BGL.sm.shift(); }
+  { const lim = now() - 36 * 3600; while (BGL.sm.length && BGL.sm[0][0] < lim) BGL.sm.shift(); }
   try { localStorage.setItem('grafit.steps', JSON.stringify(STEPS)); } catch (e) { /* */ }
   if (SRC.steps.mode === 'live') SRC.steps.v.today = STEPS.today;
-  bgWake(); bgSave(); logDirty = true; logSave(); persistSave();
+  bgWake(); bgSave(); chg100Save(); logDirty = true; logSave(); persistSave();
   NETP.rec.sort((a, b) => a[0] - b[0]);
   if (ns + ne > 2) log('SYS', 'BACKGROUND LOG · ' + ns + ' SAMPLES · ' + ne + ' SCREEN EVENTS SINCE ' + hhmm(rows[0][0] / 1000));
 }
@@ -5993,6 +6304,10 @@ function rteIngest(d) {
   const res = { t: sent, rx: T, dur: sec(r.duration), stat: sec(r.staticDuration), km: r.distanceMeters ? r.distanceMeters / 1000 : null, via: r.description || '',
     poly: r.polyline && r.polyline.encodedPolyline ? r.polyline.encodedPolyline : (RTE.res[dir] && RTE.res[dir].poly) || '' };
   RTE.res[dir] = res; RTE.err = ''; delete RTE.fail[dir]; (RTE.okAt = RTE.okAt || {}).g = now(); if (APPINFO.sha1) RTE.okSha = APPINFO.sha1;
+  if (res.poly) {                                             // lieux en adresse : coordonnées prises aux bouts du tracé
+    const pts = polyDecode(res.poly), [ka, kb] = RTE_DIR[dir];
+    if (pts.length >= 2) [[ka, pts[0]], [kb, pts[pts.length - 1]]].forEach(([k, pt]) => { const p = RTE[k]; if (p && p.lat == null) p.ll = { lat: +pt[0].toFixed(5), lon: +pt[1].toFixed(5) }; });
+  }
   const day = ymdOf(now()); (RTE.hist[day] = RTE.hist[day] || []).push([Math.round(res.t), dir, Math.round(res.dur), Math.round(res.stat || 0)]);
   const ks = Object.keys(RTE.hist).sort(); while (ks.length > 7) delete RTE.hist[ks.shift()];
   if (T - sent > 120) log('TRF', 'ROUTE ' + RTE_DIR[dir][2] + ' · LATE REPLY · ASKED ' + hhmm(sent) + ', RECEIVED ' + hhmm(T));
@@ -6026,8 +6341,17 @@ function rteView(dir, secondary = false) {
 const rteUpd = r => r ? 'UPD ' + hhmm(r.t) : '';
 const rteStaleTxt = f => 'STALE' + (f.age != null ? ' ' + ageTxt(f.age) : ' · NO DATA');
 // sens affiché : le matin maison → travail ; à partir de midi, ou dès que la position est au travail, travail → maison
-const rteNear = k => { const p = RTE[k]; if (!p || p.lat == null || !(live('geo') && SRC.geo.mode === 'live')) return false; const g = SRC.geo.v; return A.dist(g.lat, g.lon, p.lat, p.lon) < 0.5; };
-const rteMain = () => (new Date().getHours() >= 12 || rteNear('work')) ? 'wh' : 'hw';
+// 1.20 : un lieu saisi par adresse prend les coordonnées du début / de la fin du tracé Google (ll) ; position : GNSS ou
+// position fusionnée de l'APK, précise à 300 m et récente (10 min). Sens : à la maison HOME → WORK, au travail
+// WORK → HOME, ailleurs (ou sans position) avant midi HOME → WORK, après WORK → HOME.
+const rtePt = k => { const p = RTE[k]; return !p ? null : (p.lat != null ? p : (p.ll || null)); };
+const rteNear = k => {
+  const p = rtePt(k); if (!p || !(live('geo') && SRC.geo.mode === 'live')) return false;
+  const g = SRC.geo.v; if (!(g.acc <= 300) || (g.fixT && now() - g.fixT > 600)) return false;
+  return A.dist(g.lat, g.lon, p.lat, p.lon) < 0.5;
+};
+const rteWhere = () => rteNear('home') ? 'HOME' : (rteNear('work') ? 'WORK' : '');
+const rteMain = () => { const w = rteWhere(); return w === 'HOME' ? 'hw' : (w === 'WORK' ? 'wh' : (new Date().getHours() >= 12 ? 'wh' : 'hw')); };
 function rteTick(force = false) {                          // page affichée : sens utile toutes les 10 min, l'autre toutes les 30
   const T = now(), m = PAGES.M61.dir(), o = m === 'hw' ? 'wh' : 'hw';
   if (force || !RTE.res[m] || T - RTE.res[m].t > ROUTE_EVERY) rteFetch(m, force);
@@ -6143,6 +6467,33 @@ function cmdKey(app, field, label, re) {
   app && app.say(label + ' KEY SET · ' + raw.slice(0, 6) + '…' + (RTE.home && RTE.work ? ' · TESTING …' : ' · NOW PLACE HOME / WORK')); if (field === 'key') priceTick(true);
   if (RTE.home && RTE.work) setTimeout(() => apiCheck(app, 'NEW KEY'), 1200);
 }
+// départ conseillé (ARRIVE hh:mm) : arrivée visée au travail, jours ouvrés (ou tous les jours avec ALL) ; durée retenue =
+// la plus longue entre le trafic du moment et l'habituelle, + 5 min de marge ; pluie sur la fenêtre départ → arrivée
+// (quarts d'heure Open-Meteo, sinon heures). Affiché dans les 4 h avant l'arrivée, hors du travail.
+function cmdArrive(app, arg) {
+  const a = String(arg || '').toUpperCase().trim();
+  if (a === 'OFF') { SET.arrive = ''; saveSettings(); return app && app.say('ARRIVE OFF · NO DEPARTURE ADVICE'); }
+  const m = a.match(/^(\d{1,2})[:H.]?(\d{2})?(?:\s+(ALL|WEEK|WEEKDAYS))?$/);
+  if (!m || +m[1] > 23 || +(m[2] || 0) > 59) return app && app.say('ARRIVE 08:30 (MON–FRI) · ARRIVE 08:30 ALL · ARRIVE OFF', true);
+  SET.arrive = pad2(+m[1]) + ':' + pad2(+(m[2] || 0)); SET.arriveAll = m[3] === 'ALL'; saveSettings();
+  log('NAV', 'ARRIVE AT WORK ' + SET.arrive + (SET.arriveAll ? ' · EVERY DAY' : ' · MON–FRI'));
+  app && app.say('ARRIVE ' + SET.arrive + (SET.arriveAll ? ' · EVERY DAY' : ' · MON–FRI') + (RTE.key && RTE.home && RTE.work ? '' : ' · NEEDS ROUTEKEY + PLACES'));
+}
+function leavePlan() {
+  if (!SET.arrive || !RTE.key || !RTE.home || !RTE.work) return null;
+  const T = now(), d = new Date(), dow = d.getDay(); if (!SET.arriveAll && (dow === 0 || dow === 6)) return null;
+  const [hh, mm] = SET.arrive.split(':').map(Number); d.setHours(hh, mm, 0, 0); const arr = d.getTime() / 1000;
+  if (T > arr || arr - T > 4 * 3600 || rteWhere() === 'WORK') return null;
+  const rr = RTE.res.hw; if (!rr || !rr.dur) return null;
+  const u = rteUsual(RTE.hist, 'hw', arr - rr.dur, ymdOf(T), rteTod), dur = Math.max(rr.dur, u ? u.dur : 0), leave = arr - dur - 300;
+  let rain = null; const w = SRC.wx.v;
+  if (live('wx') && w) {
+    if (w.mt && w.mp) { for (let i = 0; i < w.mt.length; i++) { const t1 = w.mt[i] / 1000, t0 = t1 - 900; if (t1 > leave && t0 < arr && w.mp[i] >= 0.1) { rain = Math.max(leave, t0); break; } } }
+    if (rain == null && w.hms && w.hpr) for (let i = 0; i < w.hms.length; i++) { const t1 = w.hms[i] / 1000, t0 = t1 - 3600; if (t1 > leave && t0 < arr && (w.hpr[i] >= 0.2 || (w.hpop && w.hpop[i] >= 60))) { rain = Math.max(leave, t0); break; } }
+  }
+  return { leave, arr, dur, rain, late: T > leave, usual: u ? u.dur : null };
+}
+const leaveTxt = p => 'LEAVE ' + hhmm(p.leave) + ' · ARRIVE ' + hhmm(p.arr) + ' · ' + (p.rain ? 'RAIN FROM ' + hhmm(p.rain) : 'DRY');
 function rteMaps(dir) {                                      // itinéraire dans Google Maps (guidage)
   const [a, b] = RTE_DIR[dir], P = p => encodeURIComponent(p.addr || (p.lat + ',' + p.lon));
   if (!RTE[a] || !RTE[b]) return false;
@@ -6156,6 +6507,7 @@ PAGES.M61 = { code: 'M61', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
     ['3', 'MAPS', app => { const ok = rteMaps(PAGES.M61.dir()); app && app.say(ok ? 'OPENING GOOGLE MAPS' : 'SET HOME AND WORK FIRST', !ok); }, ['MAPS', 'GOOGLEMAPS', 'NAVIGATE']]],
   cmds: [[['PLACE', 'LIEU'], (app, arg) => cmdPlace(app, arg), 'PLACE HOME|WORK [ADDRESS|LAT,LON]'],
     [['ROUTEKEY'], app => cmdKey(app, 'key', 'ROUTE', /^[A-Za-z0-9_\-]{30,60}$/), 'ROUTEKEY <GOOGLE KEY>|OFF'],
+    [['ARRIVE'], (app, arg) => cmdArrive(app, arg), 'ARRIVE <hh:mm> [ALL] | OFF'],
     [['INCIDENTKEY'], app => cmdKey(app, 'ttKey', 'INCIDENT', /^[A-Za-z0-9_\-]{20,64}$/), 'INCIDENTKEY <TOMTOM KEY>|OFF']],
   dir() { const m = rteMain(); return this.swap ? (m === 'hw' ? 'wh' : 'hw') : m; },
   draw(scr, r, app) {
@@ -6218,7 +6570,10 @@ PAGES.M61 = { code: 'M61', name: 'ROUTE', ru: 'ПУТЬ', words: ['ROUTE', 'TRAF
       y += h;
     }
     const P = RTE.price, pv = !APK ? '' : (P.cap != null ? ' · FREE ' + P.cap + (P.okT ? ' ✓' + pad2(new Date(P.okT * 1000).getDate()) + '/' + pad2(new Date(P.okT * 1000).getMonth() + 1) : '') : ' · PRICE ?');
-    if (y < ir.b) scr.put(ir.x, ir.b - 1, clip('GOOGLE ' + q.day + '/' + ROUTE_DAY + ' · ' + q.month + '/' + q.cap + ' MONTH' + pv, ir.w), q.ok && !capLow ? t.F : t.RB);
+    // 1.20 : compteurs affichés seulement près du plafond (≥ 80 % : CAUT) ou au plafond (rouge)
+    const ql = Math.max(quotaLvl(q.day, ROUTE_DAY), quotaLvl(q.month, q.cap));
+    if (y < ir.b && ql) scr.put(ir.x, ir.b - 1, clip((ql > 1 ? 'LIMIT · ' : 'NEAR LIMIT · ') + 'GOOGLE ' + q.day + '/' + ROUTE_DAY + ' · ' + q.month + '/' + q.cap + ' MONTH' + pv, ir.w), ql > 1 ? t.RB : t.B);
+    else if (y < ir.b && SET.arrive) { const lp = leavePlan(); if (lp) scr.put(ir.x, ir.b - 1, clip(leaveTxt(lp), ir.w), lp.late ? t.RB : t.B); }
   } };
 const APPINFO = {};
 
@@ -6275,7 +6630,7 @@ function apiBoot() {                                          // premier démarr
   let lv = '', had = false;
   try { lv = localStorage.getItem('grafit.ver') || ''; had = !!(lv || localStorage.getItem('grafit.log') || localStorage.getItem('grafit.route')); localStorage.setItem('grafit.ver', CFG.VERSION); } catch (e) { return; }
   if (!had || lv === CFG.VERSION) return;
-  const kept = [RTE.key ? 'ROUTE KEY' : '', RTE.ttKey ? 'INCIDENT KEY' : '', SET.mapKey ? 'MAP KEY' : '', RTE.home && RTE.work ? 'PLACES' : ''].filter(Boolean);
+  const kept = [RTE.key ? 'ROUTE KEY' : '', RTE.ttKey ? 'INCIDENT KEY' : '', MB.key ? 'METEOBLUE KEY' : '', SET.mapKey ? 'MAP KEY' : '', RTE.home && RTE.work ? 'PLACES' : ''].filter(Boolean);
   log('SYS', 'UPDATED ' + (lv || 'FROM ≤1.13.0') + ' → ' + CFG.VERSION + ' · DATA KEPT' + (kept.length ? ' · ' + kept.join(' · ') : ''));
   if (RTE.key || RTE.ttKey) setTimeout(() => apiCheck(null, 'AFTER UPDATE'), 15000);
 }
@@ -6293,17 +6648,25 @@ function drawApi(scr, ir) {                                   // 3.4 [*8] : vue 
   sub(scr, ir.x, y++, ir.w, 'SERVICE', 'STATE · LAST OK', t.F);
   row('GOOGLE ROUTES', s.g, ok.g);
   if (s.g[0] === 'ERR') det(s.g[1] + (RTE.errT ? ' · ' + hhmm(RTE.errT) : ''), t.RB); else if (s.g[0] !== 'OK') det(s.g[1], t.F);
-  if (RTE.key) det('KEY ' + RTE.key.slice(0, 6) + '… · ' + q.day + '/' + ROUTE_DAY + ' TODAY · ' + q.month + '/' + q.cap + ' MONTH');
+  // 1.20 : compteurs montrés seulement près du plafond (≥ 80 %, CAUT) ou au plafond (rouge)
+  const qd = (key, n, d, cap, m, mcap) => { const l = Math.max(quotaLvl(n, d), quotaLvl(m, mcap)); det(l ? 'TODAY ' + n + '/' + d + ' · MONTH ' + m + '/' + mcap + ' · ' + (l > 1 ? 'LIMIT' : 'NEAR LIMIT') : 'KEY ' + key + '…', l > 1 ? t.RB : (l ? t.B : t.D)); };
+  if (RTE.key) qd(RTE.key.slice(0, 6), q.day, ROUTE_DAY, null, q.month, q.cap);
   row('TOMTOM', s.tt, ok.tt);
   if (s.tt[0] === 'ERR') det(s.tt[1], t.RB); else if (s.tt[0] !== 'OK') det(s.tt[1], t.F);
-  if (RTE.ttKey) det('KEY ' + RTE.ttKey.slice(0, 4) + '… · ' + RTE.cnt.tn + '/' + TT_DAY + ' TODAY · ' + RTE.cnt.tnm + '/' + TT_MONTH + ' MONTH');
+  if (RTE.ttKey) qd(RTE.ttKey.slice(0, 4), RTE.cnt.tn, TT_DAY, null, RTE.cnt.tnm, TT_MONTH);
+  { const mq = mbQuota(), st = !MB.key ? ['—'] : (MB.err ? ['ERR'] : (MB.okT ? ['OK'] : ['?']));
+    row('METEOBLUE', st, MB.okT);
+    if (!MB.key) det('NO KEY · MBKEY <KEY> · TEMPERATURES FROM MÉTÉO-FRANCE', t.F);
+    else { if (MB.err) det(MB.err + (MB.errT ? ' · ' + hhmm(MB.errT) : '') + (wxBackup() ? ' · BACKUP AROME' : ''), t.RB); qd(MB.key.slice(0, 4), mq.day, MB_DAY, null, mq.month, MB_MONTH); } }
   row('BISON FUTE', s.bf, ok.bf); det(s.bf[0] === 'ERR' ? s.bf[1] : (s.bf[0] === 'OK' ? 'OPEN DATA · NO KEY · NATIONAL ROADS' : s.bf[1]), s.bf[0] === 'ERR' ? t.RB : t.F);
   row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M32') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);
   y++;
   if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'SAFEGUARDS', '', t.F);
   const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
-  kv('GOOGLE FREE TIER', !APK ? 'APK ONLY' : (P.cap != null ? P.cap + ' / MONTH ✓ ' + (P.okT ? dmHM(P.okT).slice(0, 5) : '') : 'NOT VERIFIED YET'), P.cap != null && P.cap < 5000 || (P.fails || 0) >= 2 ? t.RB : t.N);
-  kv('GRAFIT CAP', ROUTE_DAY + ' / DAY · ' + q.cap + ' / MONTH', q.ok ? t.N : t.RB);
+  const ptBad = P.cap != null && P.cap < 5000 || (P.fails || 0) >= 2, ql = Math.max(quotaLvl(q.day, ROUTE_DAY), quotaLvl(q.month, q.cap));
+  if (ptBad) kv('GOOGLE FREE TIER', P.cap != null ? P.cap + ' / MONTH (LOWER)' : 'PRICE PAGE UNREADABLE', t.RB);
+  if (ql || !q.ok) kv('GRAFIT CAP', ROUTE_DAY + ' / DAY · ' + q.cap + ' / MONTH', ql > 1 || !q.ok ? t.RB : t.B);
+  if (!ptBad && !ql) kv('LIMITS', 'FAR FROM THE CAPS ✓', t.N);
   kv('APP SIGNATURE', APPINFO.sha1 ? APPINFO.sha1.slice(0, 5) + '…' + APPINFO.sha1.slice(-5) + (RTE.okSha ? (apiSigBad() ? ' · CHANGED' : ' · AS LAST OK') : '') : (APK ? 'READING …' : 'APK ONLY'), apiSigBad() ? t.RB : t.N);
   y++;
   if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'LAST CHECK [*9]', APICHK.run ? 'RUNNING …' : (APICHK.t ? dmHM(APICHK.t) : 'NEVER'), APICHK.bad ? t.RB : t.F);
