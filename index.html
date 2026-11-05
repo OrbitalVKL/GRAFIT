@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.20.2', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.20.3', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1186,7 +1186,7 @@ const GROUPS = [
   ['1', 'SYSTEMS', 'СИСТ', ['M11', 'M12', 'M13', 'M14', 'M15', 'M16']], ['2', 'ALARMS', 'АВАР', ['M21', 'M22', 'M23', 'M24']],
   ['3', 'WEATHER', 'ПОГОДА', ['M31', 'M32', 'M33', 'M34']], ['4', 'DAY', 'СУТКИ', ['M41', 'M42', 'M43']],
   ['5', 'COMMS', 'СВЯЗЬ', ['M51', 'M52', 'M53', 'M54']], ['6', 'NAV', 'НАВ', ['M61', 'M62', 'M63', 'M64', 'M65', 'M66']],
-  ['7', 'FINANCE', 'ФИН', ['M71', 'M72', 'M73']], ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91']],
+  ['7', 'FINANCE', 'ФИН', ['M71', 'M72', 'M73']], ['8', 'UTILITY', 'СЕРВ', ['M81', 'M82', 'M83']], ['9', 'CMD', 'КОМ', ['M91', 'M92']],
 ];
 function pageAddr(code) { const g = GROUPS.findIndex(x => x[3].includes(code)); return g < 0 ? '?' : (g + 1) + '.' + (GROUPS[g][3].indexOf(code) + 1); }
 
@@ -4264,6 +4264,83 @@ PAGES.M91 = { code: 'M91', name: 'QUICK SET', ru: 'НАСТР', words: ['QUICK',
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SOURCES', SOURCES.filter(([k]) => SRC[k].mode === 'live').length + ' LIVE · SEE ' + pageAddr('M24'), t.D, t.N);
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BACKGROUND LOG', bgState() + ' · ' + pageAddr('M24') + ' [*3]', t.D, BGL.on ? t.N : t.F);
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'BUILD', CFG.BUILD + (APK && UPD.current ? ' · APK ' + UPD.current : ''), t.D, t.F);
+  } };
+
+// ------------------------------------------------------------------ M92 COMMANDS (1.20.3) : commandes de la ligne CMD
+// Liste construite à partir des actions de tous les formats (une commande ajoutée apparaît d'elle-même).
+// TYPED : celles qui prennent une valeur (<…> ou […]) ou qui n'ont pas de touche, une fois chacune, avec une courte
+// description ; ALL : toutes les actions, par format, avec leur touche *n. Toucher une ligne ouvre CMD pré-rempli.
+const CMD_DESC = {
+  MBKEY: 'METEOBLUE KEY FOR THE FORECAST', MAPKEY: 'CARTO BASEMAP FOR THE RADAR', ROUTEKEY: 'GOOGLE ROUTES KEY FOR TRAFFIC',
+  INCIDENTKEY: 'TOMTOM KEY FOR INCIDENTS (OPTION)', ARRIVE: 'ARRIVAL AT WORK · DEPARTURE ADVICE', PLACE: 'SET HOME / WORK · HERE IF NO ADDRESS',
+  WAKE: "SET TODAY'S WAKE TIME BY HAND", MAXAWAKE: 'AWAKE ALARM THRESHOLD (16 H)', SLEPT: 'CORRECT A NIGHT · SLEPT AUTO UNDOES IT',
+  GOAL: 'SLEEP GOAL IN HOURS', BRIGHT: 'SCREEN BRIGHTNESS WHILE GRAFIT IS SHOWN', NIGHT: 'RED NIGHT LIGHTING', TIMER: 'COUNTDOWN',
+  SIGMAP: 'SIGNAL MAP · CLEAR ERASES IT', CAL: 'CALIBRATE THE MIC ON A REFERENCE METER', SEL: 'SELECT AN ITEM OF THE FORMAT',
+  SIM: 'SIMULATION OF MISSING SOURCES', BGLOG: 'BACKGROUND LOG (APK)', VIBE: 'VIBRATING ALERTS (APK)', ACK: 'ACKNOWLEDGE FAULTS',
+  CLEAR: "ERASE ACK'D ENDED FAULTS", CMDS: 'FILTER THIS LIST', HDG: 'NORTH UP OR HEADING UP', KM: 'RADAR RANGE', RANGE: 'GRAPH SPAN OR MAP RADIUS',
+  FILTER: 'FEED CATEGORY SHOWN', MONTH: 'NEXT MONTH · MONTH 0 = THIS ONE', TGT: 'KURS TARGET', UNIT: 'SOUND LEVEL UNIT',
+  SCREEN: 'KEEP THE SCREEN ON', HAPTIC: 'VIBRATION ON KEY PRESS', MIC: 'ARM THE MICROPHONE',
+};
+const CMDV = { view: 'TYPED', pg: 0, filter: '' };
+function cmdRows(view, filter) {
+  const R = [], f = String(filter || '').toUpperCase(), seen = new Set(), A = App.prototype.acts;
+  for (let gi = 0; gi < GROUPS.length; gi++) {
+    const head = { gi, name: GROUPS[gi][1] }; let heads = false;
+    for (let pi = 0; pi < GROUPS[gi][3].length; pi++) {
+      const p = PAGES[GROUPS[gi][3][pi]], ad = (gi + 1) + '.' + (pi + 1), acts = A.call(null, p);
+      let fh = false;
+      for (const a of acts) {
+        const syn = a.syn || (a.words[0] === App.norm(a.lab) ? a.lab : a.words[0]), w0 = String(syn).split(/[\s<\[]/)[0].toUpperCase();
+        const typed = !a.k || /[<\[]/.test(syn);
+        const desc = CMD_DESC[w0] || (App.norm(a.lab) !== App.norm(w0) ? a.lab : '');
+        if (view === 'TYPED') {
+          if (!typed || seen.has(syn)) continue;
+          if (f && !(syn + ' ' + desc + ' ' + ad + ' ' + p.name).toUpperCase().includes(f)) continue;
+          seen.add(syn);
+          if (!heads) { R.push({ kind: 'h', txt: head.name }); heads = true; }
+          R.push({ kind: 'c', txt: syn, rt: ad, desc, fill: w0 + ' ' });
+        } else {
+          if (f && !(syn + ' ' + a.lab + ' ' + ad + ' ' + p.name).toUpperCase().includes(f)) continue;
+          if (!fh) { R.push({ kind: 'h', txt: ad + ' ' + p.name, rt: p.code }); fh = true; }
+          R.push({ kind: 'a', txt: (a.k ? '*' + a.k + ' ' : '   ') + syn, rt: App.norm(syn).includes(App.norm(a.lab)) ? '' : a.lab, fill: p.code + ' ' + (a.k || w0) + ' ' });
+        }
+      }
+    }
+  }
+  return R;
+}
+// pages : blocs entiers (titre gardé avec la ligne suivante, commande avec sa description)
+function cmdPages(R, h) {
+  const P = []; let cur = [], n = 0;
+  const size = r => r.kind === 'c' && r.desc ? 2 : 1;
+  for (let i = 0; i < R.length; i++) {
+    const r = R[i], need = size(r) + (r.kind === 'h' && R[i + 1] ? size(R[i + 1]) : 0);
+    if (n && n + need > h) { P.push(cur); cur = []; n = 0; }
+    cur.push(r); n += size(r);
+  }
+  if (cur.length) P.push(cur);
+  return P.length ? P : [[]];
+}
+PAGES.M92 = { code: 'M92', name: 'COMMANDS', ru: 'КОМАНДЫ', words: ['COMMANDS', 'COMMANDES', 'CMDLIST'], fps: 1,
+  keys: [['1', 'TYPED/ALL', () => { CMDV.view = CMDV.view === 'TYPED' ? 'ALL' : 'TYPED'; CMDV.pg = 0; }, ['VIEW', 'TYPED', 'ALL']],
+    ['2', '◂ PAGE', () => { CMDV.pg = Math.max(0, CMDV.pg - 1); }, ['PREV', 'UP', 'PGUP']],
+    ['3', 'PAGE ▸', () => { CMDV.pg++; }, ['NEXT', 'DOWN', 'PGDN']]],
+  cmds: [[['CMDS', 'CMDLIST'], (app, arg) => { CMDV.filter = String(arg || '').trim().toUpperCase(); CMDV.pg = 0; if (app && app.page !== PAGES.M92) app.go('M92'); app && app.say(CMDV.filter ? 'COMMANDS · FILTER ' + CMDV.filter : 'COMMANDS · ALL'); }, 'CMDS [WORD]']],
+  draw(scr, r) {
+    const R = cmdRows(CMDV.view, CMDV.filter), PP = cmdPages(R, Math.max(4, r.h - 3));     // intérieur du cadre : r.h − 2, moins la ligne d'aide
+    CMDV.pg = Math.min(CMDV.pg, PP.length - 1);
+    const ir = W.panel(scr, r, this.code, this.name, CMDV.view + (CMDV.filter ? ' · ' + CMDV.filter : '') + ' · ' + (CMDV.pg + 1) + '/' + PP.length, t.TD);
+    let y = ir.y;
+    if (!R.length) { noData(scr, ir.x, y, ir.w, 'NO COMMAND MATCHES ' + CMDV.filter + ' · CMDS CLEARS'); return; }
+    for (const e of PP[CMDV.pg]) {
+      if (y >= ir.b - 1) break;
+      if (e.kind === 'h') { sub(scr, ir.x, y++, ir.w, e.txt, e.rt || '', t.F); continue; }
+      const y0 = y;
+      scr.put(ir.x, y, clip(e.txt, ir.w - 5), e.kind === 'c' ? t.B : t.N); W.rjust(scr, ir.r, y++, clip(e.rt || '', e.kind === 'c' ? 4 : Math.max(0, ir.w - slen(e.txt) - 2)), t.D);
+      if (e.kind === 'c' && e.desc && y < ir.b - 1) scr.put(ir.x + 2, y++, clip(e.desc, ir.w - 2), t.F);
+      const fill = e.fill; app_hit(ir.x, y0, ir.w, y - y0, () => openCmd(fill));
+    }
+    scr.put(ir.x, ir.b - 1, clip('TAP = CMD · CMDS <WORD> = FILTER', ir.w), t.F);
   } };
 
 function cmdArm() { armSensorsGesture(); nativeCmd({ cmd: 'perms' }); log('SYS', 'SENSOR PERMISSIONS REQUESTED'); }

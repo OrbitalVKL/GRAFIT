@@ -25,7 +25,7 @@ Code de format = M + adresse : 1 SYSTEMS (M11 BRIEF, M12 OVERVIEW, M13 BARO, M14
 2 ALARMS (M21 ALARMS, M22 FAIL, M23 FEED, M24 SOURCES) · 3 WEATHER (M31 WEATHER, M32 RADAR, M33 FORECAST, M34 WEEK) ·
 4 DAY (M41 DAY, M42 AGENDA, M43 HEALTH) · 5 COMMS (M51 NETWORK, M52 TOWERS, M53 SATCOM, M54 S-16) ·
 6 NAV (M61 ROUTE, M62 GNSS, M63 SATS, M64 TRACK, M65 SKY, M66 KURS) · 7 FINANCE (M71 FINANCE, M72 ACCOUNTS, M73 MONTH, Klad) ·
-8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET).
+8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET, M92 COMMANDS).
 Les adresses citées dans les notes de version ci-dessous sont celles de l'époque.
 
 Données conservées lors d'une mise à jour : stockage de la page (historiques, journal, santé, réveils, pas) et
@@ -139,6 +139,14 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.20.3
+
+- **9.2 COMMANDS** (M92) : les commandes de la ligne CMD, construites à partir de tous les formats (une commande ajoutée
+  apparaît d'elle-même). Vue `TYPED` (par défaut) : les commandes qui prennent une valeur ou n'ont pas de touche, une fois
+  chacune, avec le format où elles agissent et une courte description ; vue `ALL` (`*1`) : toutes les actions par format,
+  avec leur touche `*n`. `*2` / `*3` : pages ; `CMDS <mot>` filtre (`CMDS KEY`), `CMDS` seul retire le filtre. Toucher une
+  ligne ouvre CMD pré-rempli (rien ne s'exécute seul).
 
 ## 1.20.2
 
