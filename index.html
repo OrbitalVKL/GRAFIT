@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.20.1', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.20.2', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1100,19 +1100,27 @@ function nightFind(day3, ev, sm, alarm, until) {
   return best;
 }
 const nightShifted = (bed, wake, day3) => bed >= day3 || wake >= day3 + 9 * 3600;   // couché après 03:00 ou levé après 12:00
-// ---- températures (1.20) : prévision meteoblue (basic-1h + basic-day) ou repli Open-Meteo Météo-France, posée sur la
-// météo Open-Meteo. mbParse : réponse meteoblue → { ms, t, f, days: { 'AAAA-MM-JJ': [maxi, mini] } } (heures locales,
-// parseT donné) ; erreur 'FORMAT' si la réponse n'a pas les champs attendus.
+// ---- prévision (1.20, 1.20.2) : meteoblue (basic-1h + basic-day) ou repli Open-Meteo Météo-France, posée sur la météo
+// Open-Meteo. Champs repris : températures et ressenti, ciel (pictogramme → code WMO), pluie (mm, probabilité), humidité ;
+// par jour : mini, maxi, ciel, cumul, probabilité, heures de pluie. Vent, rafales, UV, nuages, visibilité, pluie au quart
+// d'heure : Open-Meteo. Une valeur absente de la source garde celle d'Open-Meteo.
+// Source normalisée : { ms, h: { t, f, code, pr, pop, rh }, days: { 'AAAA-MM-JJ': { tmax, tmin, code, psum, pop, ph } } }
+// pictogrammes meteoblue (heure 1–35, jour 1–17) → codes WMO d'Open-Meteo
+const MB_PICTO_H = [null, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 45, 45, 45, 3, 3, 3, 3, 63, 73, 65, 75, 95, 95, 75, 95, 80, 85, 61, 71, 61];
+const MB_PICTO_D = [null, 0, 1, 2, 3, 45, 63, 80, 95, 73, 85, 61, 61, 71, 63, 73, 61, 71];
 function mbParse(j, parseT) {
   const h = j && j.data_1h, dd = j && j.data_day;
   if (!h || !Array.isArray(h.time) || !Array.isArray(h.temperature) || h.time.length !== h.temperature.length || h.time.length < 24) throw new Error('FORMAT');
-  const num = v => v == null || v === '' || !isFinite(+v) ? null : +v;
+  const num = v => v == null || v === '' || !isFinite(+v) ? null : +v, arr = (o, k, f = num) => Array.isArray(o[k]) ? o[k].map(f) : null;
+  const pic = M => v => { const n = num(v); return n != null && M[Math.round(n)] != null ? M[Math.round(n)] : null; };
   const days = {};
   if (dd && Array.isArray(dd.time)) dd.time.forEach((d, i) => {
-    const mx = num(dd.temperature_max && dd.temperature_max[i]), mn = num(dd.temperature_min && dd.temperature_min[i]);
-    if (mx != null && mn != null) days[String(d).slice(0, 10)] = [mx, mn];
+    const g = k => num(dd[k] && dd[k][i]);
+    days[String(d).slice(0, 10)] = { tmax: g('temperature_max'), tmin: g('temperature_min'), code: pic(MB_PICTO_D)(dd.pictocode && dd.pictocode[i]),
+      psum: g('precipitation'), pop: g('precipitation_probability'), ph: g('precipitation_hours') };
   });
-  return { ms: h.time.map(parseT), t: h.temperature.map(num), f: Array.isArray(h.felttemperature) ? h.felttemperature.map(num) : null, days };
+  return { ms: h.time.map(parseT), h: { t: arr(h, 'temperature'), f: arr(h, 'felttemperature'), code: arr(h, 'pictocode', pic(MB_PICTO_H)),
+    pr: arr(h, 'precipitation'), pop: arr(h, 'precipitation_probability'), rh: arr(h, 'relativehumidity') }, days };
 }
 // valeur d'une série horaire à l'instant x (ms), interpolée entre deux heures ; null hors de la série ou si un trou
 function serAt(ms, v, x) {
@@ -1122,16 +1130,23 @@ function serAt(ms, v, x) {
   if (v[lo] == null || v[hi] == null || ms[hi] - ms[lo] > 3 * 3600000) return null;
   return v[lo] + (v[hi] - v[lo]) * (x - ms[lo]) / (ms[hi] - ms[lo]);
 }
-// O : valeurs Open-Meteo { temp, feel, ht, happ, days: [[maxi, mini]] } ; hms : heures (ms) ; dates : 'AAAA-MM-JJ' des
-// jours ; S : source (mbParse) ou null. Chaque valeur absente de S garde celle d'Open-Meteo.
+// valeur de l'heure la plus proche (à 30 min près) : codes, cumuls, probabilités (pas d'interpolation)
+function serNear(ms, v, x) {
+  if (!v || !ms.length) return null;
+  let lo = 0, hi = ms.length - 1; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (ms[m] <= x) lo = m; else hi = m; }
+  const k = Math.abs(ms[lo] - x) <= Math.abs(ms[hi] - x) ? lo : hi;
+  return Math.abs(ms[k] - x) <= 1800000 ? v[k] : null;
+}
+// O : valeurs Open-Meteo { temp, feel, code, rh, ht, happ, hcode, hpr, hpop, days: [{ tmax, tmin, code, psum, pop, ph }] } ;
+// hms : heures (ms) ; dates : 'AAAA-MM-JJ' des jours ; S : source normalisée ou null ; T : maintenant (ms)
 function wxOverlay(O, hms, dates, S, T) {
-  const pick = (a, b) => a != null ? a : b;
-  if (!S) return { temp: O.temp, feel: O.feel, ht: O.ht, happ: O.happ, days: O.days };
+  const pick = (a, b) => a != null ? a : b, H = S ? S.h || {} : {};
+  if (!S) return { ...O, days: O.days ? O.days.map(d => ({ ...d })) : O.days };
+  const hr = (k, ov, near) => ov ? ov.map((v, i) => pick(near ? serNear(S.ms, H[k], hms[i]) : serAt(S.ms, H[k], hms[i]), v)) : ov;
   return {
-    temp: pick(serAt(S.ms, S.t, T), O.temp), feel: pick(serAt(S.ms, S.f, T), O.feel),
-    ht: O.ht ? O.ht.map((v, i) => pick(serAt(S.ms, S.t, hms[i]), v)) : O.ht,
-    happ: O.happ ? O.happ.map((v, i) => pick(serAt(S.ms, S.f, hms[i]), v)) : O.happ,
-    days: O.days ? O.days.map((d, i) => S.days[dates[i]] || d) : O.days,
+    temp: pick(serAt(S.ms, H.t, T), O.temp), feel: pick(serAt(S.ms, H.f, T), O.feel), code: pick(serNear(S.ms, H.code, T), O.code), rh: pick(serAt(S.ms, H.rh, T), O.rh),
+    ht: hr('t', O.ht), happ: hr('f', O.happ), hcode: hr('code', O.hcode, true), hpr: hr('pr', O.hpr, true), hpop: hr('pop', O.hpop, true),
+    days: O.days ? O.days.map((d, i) => { const x = (S.days || {})[dates[i]] || {}, o = {}; for (const k of Object.keys(d)) o[k] = pick(x[k], d[k]); return o; }) : O.days,
   };
 }
 // compteurs d'appels (jour, mois), remis à zéro au changement de jour / de mois
@@ -1590,9 +1605,9 @@ async function fetchWx() {
 // radar ne changent pas. Repli : Open-Meteo modèles Météo-France (AROME/ARPEGE, BACKUP AROME en rouge dans le titre des
 // formats météo, ligne au FEED à la bascule et au retour). Sans clé : Météo-France aussi, sans voyant.
 const MB_URL = 'https://my.meteoblue.com/packages/basic-1h_basic-day', MB_EVERY = 4 * 3600, MB_MAXAGE = 9 * 3600, MB_MOVE_KM = 15, MB_DAY = 7, MB_MONTH = 200;
-const WXB_URL = 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&hourly=temperature_2m,apparent_temperature&daily=temperature_2m_max,temperature_2m_min&models=meteofrance_seamless&past_days=1&forecast_days=7&timezone=auto';
+const WXB_URL = 'https://api.open-meteo.com/v1/forecast?latitude=%LAT%&longitude=%LON%&hourly=temperature_2m,apparent_temperature,weather_code,precipitation,precipitation_probability,relative_humidity_2m&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum,precipitation_probability_max,precipitation_hours&models=meteofrance_seamless&past_days=1&forecast_days=7&timezone=auto';
 const MB = { key: '', d: null, err: '', errT: 0, okT: 0, dead: false, busy: 0, cnt: { day: '', n: 0, mon: '', nm: 0 }, tag: '' };
-try { Object.assign(MB, JSON.parse(localStorage.getItem('grafit.mb') || '{}'), { busy: 0 }); } catch (e) { /* */ }
+try { Object.assign(MB, JSON.parse(localStorage.getItem('grafit.mb') || '{}'), { busy: 0 }); if (MB.d && !MB.d.h) MB.d = null; } catch (e) { /* */ }   // 1.20.2 : format étendu, ancienne prévision relue au prochain appel
 const mbSave = () => { try { const { busy, ...o } = MB; localStorage.setItem('grafit.mb', JSON.stringify(o)); } catch (e) { /* */ } };
 const WXB = { d: null, busy: 0, err: '' };
 const mbQuota = () => { const c = quotaRoll(MB.cnt, ymdOf(now())); return { day: c.n, month: c.nm, ok: c.n < MB_DAY && c.nm < MB_MONTH }; };
@@ -1636,8 +1651,9 @@ async function wxbFetch(lat, lon) {
     const j = JSON.parse(await getText(WXB_URL.replace('%LAT%', lat.toFixed(3)).replace('%LON%', lon.toFixed(3))));
     const off = (j.utc_offset_seconds || 0) * 1000, abs = x => Date.parse(x + 'Z') - off, h = j.hourly, dl = j.daily, days = {};
     if (!h || !Array.isArray(h.time)) throw new Error('FORMAT');
-    if (dl && dl.time) dl.time.forEach((d, i) => { const mx = dl.temperature_2m_max[i], mn = dl.temperature_2m_min[i]; if (mx != null && mn != null) days[d] = [mx, mn]; });
-    WXB.d = { ms: h.time.map(abs), t: h.temperature_2m, f: h.apparent_temperature || null, days, at: now(), lat, lon }; WXB.err = '';
+    const g = (o, k, i) => o[k] && o[k][i] != null ? o[k][i] : null;
+    if (dl && dl.time) dl.time.forEach((d, i) => { days[d] = { tmax: g(dl, 'temperature_2m_max', i), tmin: g(dl, 'temperature_2m_min', i), code: g(dl, 'weather_code', i), psum: g(dl, 'precipitation_sum', i), pop: g(dl, 'precipitation_probability_max', i), ph: g(dl, 'precipitation_hours', i) }; });
+    WXB.d = { ms: h.time.map(abs), h: { t: h.temperature_2m || null, f: h.apparent_temperature || null, code: h.weather_code || null, pr: h.precipitation || null, pop: h.precipitation_probability || null, rh: h.relative_humidity_2m || null }, days, at: now(), lat, lon }; WXB.err = '';
   } catch (e) { WXB.err = String(e.message || 'ERROR').toUpperCase(); }
   WXB.busy = 0; wxTempApply();
 }
@@ -1651,15 +1667,16 @@ const wxBackup = () => !!MB.key && live('wx') && SRC.wx.mode === 'live' && SRC.w
 function wxTempApply() {
   if (!live('wx') || SRC.wx.mode !== 'live') return;
   const w = SRC.wx.v; if (!w || !w.hms) return;
-  if (!w.om) w.om = { temp: w.temp, feel: w.feel, ht: w.ht, happ: w.happ, days: w.days ? w.days.map(d => [d.tmax, d.tmin]) : null };
+  if (!w.om) w.om = { temp: w.temp, feel: w.feel, code: w.code, rh: w.rh, ht: w.ht, happ: w.happ, hcode: w.hcode, hpr: w.hpr, hpop: w.hpop,
+    days: w.days ? w.days.map(d => ({ tmax: d.tmax, tmin: d.tmin, code: d.code, psum: d.psum, pop: d.pop, ph: d.ph })) : null };
   const S = wxTempSrc(), r = wxOverlay(w.om, w.hms, w.days ? w.days.map(d => d.date) : [], S ? S.d : null, Date.now());
-  w.temp = r.temp; w.feel = r.feel; w.ht = r.ht; w.happ = r.happ;
-  if (w.days && r.days) w.days.forEach((d, i) => { if (r.days[i]) { d.tmax = r.days[i][0]; d.tmin = r.days[i][1]; } });
+  for (const k of ['temp', 'feel', 'code', 'rh', 'ht', 'happ', 'hcode', 'hpr', 'hpop']) w[k] = r[k];
+  if (w.days && r.days) w.days.forEach((d, i) => { if (r.days[i]) Object.assign(d, r.days[i]); });
   w.tsrc = S ? S.tag : 'OM';
   const tag = !MB.key ? '' : (w.tsrc === 'MB' ? 'MB' : 'BACKUP');
   if (tag !== MB.tag) {
-    if (tag === 'BACKUP') log('WX', 'TEMPERATURES · BACKUP ' + (w.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') + ' · ' + (MB.err || (MB.d ? 'METEOBLUE DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR METEOBLUE')), true);
-    else if (tag === 'MB' && MB.tag === 'BACKUP') log('WX', 'TEMPERATURES · METEOBLUE RESTORED');
+    if (tag === 'BACKUP') log('WX', 'FORECAST · BACKUP ' + (w.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') + ' · ' + (MB.err || (MB.d ? 'METEOBLUE DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR METEOBLUE')), true);
+    else if (tag === 'MB' && MB.tag === 'BACKUP') log('WX', 'FORECAST · METEOBLUE RESTORED');
     MB.tag = tag; mbSave();
   }
 }
@@ -1670,7 +1687,7 @@ function wxTempsTick(lat, lon) {
 }
 function cmdMbKey(app) {
   const raw = String(app && app.rawLine || '').trim().split(/\s+/).slice(1).join('');
-  if (/^OFF$/i.test(raw)) { MB.key = ''; MB.d = null; MB.err = ''; MB.dead = false; MB.tag = ''; mbSave(); log('WX', 'METEOBLUE KEY REMOVED'); wxTempApply(); return app && app.say('METEOBLUE OFF · TEMPERATURES FROM MÉTÉO-FRANCE (OPEN-METEO)'); }
+  if (/^OFF$/i.test(raw)) { MB.key = ''; MB.d = null; MB.err = ''; MB.dead = false; MB.tag = ''; mbSave(); log('WX', 'METEOBLUE KEY REMOVED'); wxTempApply(); return app && app.say('METEOBLUE OFF · FORECAST FROM MÉTÉO-FRANCE (OPEN-METEO)'); }
   if (!/^[A-Za-z0-9_\-]{8,64}$/.test(raw)) return app && app.say('MBKEY <METEOBLUE KEY> · MBKEY OFF', true);
   MB.key = raw; MB.d = null; MB.err = ''; MB.errT = 0; MB.dead = false; mbSave(); log('WX', 'METEOBLUE KEY SET');
   const h = here(); mbTick(h.lat, h.lon, true);
@@ -1708,7 +1725,7 @@ function rainOutlook(w, T = Date.now()) {
         let k = i15, peak = 0, sum = 0; while (wet(k) && k < i15 + 48) { peak = Math.max(peak, w.mp[k] * 4); sum += w.mp[k]; k++; }
         return { state: 'now', rate: w.mp[i15] * 4, peak, sum, stop: wet(k) ? null : w.mt[k] - 9e5, i15 };
       }
-      for (let k = i15 + 1; k < Math.min(w.mt.length, i15 + 24); k++) if (wet(k)) {
+      for (let k = i15 + 1; k < Math.min(w.mt.length, i15 + (w.tsrc && w.tsrc !== 'OM' ? 8 : 24)); k++) if (wet(k)) {   // 1.20.2 : 2 h au quart d'heure, au-delà la prévision horaire
         let e = k, peak = 0, sum = 0; while (wet(e) && e < k + 48) { peak = Math.max(peak, w.mp[e] * 4); sum += w.mp[e]; e++; }
         const at = w.mt[k] - 9e5;
         return { state: 'soon', at, mins: Math.max(0, Math.round((at - T) / 60000)), peak, sum, dur: (e - k) * 15, i15 };
@@ -1716,9 +1733,9 @@ function rainOutlook(w, T = Date.now()) {
     }
   }
   if (w.hms && w.hpr) {
-    const i = w.hms.findIndex(x => x > T);
-    if (i >= 0) {
-      for (let k = i; k < Math.min(w.hms.length, i + 24); k++)
+    const i0 = w.hms.findIndex(x => x > T), i2 = i15 >= 0 && w.tsrc && w.tsrc !== 'OM' ? w.hms.findIndex(x => x > T + 2 * 3600000) : i0, i = i2 >= 0 ? i2 : i0;
+    if (i0 >= 0) {
+      for (let k = i; k < Math.min(w.hms.length, i0 + 24); k++)
         if ((w.hpr[k] || 0) >= RAIN_MMH || (w.hpop && w.hpop[k] >= RAIN_POP)) return { state: 'later', at: w.hms[k] - 36e5, pop: w.hpop ? w.hpop[k] : null, mm: w.hpr[k] || 0, i15 };
       return { state: 'dry', i15 };
     }
@@ -4275,11 +4292,11 @@ function srcFeeds() {
   const api = ([st, msg]) => st === 'OK' ? 'OK' : (st === 'ERR' ? 'ERR' : (st === '—' ? (/APK/.test(msg) ? 'N/A' : 'NO KEY') : 'WAIT'));
   // météo
   { const ts = w && w.tsrc, mq = mbQuota();
-    if (sim) F.push({ grp: 'WX', lab: 'TEMPERATURES', src: 'SIMULATED', st: 'SIM' });
-    else if (MB.key && wl && ts !== 'MB') F.push({ grp: 'WX', lab: 'TEMPERATURES', src: ts === 'AROME' ? 'AROME' : 'OPEN-METEO', st: 'BACKUP', det: 'METEOBLUE · ' + (MB.err || (MB.d ? 'DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR A REPLY')) });
-    else if (MB.key) F.push(Object.assign({ grp: 'WX', lab: 'TEMPERATURES', src: 'METEOBLUE', st: wl && MB.d ? 'OK' : 'WAIT', t: MB.d ? MB.d.at : 0 }, lim(ql(mq.day, MB_DAY, mq.month, MB_MONTH))));
-    else F.push({ grp: 'WX', lab: 'TEMPERATURES', src: ts === 'AROME' ? 'MÉTÉO-FRANCE' : 'OPEN-METEO', st: wl ? 'OK' : (WX.failed ? 'ERR' : 'WAIT'), t: ts === 'AROME' && WXB.d ? WXB.d.at : (w && w.at) || 0 }); }
-  F.push({ grp: 'WX', lab: 'FORECAST', src: sim ? 'SIMULATED' : 'OPEN-METEO', st: sim ? 'SIM' : (WX.failed ? 'ERR' : (wl ? 'OK' : 'WAIT')), t: wl ? w.at : 0, det: WX.failed && !sim ? 'FEED UNREACHABLE' : '' });
+    if (sim) F.push({ grp: 'WX', lab: 'FORECAST', src: 'SIMULATED', st: 'SIM' });
+    else if (MB.key && wl && ts !== 'MB') F.push({ grp: 'WX', lab: 'FORECAST', src: ts === 'AROME' ? 'AROME' : 'OPEN-METEO', st: 'BACKUP', det: 'METEOBLUE · ' + (MB.err || (MB.d ? 'DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR A REPLY')) });
+    else if (MB.key) F.push(Object.assign({ grp: 'WX', lab: 'FORECAST', src: 'METEOBLUE', st: wl && MB.d ? 'OK' : 'WAIT', t: MB.d ? MB.d.at : 0 }, lim(ql(mq.day, MB_DAY, mq.month, MB_MONTH))));
+    else F.push({ grp: 'WX', lab: 'FORECAST', src: ts === 'AROME' ? 'MÉTÉO-FRANCE' : 'OPEN-METEO', st: wl ? 'OK' : (WX.failed ? 'ERR' : 'WAIT'), t: ts === 'AROME' && WXB.d ? WXB.d.at : (w && w.at) || 0 }); }
+  F.push({ grp: 'WX', lab: 'WIND · UV', src: sim ? 'SIMULATED' : 'OPEN-METEO', st: sim ? 'SIM' : (WX.failed ? 'ERR' : (wl ? 'OK' : 'WAIT')), t: wl ? w.at : 0, det: WX.failed && !sim ? 'FEED UNREACHABLE' : '' });
   F.push({ grp: 'WX', lab: 'RAIN 15 MIN', src: 'OPEN-METEO', st: RDR.fcErr ? 'ERR' : (RDR.fcT ? 'OK' : 'WAIT'), t: RDR.fcT, det: RDR.fcErr });
   F.push({ grp: 'WX', lab: 'RADAR', src: RDR.sim ? 'SIMULATED' : 'RAINVIEWER', st: RDR.sim ? 'SIM' : (RDR.metaErr ? 'ERR' : (RDR.metaT ? 'OK' : 'WAIT')), t: RDR.metaT, det: RDR.sim ? '' : RDR.metaErr });
   // services
@@ -6705,7 +6722,7 @@ function drawApi(scr, ir) {                                   // 3.4 [*8] : vue 
   if (RTE.ttKey) qd(RTE.ttKey.slice(0, 4), RTE.cnt.tn, TT_DAY, null, RTE.cnt.tnm, TT_MONTH);
   { const mq = mbQuota(), st = !MB.key ? ['—'] : (MB.err ? ['ERR'] : (MB.okT ? ['OK'] : ['?']));
     row('METEOBLUE', st, MB.okT);
-    if (!MB.key) det('NO KEY · MBKEY <KEY> · TEMPERATURES FROM MÉTÉO-FRANCE', t.F);
+    if (!MB.key) det('NO KEY · MBKEY <KEY> · FORECAST FROM MÉTÉO-FRANCE', t.F);
     else { if (MB.err) det(MB.err + (MB.errT ? ' · ' + hhmm(MB.errT) : '') + (wxBackup() ? ' · BACKUP AROME' : ''), t.RB); qd(MB.key.slice(0, 4), mq.day, MB_DAY, null, mq.month, MB_MONTH); } }
   row('BISON FUTE', s.bf, ok.bf); det(s.bf[0] === 'ERR' ? s.bf[1] : (s.bf[0] === 'OK' ? 'OPEN DATA · NO KEY · NATIONAL ROADS' : s.bf[1]), s.bf[0] === 'ERR' ? t.RB : t.F);
   row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M32') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);

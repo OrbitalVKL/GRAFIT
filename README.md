@@ -140,6 +140,17 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.20.2
+
+- **Prévision meteoblue étendue** (même requête, aucun crédit en plus) : en plus des températures, le ciel (pictogrammes
+  meteoblue convertis en codes WMO, heure par heure et par jour), la pluie (mm et probabilité par heure ; cumul,
+  probabilité et heures de pluie par jour) et l'humidité viennent de meteoblue — 3.1, 3.3, 3.4, briefing, widget.
+- Restent Open-Meteo : pluie au quart d'heure, vent et rafales, UV, nuages en %, visibilité ; radar RainViewer.
+- **Pluie** : les 2 prochaines heures suivent l'observation (radar, quart d'heure) ; au-delà, la prévision horaire meteoblue.
+- **Repli** Météo-France (AROME) étendu aux mêmes champs, `BACKUP AROME` en rouge. Une valeur absente de la source garde
+  celle d'Open-Meteo.
+- **2.4 SOURCES** : `FORECAST` METEOBLUE (ou BACKUP AROME) et `WIND · UV` OPEN-METEO.
+
 ## 1.20.1
 
 - **1.2 OVERVIEW** : le tableau des 13 voyants (qui dépassait de l'encart) laisse place aux seules alarmes allumées, une

@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const m = html.match(/\/\/ <logic>\n([\s\S]*?)\/\/ <\/logic>/);
 if (!m) { console.error('bloc // <logic> introuvable dans index.html'); process.exit(1); }
-const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
+const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, serNear, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
 
 let ok = 0, ko = 0;
 const test = (name, fn) => { try { fn(); ok++; console.log('  ok   ' + name); } catch (e) { ko++; console.log('  FAIL ' + name + '\n       ' + e.message); } };
@@ -185,22 +185,45 @@ test('nuit en cours (pas de réveil encore) → rien', () => {
 console.log('\nWEATHER · TEMPERATURES');
 const pT = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13), 0);
 const hours = mk(0, 47, 1, i => '2026-11-05 ' + String(i % 24).padStart(2, '0') + ':00').map((x, i) => i < 24 ? x : x.replace('11-05', '11-06'));
-const MBJ = { data_1h: { time: hours, temperature: hours.map((_, i) => 10 + i * 0.1), felttemperature: hours.map((_, i) => 8 + i * 0.1) },
-  data_day: { time: ['2026-11-05', '2026-11-06'], temperature_max: [14.2, 15.1], temperature_min: [6.3, 7.4] } };
-test('mbParse : heures, ressenti, mini/maxi par jour', () => {
+const MBJ = { data_1h: { time: hours, temperature: hours.map((_, i) => 10 + i * 0.1), felttemperature: hours.map((_, i) => 8 + i * 0.1),
+    pictocode: hours.map((_, i) => i < 3 ? 22 : 33), precipitation: hours.map((_, i) => i < 3 ? 0 : 0.8), precipitation_probability: hours.map(() => 70), relativehumidity: hours.map(() => 88) },
+  data_day: { time: ['2026-11-05', '2026-11-06'], temperature_max: [14.2, 15.1], temperature_min: [6.3, 7.4], pictocode: [6, 2], precipitation: [4.2, 0], precipitation_probability: [80, 5], precipitation_hours: [5, 0] } };
+test('mbParse : heures, ressenti, ciel, pluie, humidité ; jours complets', () => {
   const S = L.mbParse(MBJ, pT);
-  assert.strictEqual(S.ms.length, 48); assert.strictEqual(S.t[1], 10.1); assert.deepStrictEqual(S.days['2026-11-06'], [15.1, 7.4]);
+  assert.strictEqual(S.ms.length, 48); assert.strictEqual(S.h.t[1], 10.1); assert.strictEqual(S.h.code[0], 3); assert.strictEqual(S.h.code[5], 61);
+  assert.strictEqual(S.h.pr[5], 0.8); assert.strictEqual(S.h.rh[0], 88);
+  assert.deepStrictEqual(S.days['2026-11-05'], { tmax: 14.2, tmin: 6.3, code: 63, psum: 4.2, pop: 80, ph: 5 });
+  assert.strictEqual(S.days['2026-11-06'].code, 1);
+});
+test('mbParse : pictogramme inconnu → null (Open-Meteo gardé)', () => {
+  const j = JSON.parse(JSON.stringify(MBJ)); j.data_1h.pictocode[0] = 99; assert.strictEqual(L.mbParse(j, pT).h.code[0], null);
+});
+test('mbParse : champs absents (température seule) → null, sans erreur', () => {
+  const S = L.mbParse({ data_1h: { time: hours, temperature: hours.map(() => 5) } }, pT);
+  assert.strictEqual(S.h.code, null); assert.strictEqual(S.h.pr, null);
 });
 test('mbParse : réponse sans data_1h → FORMAT', () => { assert.throws(() => L.mbParse({ metadata: {} }, pT), /FORMAT/); });
-test('wxOverlay : maintenant interpolé, heures et jours remplacés, le reste gardé', () => {
-  const S = L.mbParse(MBJ, pT), hms = [pT('2026-11-05 01:00'), pT('2026-11-07 01:00')];
-  const O = { temp: 0, feel: 0, ht: [1, 2], happ: [3, 4], days: [[20, 0], [21, 1], [22, 2]] };
+const OD = (tmax, tmin) => ({ tmax, tmin, code: 0, psum: 0, pop: 0, ph: 0 });
+test('wxOverlay : maintenant interpolé ; heures (temp, ciel, pluie) et jours remplacés ; le reste gardé', () => {
+  const S = L.mbParse(MBJ, pT), hms = [pT('2026-11-05 01:00'), pT('2026-11-05 05:00'), pT('2026-11-07 01:00')];
+  const O = { temp: 0, feel: 0, code: 0, rh: 50, ht: [1, 1, 2], happ: [3, 3, 4], hcode: [0, 0, 0], hpr: [0, 0, 0], hpop: [0, 0, 9], days: [OD(20, 0), OD(21, 1), OD(22, 2)] };
   const r = L.wxOverlay(O, hms, ['2026-11-05', '2026-11-06', '2026-11-07'], S, pT('2026-11-05 01:00') + 1800000);
-  assert.ok(Math.abs(r.temp - 10.15) < 1e-9); assert.deepStrictEqual(r.ht, [10.1, 2]); assert.deepStrictEqual(r.days, [[14.2, 6.3], [15.1, 7.4], [22, 2]]);
+  assert.ok(Math.abs(r.temp - 10.15) < 1e-9); assert.deepStrictEqual(r.ht, [10.1, 10.5, 2]); assert.deepStrictEqual(r.hcode, [3, 61, 0]);
+  assert.deepStrictEqual(r.hpr, [0, 0.8, 0]); assert.deepStrictEqual(r.hpop, [70, 70, 9]); assert.strictEqual(r.rh, 88);
+  assert.deepStrictEqual(r.days[0], { tmax: 14.2, tmin: 6.3, code: 63, psum: 4.2, pop: 80, ph: 5 }); assert.deepStrictEqual(r.days[2], OD(22, 2));
+});
+test('wxOverlay : une valeur absente de la source garde celle d\'Open-Meteo', () => {
+  const S = L.mbParse({ data_1h: { time: hours, temperature: hours.map(() => 5) } }, pT), hms = [pT('2026-11-05 01:00')];
+  const r = L.wxOverlay({ temp: 0, feel: 1, code: 2, rh: 50, ht: [0], happ: [0], hcode: [2], hpr: [0.4], hpop: [30], days: [OD(9, 1)] }, hms, ['2026-11-05'], S, hms[0]);
+  assert.strictEqual(r.temp, 5); assert.strictEqual(r.code, 2); assert.deepStrictEqual(r.hpr, [0.4]); assert.deepStrictEqual(r.days[0], OD(9, 1));
 });
 test('wxOverlay sans source : Open-Meteo inchangé', () => {
-  const O = { temp: 5, feel: 4, ht: [1], happ: [2], days: [[3, 1]] };
+  const O = { temp: 5, feel: 4, code: 1, rh: 60, ht: [1], happ: [2], hcode: [1], hpr: [0], hpop: [0], days: [OD(3, 1)] };
   assert.deepStrictEqual(L.wxOverlay(O, [0], ['x'], null, 0), O);
+});
+test('serNear : heure la plus proche à 30 min près, sinon null', () => {
+  const ms = [0, 3600000, 7200000], v = [1, 2, 3];
+  assert.strictEqual(L.serNear(ms, v, 3500000), 2); assert.strictEqual(L.serNear(ms, v, 9500000), null);
 });
 test('quotaRoll : remise à zéro au changement de jour et de mois', () => {
   const c = { day: '20261104', n: 6, mon: '202611', nm: 150 };
