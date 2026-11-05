@@ -140,6 +140,21 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.20.1
+
+- **1.2 OVERVIEW** : le tableau des 13 voyants (qui dépassait de l'encart) laisse place aux seules alarmes allumées, une
+  ligne chacune (CRIT en inversé, CAUT en rouge, INFO, ACK estompé), `+ n MORE · 2.1` si elles ne tiennent pas ;
+  `ALL 13 NOMINAL · DETAIL 2.1` sinon. Le tableau complet reste en 2.1.
+- **2.4 SOURCES** en trois sections, sans passer par `*8` :
+  - `SENSORS` : capteurs du téléphone en tableau ; blanc = LIVE, rouge = HS (simulé ou muet dans l'APK, avec la raison
+    en dessous), estompé = absent ou désarmé.
+  - `WEATHER` : source réelle de chaque donnée (températures METEOBLUE ou BACKUP AROME en rouge, prévision OPEN-METEO,
+    pluie au quart d'heure, radar RAINVIEWER), état et âge de la dernière réponse.
+  - `SERVICES` : trafic (Google Routes), incidents (TomTom), routes (Bison Futé), satellites (CelesTrak), antennes (ANFR),
+    finances (Klad), PC (lien S-16), mises à jour (GitHub). Une erreur est détaillée sur la ligne suivante ; les
+    compteurs n'apparaissent qu'à l'approche du plafond.
+  - `*8` garde le détail des clés, la signature et le contrôle `*9`.
+
 ## 1.20.0
 
 - **Températures meteoblue** (`MBKEY <clé>`, `MBKEY OFF`) : prévision meteoblue (une requête au plus toutes les 4 h ou
