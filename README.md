@@ -140,6 +140,14 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.20.4
+
+- **Repli météo** : plus de faux `BACKUP OPEN-METEO` au démarrage. Le journal attend les réponses meteoblue et AROME
+  avant d'annoncer une bascule, puis note chaque changement de source (`BACKUP AROME`, `BACKUP OPEN-METEO`,
+  `METEOBLUE RESTORED`) avec la raison de chaque source manquante (`METEOBLUE DAILY CAP · AROME HTTP 429`…).
+- La dernière prévision AROME est gardée sur l'appareil : au redémarrage, le repli est disponible tout de suite.
+- **2.4 SOURCES** : en `BACKUP OPEN-METEO`, la ligne de détail donne aussi la raison côté AROME.
+
 ## 1.20.3
 
 - **9.2 COMMANDS** (M92) : les commandes de la ligne CMD, construites à partir de tous les formats (une commande ajoutée

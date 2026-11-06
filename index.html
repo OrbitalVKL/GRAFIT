@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.20.3', BUILD: '20261105', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.20.4', BUILD: '20261106', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1610,6 +1610,10 @@ const MB = { key: '', d: null, err: '', errT: 0, okT: 0, dead: false, busy: 0, c
 try { Object.assign(MB, JSON.parse(localStorage.getItem('grafit.mb') || '{}'), { busy: 0 }); if (MB.d && !MB.d.h) MB.d = null; } catch (e) { /* */ }   // 1.20.2 : format étendu, ancienne prévision relue au prochain appel
 const mbSave = () => { try { const { busy, ...o } = MB; localStorage.setItem('grafit.mb', JSON.stringify(o)); } catch (e) { /* */ } };
 const WXB = { d: null, busy: 0, err: '' };
+try { const o = JSON.parse(localStorage.getItem('grafit.wxb') || 'null'); if (o && Array.isArray(o.ms) && o.h && o.at) WXB.d = o; } catch (e) { /* */ }   // 1.20.4 : repli AROME gardé au redémarrage
+// pourquoi le repli AROME n'est pas utilisable (journal, 2.4)
+const wxbWhy = () => WXB.err ? WXB.err : (!WXB.d ? 'NO DATA YET' : (now() - WXB.d.at >= 3 * 3600 ? 'DATA ' + ageTxt(now() - WXB.d.at) + ' OLD' : 'DATA FOR ANOTHER PLACE'));
+const mbWhy = () => MB.err || (MB.d ? 'DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'NO DATA YET');
 const mbQuota = () => { const c = quotaRoll(MB.cnt, ymdOf(now())); return { day: c.n, month: c.nm, ok: c.n < MB_DAY && c.nm < MB_MONTH }; };
 const mbNear = d => { const h = here(); return d && A.dist(h.lat, h.lon, d.lat, d.lon) < MB_MOVE_KM; };
 const mbValid = () => !!(MB.key && MB.d && now() - MB.d.at < MB_MAXAGE && mbNear(MB.d));
@@ -1654,6 +1658,7 @@ async function wxbFetch(lat, lon) {
     const g = (o, k, i) => o[k] && o[k][i] != null ? o[k][i] : null;
     if (dl && dl.time) dl.time.forEach((d, i) => { days[d] = { tmax: g(dl, 'temperature_2m_max', i), tmin: g(dl, 'temperature_2m_min', i), code: g(dl, 'weather_code', i), psum: g(dl, 'precipitation_sum', i), pop: g(dl, 'precipitation_probability_max', i), ph: g(dl, 'precipitation_hours', i) }; });
     WXB.d = { ms: h.time.map(abs), h: { t: h.temperature_2m || null, f: h.apparent_temperature || null, code: h.weather_code || null, pr: h.precipitation || null, pop: h.precipitation_probability || null, rh: h.relative_humidity_2m || null }, days, at: now(), lat, lon }; WXB.err = '';
+    try { localStorage.setItem('grafit.wxb', JSON.stringify(WXB.d)); } catch (e) { /* */ }
   } catch (e) { WXB.err = String(e.message || 'ERROR').toUpperCase(); }
   WXB.busy = 0; wxTempApply();
 }
@@ -1673,10 +1678,15 @@ function wxTempApply() {
   for (const k of ['temp', 'feel', 'code', 'rh', 'ht', 'happ', 'hcode', 'hpr', 'hpop']) w[k] = r[k];
   if (w.days && r.days) w.days.forEach((d, i) => { if (r.days[i]) Object.assign(d, r.days[i]); });
   w.tsrc = S ? S.tag : 'OM';
-  const tag = !MB.key ? '' : (w.tsrc === 'MB' ? 'MB' : 'BACKUP');
-  if (tag !== MB.tag) {
-    if (tag === 'BACKUP') log('WX', 'FORECAST · BACKUP ' + (w.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') + ' · ' + (MB.err || (MB.d ? 'METEOBLUE DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR METEOBLUE')), true);
-    else if (tag === 'MB' && MB.tag === 'BACKUP') log('WX', 'FORECAST · METEOBLUE RESTORED');
+  // 1.20.4 : journal seulement une fois les réponses meteoblue et AROME arrivées (plus de faux BACKUP OPEN-METEO
+  // au démarrage), à chaque changement de source (MB, AROME, OM), avec la raison
+  const tag = !MB.key ? '' : w.tsrc;
+  const pending = (MB.busy && now() - MB.busy < 60) || (WXB.busy && now() - WXB.busy < 30);
+  if (tag !== MB.tag && !pending) {
+    const was = MB.tag, wasB = was === 'AROME' || was === 'OM' || was === 'BACKUP';
+    if (tag === 'MB') { if (wasB) log('WX', 'FORECAST · METEOBLUE RESTORED'); }
+    else if (tag === 'AROME') log('WX', 'FORECAST · BACKUP AROME · METEOBLUE ' + mbWhy(), true);
+    else if (tag === 'OM') log('WX', 'FORECAST · BACKUP OPEN-METEO · METEOBLUE ' + mbWhy() + ' · AROME ' + wxbWhy(), true);
     MB.tag = tag; mbSave();
   }
 }
@@ -4370,7 +4380,7 @@ function srcFeeds() {
   // météo
   { const ts = w && w.tsrc, mq = mbQuota();
     if (sim) F.push({ grp: 'WX', lab: 'FORECAST', src: 'SIMULATED', st: 'SIM' });
-    else if (MB.key && wl && ts !== 'MB') F.push({ grp: 'WX', lab: 'FORECAST', src: ts === 'AROME' ? 'AROME' : 'OPEN-METEO', st: 'BACKUP', det: 'METEOBLUE · ' + (MB.err || (MB.d ? 'DATA ' + ageTxt(now() - MB.d.at) + ' OLD' : 'WAITING FOR A REPLY')) });
+    else if (MB.key && wl && ts !== 'MB') F.push({ grp: 'WX', lab: 'FORECAST', src: ts === 'AROME' ? 'AROME' : 'OPEN-METEO', st: 'BACKUP', det: 'METEOBLUE · ' + mbWhy() + (ts === 'AROME' ? '' : ' · AROME · ' + wxbWhy()) });
     else if (MB.key) F.push(Object.assign({ grp: 'WX', lab: 'FORECAST', src: 'METEOBLUE', st: wl && MB.d ? 'OK' : 'WAIT', t: MB.d ? MB.d.at : 0 }, lim(ql(mq.day, MB_DAY, mq.month, MB_MONTH))));
     else F.push({ grp: 'WX', lab: 'FORECAST', src: ts === 'AROME' ? 'MÉTÉO-FRANCE' : 'OPEN-METEO', st: wl ? 'OK' : (WX.failed ? 'ERR' : 'WAIT'), t: ts === 'AROME' && WXB.d ? WXB.d.at : (w && w.at) || 0 }); }
   F.push({ grp: 'WX', lab: 'WIND · UV', src: sim ? 'SIMULATED' : 'OPEN-METEO', st: sim ? 'SIM' : (WX.failed ? 'ERR' : (wl ? 'OK' : 'WAIT')), t: wl ? w.at : 0, det: WX.failed && !sim ? 'FEED UNREACHABLE' : '' });
@@ -6800,7 +6810,7 @@ function drawApi(scr, ir) {                                   // 3.4 [*8] : vue 
   { const mq = mbQuota(), st = !MB.key ? ['—'] : (MB.err ? ['ERR'] : (MB.okT ? ['OK'] : ['?']));
     row('METEOBLUE', st, MB.okT);
     if (!MB.key) det('NO KEY · MBKEY <KEY> · FORECAST FROM MÉTÉO-FRANCE', t.F);
-    else { if (MB.err) det(MB.err + (MB.errT ? ' · ' + hhmm(MB.errT) : '') + (wxBackup() ? ' · BACKUP AROME' : ''), t.RB); qd(MB.key.slice(0, 4), mq.day, MB_DAY, null, mq.month, MB_MONTH); } }
+    else { if (MB.err) det(MB.err + (MB.errT ? ' · ' + hhmm(MB.errT) : '') + (wxBackup() ? ' · BACKUP ' + (SRC.wx.v.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') : ''), t.RB); qd(MB.key.slice(0, 4), mq.day, MB_DAY, null, mq.month, MB_MONTH); } }
   row('BISON FUTE', s.bf, ok.bf); det(s.bf[0] === 'ERR' ? s.bf[1] : (s.bf[0] === 'OK' ? 'OPEN DATA · NO KEY · NATIONAL ROADS' : s.bf[1]), s.bf[0] === 'ERR' ? t.RB : t.F);
   row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M32') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);
   y++;
