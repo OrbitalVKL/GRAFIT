@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const m = html.match(/\/\/ <logic>\n([\s\S]*?)\/\/ <\/logic>/);
 if (!m) { console.error('bloc // <logic> introuvable dans index.html'); process.exit(1); }
-const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, serNear, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
+const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finBudKey, finBudKeys, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, serNear, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
 
 let ok = 0, ko = 0;
 const test = (name, fn) => { try { fn(); ok++; console.log('  ok   ' + name); } catch (e) { ko++; console.log('  FAIL ' + name + '\n       ' + e.message); } };
@@ -82,29 +82,56 @@ test('+4 min seulement → rien (seuil en minutes)', () => { assert.strictEqual(
 test('+20 % seulement → rien (seuil en %)', () => { assert.strictEqual(L.rteSuspect(1800, 1500, false, 25, 5), false); });
 
 // ------------------------------------------------------------------ finances
-console.log('FINANCE · SIGNALS');
+console.log('FINANCE · SIGNALS (1.21 : urgences en CRIT, dépassements de budget en CAUT)');
 test('montants en euros', () => {
   assert.strictEqual(L.parseEur('DÉCOUVERT −1 234,56 €'), 1234.56);
   assert.strictEqual(L.parseEur('solde -85.20 EUR'), 85.2);
   assert.strictEqual(L.parseEur('1.234 €'), 1234);
   assert.strictEqual(L.parseEur('sans montant'), null);
 });
-const S0 = { accounts: [{ kind: 'current', label: 'CC', balance: -120 }], alerts: [{ level: 'caut', code: 'OVERDRAFT', text: 'Compte courant à découvert' }, { level: 'info', code: 'SYNC_OK', text: '' }] };
-test('découvert sans montant : profondeur du solde négatif ; les INFO sont ignorées', () => {
-  assert.deepStrictEqual(L.finSignals(S0), [{ k: 'AL:OVERDRAFT', lvl: 1, mag: 120, u: 'eur' }]);
+const acc = (label, balance) => ({ kind: 'current', label, balance });
+test('solde négatif : CRIT, profondeur du compte nommé ; les INFO sont ignorées', () => {
+  const s = L.finSignals({ accounts: [acc('COURANT', -120)], alerts: [{ level: 'crit', code: 'NEGATIVE_BALANCE', text: 'COURANT' }, { level: 'info', code: 'TO_REVIEW', text: '3 OPÉRATIONS À VOIR' }] });
+  assert.strictEqual(s.length, 1); assert.deepStrictEqual([s[0].k, s[0].lvl, s[0].mag, s[0].cat], ['AL:NEGATIVE_BALANCE:COURANT', 2, 120, 'act']);
 });
-test('alerte sans code : clé stable quand le montant change', () => {
-  const a = L.finSignals({ alerts: [{ level: 'caut', text: 'Découvert de 120,00 €' }] })[0];
-  const b = L.finSignals({ alerts: [{ level: 'caut', text: 'Découvert de 260,00 €' }] })[0];
-  assert.strictEqual(a.k, b.k); assert.strictEqual(a.mag, 120); assert.strictEqual(b.mag, 260);
+test('compte courant débiteur sans alerte Klad → CRIT quand même', () => {
+  const s = L.finSignals({ accounts: [acc('COMPTE COMMUN', -40)] });
+  assert.deepStrictEqual([s[0].k, s[0].lvl, s[0].mag], ['AL:NEGATIVE_BALANCE:COMPTE_COMMUN', 2, 40]);
 });
-test('reste à vivre négatif et comptes à vérifier', () => {
-  const s = L.finSignals({ month: { left_to_live: -40 }, attention: { accounts_to_check: 2 } });
-  assert.deepStrictEqual(s, [{ k: 'LTL', lvl: 1, mag: 40, u: 'eur' }, { k: 'ACC', lvl: 1, mag: 2, u: 'n' }]);
+test('débit imprévu sur le commun (alerte Klad 1.3.2, ou champ seul) → CRIT, compté en débits non vus', () => {
+  const a = L.finSignals({ commun: { unplanned: { n: 2, amount: 184.3, unseen: 1 } }, alerts: [{ level: 'crit', code: 'COMMUN_UNPLANNED', text: '1 DÉBIT IMPRÉVU · COMMUN' }] });
+  assert.deepStrictEqual([a.length, a[0].k, a[0].lvl, a[0].mag, a[0].u], [1, 'AL:COMMUN_UNPLANNED', 2, 1, 'n']);
+  assert.strictEqual(L.finSignals({ commun: { unplanned: { n: 2, amount: 184.3, unseen: 2 } } })[0].mag, 2);
+  assert.deepStrictEqual(L.finSignals({ commun: { unplanned: { n: 2, amount: 184.3 } } }), []);    // tous vus : plus d'alarme
+});
+test('ne remontent plus : CAUT de Klad (synchro, comptes à vérifier, découvert lointain), reste à vivre < 0', () => {
+  const s = L.finSignals({ month: { left_to_live: -40 }, attention: { accounts_to_check: 2 },
+    alerts: [{ level: 'caut', code: 'ACCOUNT_CHECK', text: '2 COMPTES À VÉRIFIER' }, { level: 'caut', code: 'SYNC_FAILED', text: 'COURANT' },
+      { level: 'caut', code: 'OVERDRAFT_RISK', text: 'COMPTE COMMUN · 12/03' }, { level: 'caut', code: 'BANK_CONSENT_EXPIRING', text: 'COURANT · 20 J' }] });
+  assert.deepStrictEqual(s, []);
+});
+test('remontent en CRIT : commun sous zéro sous 31 jours, accès banque à 3 jours, autre alerte crit', () => {
+  const s = L.finSignals({ commun: { low: { date: '2026-11-20', amount: -230 } }, alerts: [{ level: 'crit', code: 'OVERDRAFT_RISK', text: 'COMPTE COMMUN · 20/11' },
+    { level: 'crit', code: 'BANK_CONSENT_EXPIRING', text: 'COURANT · 2 J' }, { level: 'crit', text: 'Découvert de 120,00 €' }] });
+  assert.deepStrictEqual(s.map(x => [x.k, x.lvl]), [['AL:OVERDRAFT_RISK', 2], ['AL:BANK_CONSENT_EXPIRING', 2], ['AL:DECOUVERT_DE_#', 2]]);
+  assert.strictEqual(s[0].mag, 230); assert.strictEqual(s[2].mag, 120);
+});
+test('dépassement de budget : CAUT poste par poste ; acquitté → ne remonte plus', () => {
+  const S1 = { month: { from: '2026-10-28', to: '2026-11-27' }, alerts: [{ level: 'caut', code: 'BUDGET_OVER', text: 'ALIMENTATION +12 %' }, { level: 'caut', code: 'BUDGET_OVER', text: 'LOISIRS +5 %' }] };
+  const s = L.finSignals(S1);
+  assert.deepStrictEqual(s.map(x => [x.k, x.lvl, x.mag, x.cat]), [['BO:ALIMENTATION', 1, 12, 'bud'], ['BO:LOISIRS', 1, 5, 'bud']]);
+  assert.strictEqual(L.finBudKey('ALIMENTATION +40 %'), 'BO:ALIMENTATION');               // même clé quand le dépassement grandit
+  const fb = { cycle: '2026-10-28', keys: ['BO:ALIMENTATION'] };
+  assert.deepStrictEqual(L.finSignals(S1, L.finBudKeys(fb, S1)).map(x => x.k), ['BO:LOISIRS']);
+  assert.deepStrictEqual(L.finBudKeys(fb, { month: { from: '2026-11-28' } }), []);           // nouveau cycle : acquittements effacés
+});
+test('les urgences passent avant les dépassements', () => {
+  const s = L.finSignals({ accounts: [acc('COURANT', -10)], alerts: [{ level: 'caut', code: 'BUDGET_OVER', text: 'LOISIRS +5 %' }] });
+  assert.deepStrictEqual(s.map(x => x.lvl), [2, 1]);
 });
 
 console.log('FINANCE · ACK');
-const S = (bal, extra = []) => L.finSignals({ accounts: [{ kind: 'current', balance: bal }], alerts: [{ level: 'caut', code: 'OVERDRAFT', text: '' }, ...extra] });
+const S = (bal, extra = []) => L.finSignals({ accounts: [acc('COURANT', bal)], alerts: [{ level: 'crit', code: 'NEGATIVE_BALANCE', text: 'COURANT' }, ...extra] });
 const ack = L.finAckMake(S(-120), T, 48);
 test('acquitté : silencieux, temps restant', () => {
   const e = L.finAckEval(ack, S(-120), T + 17 * H, 50);
@@ -116,13 +143,25 @@ test('aggravation nette (+80 €) → retour immédiat', () => {
   assert.strictEqual(e.st, 'back'); assert.strictEqual(e.why, 'worse'); assert.strictEqual(e.delta, 80);
 });
 test('seuil d\'aggravation réglable (100 €) → +80 € reste silencieux', () => { assert.strictEqual(L.finAckEval(ack, S(-200), T + H, 100).st, 'paused'); });
-test('nouvelle alerte d\'un autre type → retour immédiat', () => {
-  const e = L.finAckEval(ack, S(-120, [{ level: 'caut', code: 'BANK_CONSENT', text: '' }]), T + H, 50);
-  assert.strictEqual(e.st, 'back'); assert.strictEqual(e.why, 'new'); assert.strictEqual(e.k, 'AL:BANK_CONSENT');
+test('nouvelle urgence d\'un autre type → retour immédiat', () => {
+  const e = L.finAckEval(ack, S(-120, [{ level: 'crit', code: 'BANK_CONSENT_EXPIRING', text: 'COURANT · 1 J' }]), T + H, 50);
+  assert.strictEqual(e.st, 'back'); assert.strictEqual(e.why, 'new'); assert.strictEqual(e.k, 'AL:BANK_CONSENT_EXPIRING');
 });
-test('CAUT → CRIT → retour immédiat', () => {
-  const crit = L.finSignals({ accounts: [{ kind: 'current', balance: -120 }], alerts: [{ level: 'crit', code: 'OVERDRAFT' }] });
-  assert.strictEqual(L.finAckEval(ack, crit, T + H, 50).why, 'crit');
+test('un autre compte passe dans le rouge → retour immédiat', () => {
+  const s = L.finSignals({ accounts: [acc('COURANT', -120), acc('COMPTE COMMUN', -15)], alerts: [{ level: 'crit', code: 'NEGATIVE_BALANCE', text: 'COURANT' }] });
+  assert.strictEqual(L.finAckEval(ack, s, T + H, 50).why, 'new');
+});
+test('un débit imprévu de plus sur le commun → retour', () => {
+  const u = n => L.finSignals({ commun: { unplanned: { n, amount: 50 * n, unseen: n } } });
+  assert.strictEqual(L.finAckEval(L.finAckMake(u(1), T, 48), u(2), T + H, 50).why, 'worse');
+  assert.strictEqual(L.finAckEval(L.finAckMake(u(1), T, 48), [], T + H, 50).st, 'cleared');      // vu dans Klad
+});
+test('nouveau dépassement de budget pendant la pause → retour (nouvelle alerte)', () => {
+  assert.strictEqual(L.finAckEval(ack, S(-120, [{ level: 'caut', code: 'BUDGET_OVER', text: 'LOISIRS +5 %' }]), T + H, 50).why, 'new');
+});
+test('dépassement qui grandit : jamais « worse » (seul l\'acquittement par cycle compte)', () => {
+  const b = p => L.finSignals({ alerts: [{ level: 'caut', code: 'BUDGET_OVER', text: 'LOISIRS +' + p + ' %' }] });
+  assert.strictEqual(L.finAckEval(L.finAckMake(b(5), T, 48), b(60), T + H, 50).st, 'paused');
 });
 test('fin des 48 h, découvert toujours signalé → expired (l\'alarme revient)', () => {
   assert.strictEqual(L.finAckEval(ack, S(-120), T + 48 * H, 50).st, 'expired');
@@ -130,15 +169,11 @@ test('fin des 48 h, découvert toujours signalé → expired (l\'alarme revient)
 });
 test('Klad ne signale plus rien → ACK effacé', () => { assert.strictEqual(L.finAckEval(ack, [], T + H, 50).st, 'cleared'); });
 test('un signal disparu qui revient pendant la pause compte comme nouveau', () => {
-  const two = L.finAckMake(L.finSignals({ month: { left_to_live: -40 }, attention: { accounts_to_check: 1 } }), T, 48);
-  const e1 = L.finAckEval(two, L.finSignals({ attention: { accounts_to_check: 1 } }), T + H, 50);
-  assert.strictEqual(e1.st, 'paused'); assert.deepStrictEqual(Object.keys(e1.sig), ['ACC']);
+  const two = L.finAckMake(L.finSignals({ accounts: [acc('A', -10), acc('B', -10)] }), T, 48);
+  const e1 = L.finAckEval(two, L.finSignals({ accounts: [acc('B', -10)] }), T + H, 50);
+  assert.strictEqual(e1.st, 'paused'); assert.deepStrictEqual(Object.keys(e1.sig), ['AL:NEGATIVE_BALANCE:B']);
   const trimmed = Object.assign({}, two, { sig: e1.sig });
-  assert.strictEqual(L.finAckEval(trimmed, L.finSignals({ month: { left_to_live: -40 }, attention: { accounts_to_check: 1 } }), T + 2 * H, 50).why, 'new');
-});
-test('un compte à vérifier de plus → retour', () => {
-  const a2 = L.finAckMake(L.finSignals({ attention: { accounts_to_check: 1 } }), T, 48);
-  assert.strictEqual(L.finAckEval(a2, L.finSignals({ attention: { accounts_to_check: 2 } }), T + H, 50).why, 'worse');
+  assert.strictEqual(L.finAckEval(trimmed, L.finSignals({ accounts: [acc('A', -10), acc('B', -10)] }), T + 2 * H, 50).why, 'new');
 });
 test('l\'ACK survit à un redémarrage (aller-retour JSON, comme le stockage)', () => {
   const back = JSON.parse(JSON.stringify(ack));

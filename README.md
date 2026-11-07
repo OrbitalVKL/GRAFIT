@@ -22,7 +22,7 @@ arrière-plan compris. `LOG EXPORT` (ou 3.3 `*1`) l'écrit dans `Téléchargemen
 ## Groupes et codes (1.15)
 
 Code de format = M + adresse : 1 SYSTEMS (M11 BRIEF, M12 OVERVIEW, M13 BARO, M14 TEMPS, M15 POWER, M16 MOTION) ·
-2 ALARMS (M21 ALARMS, M22 FAIL, M23 FEED, M24 SOURCES) · 3 WEATHER (M31 WEATHER, M32 RADAR, M33 FORECAST, M34 WEEK) ·
+2 ALARMS (M21 ALARMS, M22 FAIL, M23 FEED, M24 SOURCES) · 3 WEATHER (M31 FORECAST, M32 WEATHER, M33 WEEK, M34 RADAR) ·
 4 DAY (M41 DAY, M42 AGENDA, M43 HEALTH) · 5 COMMS (M51 NETWORK, M52 TOWERS, M53 SATCOM, M54 S-16) ·
 6 NAV (M61 ROUTE, M62 GNSS, M63 SATS, M64 TRACK, M65 SKY, M66 KURS) · 7 FINANCE (M71 FINANCE, M72 ACCOUNTS, M73 MONTH, Klad) ·
 8 UTILITY (M81 CHRONO, M82 LEVEL, M83 AUDIO) · 9 CMD (M91 QUICK SET, M92 COMMANDS).
@@ -139,6 +139,30 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   pondéré) et dBFS (échelle numérique brute). Pondération temporelle FAST (125 ms), LEQ 10 s, maximum (`*4` remet à
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
+
+## 1.21.0
+
+- **Voyant FINANCE recentré** : ne remontent que les événements à traiter tout de suite, en CRIT — compte courant ou
+  commun débiteur, débit imprévu sur le commun (`COMMUN_UNPLANNED`, Klad 1.3.2 : `commun.unplanned`), commun sous zéro
+  dans les 31 jours, accès bancaire expiré ou à 3 jours, toute autre alerte crit de Klad — et les dépassements de budget
+  en CAUT, poste par poste. Comptes à vérifier, synchro en échec, reste à vivre négatif, découvert lointain et autres
+  avis CAUT restent en 7.1 (`IN KLAD`), sans alarme.
+- **Dépassements de budget acquittables** : `ACK` (2.2, `ACK FINANCE`, 7.1 `*2`) les fait taire jusqu'à la fin du cycle
+  de Klad, poste par poste, même si le dépassement grandit ; non acquittés, ils restent tout le cycle. Un autre poste
+  qui dépasse remonte ; un nouveau cycle efface les acquittements. Les urgences gardent la pause de 48 h et reviennent
+  aussitôt si elles s'aggravent (découvert plus profond, débit imprévu de plus, nouvelle urgence).
+- **2.2 FAIL PAGE** : une consigne par alerte Klad (compte à approvisionner, débit imprévu à vérifier dans Klad › Opérations
+  › Commun › Imprévus, virement à prévoir avant le point bas du commun, accès banque à renouveler, postes à freiner
+  jusqu'à la fin du cycle), puis la règle d'acquittement.
+- **1.1 BRIEF** : section FINANCE sans les dépassements de budget (urgences seulement).
+- **7.1 FINANCE** : `ALERTS` (CRIT, CAUT, dépassements acquittés estompés) ; `IN KLAD` : `TO VALIDATE` (opérations non vues,
+  toujours affiché), à classer, comptes à vérifier, autres avis, sauvegarde.
+- **Klad 1.2 → 1.3** : `TOTAL PERSO` corrigé (le total de Klad est déjà sans le commun depuis la 1.2.0 : Grafit retirait
+  le commun une deuxième fois) ; 7.2 `WITH COMMUN` = total + commun. 7.2 COMMUN : virements en route, point bas et sa
+  date, imprévus du mois (non vus en rouge), prochaines échéances non mensuelles. 7.3 : postes acquittés marqués `ACK`.
+- **Groupe 3 réordonné** : 3.1 FORECAST (M31), 3.2 WEATHER (M32), 3.3 WEEK (M33), 3.4 RADAR (M34).
+- **3.2 WEATHER** : bas de l'encart en double graphe, pluie des 6 prochaines heures au-dessus et pression en dessous ;
+  `*2 RAIN/PRESS` retiré. Sur écran court, UV, visibilité et lieu cèdent la place aux graphes.
 
 ## 1.20.4
 

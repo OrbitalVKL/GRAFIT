@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.20.4', BUILD: '20261106', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.21.0', BUILD: '20261107', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -999,28 +999,61 @@ function parseEur(s) {
   const m = String(s || '').match(/(\d{1,3}(?:[   .]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(?:€|EUR\b)/i);
   return m ? parseFloat(m[1].replace(/[   .]/g, '') + (m[2] ? '.' + m[2] : '')) : null;
 }
-// Signaux financiers du résumé Klad qui allument le voyant FINANCE : [{ k, lvl 1|2, mag, u: 'eur'|'n' }].
-// k identifie le type (code de l'alerte Klad, LTL reste à vivre négatif, ACC comptes à vérifier) ; mag sert à juger une
-// aggravation (montant du découvert, nombre de comptes). Découvert sans montant : solde négatif le plus profond.
-function finSignals(S) {
+// Signaux financiers du résumé Klad qui allument le voyant FINANCE (1.21) : [{ k, lvl 1|2, mag, u, cat, txt }].
+// Seuls remontent les événements qui demandent d'agir tout de suite (cat 'act', CRIT) : compte courant ou commun
+// débiteur, débit imprévu sur le commun (Klad 1.3.2), commun sous zéro dans les 31 jours (OVERDRAFT_RISK crit),
+// accès bancaire expiré ou à 3 jours (BANK_CONSENT_EXPIRING crit), toute autre alerte crit de Klad. Les dépassements
+// de budget (cat 'bud', CAUT) remontent poste par poste ; acquittés (clés `budAck`), ils ne remontent plus du cycle.
+// Le reste (comptes à vérifier, synchro, reste à vivre, découvert lointain, CAUT de Klad) reste en 7.1.
+// mag sert à juger une aggravation (profondeur du découvert en €, nombre de débits imprévus non vus).
+const finNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+// clé d'un poste en dépassement : libellé sans le pourcentage (« ALIMENTATION +12 % » → BO:ALIMENTATION)
+const finBudKey = txt => 'BO:' + finNorm(txt).replace(/\s*[+−-]?\d+([.,]\d+)?\s*%.*$/, '').replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+// postes acquittés valables pour le cycle en cours du résumé (un autre cycle les efface)
+const finBudCycle = S => (S && S.month && (S.month.from || S.month.to)) || '';
+const finBudKeys = (fb, S) => fb && Array.isArray(fb.keys) && fb.cycle && fb.cycle === finBudCycle(S) ? fb.keys : [];
+function finSignals(S, budAck) {
   if (!S) return [];
   const arr = v => Array.isArray(v) ? v : [], num = v => v != null && v !== '' && isFinite(+v) ? Math.abs(+v) : null, out = {};
-  const main = arr(S.accounts).find(a => a.kind === 'current' && a.balance != null), C = S.commun || {};
-  const depth = Math.max(0, main && main.balance < 0 ? -main.balance : 0, S.main_after_card < 0 ? -S.main_after_card : 0, C.end_of_month < 0 ? -C.end_of_month : 0);
+  const acked = new Set(arr(budAck)), C = S.commun || {}, U = C.unplanned || null;
   const add = s => { const o = out[s.k]; if (!o) out[s.k] = s; else { o.lvl = Math.max(o.lvl, s.lvl); if (s.mag != null) o.mag = Math.max(o.mag || 0, s.mag); } };
+  const accOf = lab => arr(S.accounts).find(a => a.kind === 'current' && finNorm(a.label) === finNorm(lab) && a.balance != null);
+  const negs = arr(S.accounts).filter(a => a.kind === 'current' && a.balance != null && a.balance < 0);
+  const deepest = Math.max(0, ...negs.map(a => -a.balance), S.main_after_card < 0 ? -S.main_after_card : 0);
   for (const a of arr(S.alerts)) {
     if (a.level !== 'crit' && a.level !== 'caut') continue;
-    const id = a.code ? String(a.code) : String(a.text || '?').replace(/[-−+]?\d[\d   .,]*\s*(€|EUR\b)?/gi, '#');
-    const k = 'AL:' + id.toUpperCase().replace(/[^A-Z0-9#]+/g, '_').replace(/^_|_$/g, '');
+    const code = a.code ? finNorm(a.code).replace(/[^A-Z0-9]+/g, '_') : '', txt = finNorm(a.text);
+    const show = ((code ? code.replace(/_/g, ' ') + (txt ? ' · ' : '') : '') + txt) || '?';
+    if (code === 'BUDGET_OVER') {
+      const k = finBudKey(a.text); if (acked.has(k)) continue;
+      const p = String(a.text || '').match(/([+−-]?\d+)\s*%/);
+      add({ k, lvl: 1, mag: p ? Math.abs(parseInt(p[1].replace('−', '-'), 10)) : null, u: 'pct', cat: 'bud', txt: 'BUDGET OVER · ' + txt });
+      continue;
+    }
+    if (code === 'NEGATIVE_BALANCE') {
+      const acc = accOf(a.text); let mag = acc ? -acc.balance : num(a.amount); if (mag == null) mag = parseEur(a.text); if (mag == null && deepest) mag = deepest;
+      add({ k: 'AL:NEGATIVE_BALANCE:' + (txt.replace(/[^A-Z0-9]+/g, '_') || '?'), lvl: 2, mag, u: 'eur', cat: 'act', txt: show });
+      continue;
+    }
+    if (code === 'COMMUN_UNPLANNED') {
+      let mag = U && U.unseen != null ? +U.unseen : null; if (mag == null) { const m = txt.match(/^(\d+)/); mag = m ? +m[1] : null; }
+      add({ k: 'AL:COMMUN_UNPLANNED', lvl: 2, mag, u: 'n', cat: 'act', txt: 'UNPLANNED DEBIT · COMMUN' + (mag > 1 ? ' ×' + mag : '') });
+      continue;
+    }
+    if (a.level !== 'crit') continue;                                // CAUT de Klad (synchro, comptes, découvert lointain…) : 7.1
     let mag = num(a.amount); if (mag == null) mag = num(a.value); if (mag == null) mag = parseEur(a.text);
-    if (mag == null && depth && /OVERDRAFT|DECOUVERT|NEGATIVE|BALANCE/.test(k)) mag = depth;
-    add({ k, lvl: a.level === 'crit' ? 2 : 1, mag, u: 'eur' });
+    if (mag == null && code === 'OVERDRAFT_RISK' && C.low && C.low.amount < 0) mag = -C.low.amount;
+    const id = code || txt.replace(/[-−+]?\d[\d   .,]*\s*(€|EUR\b)?/gi, '#');
+    add({ k: 'AL:' + id.replace(/[^A-Z0-9#]+/g, '_').replace(/^_|_$/g, ''), lvl: 2, mag, u: 'eur', cat: 'act', txt: show });
   }
-  const ltl = S.month && S.month.left_to_live;
-  if (ltl != null && ltl < 0) add({ k: 'LTL', lvl: 1, mag: -ltl, u: 'eur' });
-  const ac = S.attention && +S.attention.accounts_to_check;
-  if (ac) add({ k: 'ACC', lvl: 1, mag: ac, u: 'n' });
-  return Object.values(out);
+  // replis : compte courant débiteur sans alerte, débits imprévus non vus sans alerte
+  for (const a of negs) {
+    const k = 'AL:NEGATIVE_BALANCE:' + (finNorm(a.label).replace(/[^A-Z0-9]+/g, '_') || '?');
+    if (!out[k]) add({ k, lvl: 2, mag: -a.balance, u: 'eur', cat: 'act', txt: 'NEGATIVE BALANCE · ' + (finNorm(a.label) || 'ACCOUNT') });
+  }
+  if (U && +U.unseen > 0 && !out['AL:COMMUN_UNPLANNED'])
+    add({ k: 'AL:COMMUN_UNPLANNED', lvl: 2, mag: +U.unseen, u: 'n', cat: 'act', txt: 'UNPLANNED DEBIT · COMMUN' + (+U.unseen > 1 ? ' ×' + U.unseen : '') });
+  return Object.values(out).sort((x, y) => y.lvl - x.lvl);
 }
 // Acquittement du voyant FINANCE : instantané des signaux au moment de l'ACK, pause de `hours` heures
 const finAckMake = (sigs, T, hours) => ({ t: T, until: T + hours * 3600, sig: Object.fromEntries(sigs.map(s => [s.k, { lvl: s.lvl, mag: s.mag }])) });
@@ -1036,7 +1069,7 @@ function finAckEval(ack, sigs, T, worseEur) {
     const b = ack.sig[s.k];
     if (!b) return { st: 'back', why: 'new', k: s.k };
     if (s.lvl > b.lvl) return { st: 'back', why: 'crit', k: s.k };
-    if (s.mag != null && b.mag != null && (s.u === 'n' ? s.mag > b.mag : s.mag - b.mag >= worseEur)) return { st: 'back', why: 'worse', k: s.k, delta: s.mag - b.mag, u: s.u };
+    if (s.u !== 'pct' && s.mag != null && b.mag != null && (s.u === 'n' ? s.mag > b.mag : s.mag - b.mag >= worseEur)) return { st: 'back', why: 'worse', k: s.k, delta: s.mag - b.mag, u: s.u };
   }
   if (T >= ack.until) return { st: 'expired' };
   const sig = {}; for (const s of sigs) sig[s.k] = ack.sig[s.k];
@@ -2022,7 +2055,7 @@ const ANN = [
     fn: c => { if (!live('store')) return null; const v = SRC.store.v, pct = v.total ? v.free / v.total * 100 : 100; return [lo(pct, c, AL.StoreCaut, AL.StoreCrit, 1), Math.round(pct) + ' % · ' + (v.free / 1e9).toFixed(1) + ' GB']; } },
   // finances (Klad, lu sur le téléphone) : alertes caut/crit de Klad, comptes à vérifier, reste à vivre négatif
   { key: 'FINANCE', lab: 'FINANCE', tag: 'FIN', confirm: 0, title: 'FINANCE · KLAD', act: 'OPEN KLAD · DETAILS IN ' + pageAddr('M71'),
-    lim: 'KLAD ALERTS (CAUT / CRIT) · ACCOUNTS TO CHECK · LEFT TO LIVE < 0', fn: () => finAnn() },
+    lim: 'CRIT: NEGATIVE BALANCE · UNPLANNED COMMUN DEBIT · COMMUN < 0 WITHIN 31 D · BANK ACCESS ≤ 3 D · CAUT: BUDGET OVER', fn: () => finAnn() },
   // éveil prolongé : depuis le réveil du jour (ou d'hier tant que la nuit n'est pas trouvée) ; MAXAWAKE règle le seuil
   { key: 'AWAKE', lab: 'AWAKE', tag: 'DAY', confirm: 0, title: 'TIME AWAKE', act: 'WIND DOWN · BED BY IN ' + pageAddr('M11') + ' · MAXAWAKE <H> SETS THE LIMIT',
     lim: 'CAUT ≥ MAXAWAKE HOURS SINCE WAKE (16 H BY DEFAULT)',
@@ -2030,38 +2063,52 @@ const ANN = [
       return [a >= H || (c >= 1 && a >= H - 600) ? 1 : 0, durHM(a)]; } },
 ];
 // état financier pour le voyant, la page de défaut et le briefing : [niveau 0-2, valeur] ou null (Klad non lu)
+// (mêmes signaux que l'acquittement : finSignals, postes de budget déjà acquittés exclus)
+const finSigsNow = () => finKladOk() ? finSignals(KLAD.s, finBudKeys(FINBUD, KLAD.s)) : [];
 function finAnn() {
-  if (typeof KLAD === 'undefined' || KLAD.state !== 'ok' || !KLAD.s) return null;
-  const S = KLAD.s, al = (Array.isArray(S.alerts) ? S.alerts : []).filter(a => a.level === 'crit' || a.level === 'caut');
-  const M = S.month || {}, ltl = M.left_to_live, ac = S.attention && S.attention.accounts_to_check;
-  let lvl = 0, txt = '';
-  // même niveau que les signaux qui servent à l'acquittement (finSignals)
-  const a2 = al.find(a => a.level === 'crit') || al[0];
-  if (a2) { lvl = a2.level === 'crit' ? 2 : 1; txt = (a2.code ? a2.code.replace(/_/g, ' ') + ' ' : '') + String(a2.text || '').toUpperCase(); if (al.length > 1) txt += ' +' + (al.length - 1); }
-  if (ltl != null && ltl < 0) { lvl = Math.max(lvl, 1); txt = txt || 'LEFT TO LIVE ' + eur(ltl); }
-  if (ac) { lvl = Math.max(lvl, 1); txt = txt || ac + ' ACCOUNT' + (ac > 1 ? 'S' : '') + ' TO CHECK'; }
-  return [lvl, lvl ? txt.trim() : (ltl != null ? 'LIVE ' + eur(ltl).replace(' €', '') : 'OK')];
+  if (!finKladOk()) return null;
+  const sigs = finSigsNow(), ltl = kladLtl(KLAD.s.month || {});
+  if (!sigs.length) return [0, ltl != null ? 'LIVE ' + eur(ltl).replace(' €', '') : 'OK'];
+  const s = sigs[0]; return [s.lvl, s.txt + (sigs.length > 1 ? ' +' + (sigs.length - 1) : '')];
 }
-// Acquittement du voyant FINANCE (ACK sur 2.2 FAIL PAGE, ou 7.1 [*2]) : pause de FinanceAckHours (48 h), enregistrée sur
-// le téléphone (survit à un redémarrage). Pendant la pause : voyant estompé « ACK · 31h », sans clignotement, hors du
-// compte des CAUT / CRIT. Retour de l'alarme (CAUTION + ligne FEED FIN) à la fin de la pause si Klad signale toujours, ou
-// tout de suite si la situation s'aggrave (découvert plus profond de FinanceWorsenEur €, CAUT → CRIT, alerte d'un autre
-// type). ACK effacé dès que Klad ne signale plus rien.
+// Acquittement du voyant FINANCE (ACK sur 2.2 FAIL PAGE, ou 7.1 [*2]).
+//  · Alertes à traiter tout de suite (CRIT) : pause de FinanceAckHours (48 h), enregistrée sur le téléphone (survit à un
+//    redémarrage). Pendant la pause : voyant estompé « ACK · 31h », sans clignotement, hors du compte des CAUT / CRIT.
+//    Retour de l'alarme (CAUTION + ligne FEED FIN) à la fin de la pause si Klad signale toujours, ou tout de suite si la
+//    situation s'aggrave (découvert plus profond de FinanceWorsenEur €, débit imprévu de plus, alerte d'un autre type).
+//  · Dépassements de budget (CAUT) : acquittés poste par poste jusqu'à la fin du cycle (FINBUD) ; ils ne remontent plus.
+//    Non acquittés, ils restent tout le cycle (tant que Klad les signale). Un autre poste qui dépasse remonte.
+// ACK effacé dès que Klad ne signale plus rien.
 let FINACK = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.finack') || 'null'); return j && j.until && j.sig ? j : null; } catch (e) { return null; } })();
 const finAckSave = () => { try { if (FINACK) localStorage.setItem('grafit.finack', JSON.stringify(FINACK)); else localStorage.removeItem('grafit.finack'); } catch (e) { /* */ } };
+let FINBUD = (() => { try { const j = JSON.parse(localStorage.getItem('grafit.finbud') || 'null'); return j && j.cycle && Array.isArray(j.keys) ? j : null; } catch (e) { return null; } })();
+const finBudSave = () => { try { if (FINBUD) localStorage.setItem('grafit.finbud', JSON.stringify(FINBUD)); else localStorage.removeItem('grafit.finbud'); } catch (e) { /* */ } };
+const finBudAcked = k => finKladOk() && finBudKeys(FINBUD, KLAD.s).includes(k);
 const finKladOk = () => typeof KLAD !== 'undefined' && KLAD.state === 'ok' && !!KLAD.s;
 const finPaused = () => !!FINACK && now() < FINACK.until;
 const finLeftTxt = s => s >= 3600 ? Math.ceil(s / 3600) + 'h' : Math.max(1, Math.ceil(s / 60)) + 'm';
-const finSigTxt = k => k === 'LTL' ? 'LEFT TO LIVE < 0' : (k === 'ACC' ? 'ACCOUNTS TO CHECK' : k.replace(/^AL:/, '').replace(/_/g, ' '));
+const finSigTxt = k => k.startsWith('BO:') ? 'BUDGET OVER ' + k.slice(3).replace(/_/g, ' ') : k.replace(/^AL:/, '').replace(/_/g, ' ').replace(/:/g, ' · ');
+const finCycleEnd = () => { const M = finKladOk() && KLAD.s.month; return M && M.to ? kDay(M.to) : 'END OF CYCLE'; };
 // ACK demandé : renvoie un message, ou '' si rien à acquitter
 function finAckSet() {
   if (!finKladOk()) return '';
-  const sigs = finSignals(KLAD.s); if (!sigs.length) return '';
-  if (finPaused()) return 'FINANCE · ALREADY ACK · ' + finLeftTxt(FINACK.until - now()) + ' LEFT';
-  FINACK = finAckMake(sigs, now(), AL.FinanceAckHours); finAckSave();
+  const sigs = finSigsNow(); if (!sigs.length) return '';
+  const act = sigs.filter(s => s.cat === 'act'), bud = sigs.filter(s => s.cat === 'bud'), msg = [];
+  if (act.length && finPaused()) return 'FINANCE · ALREADY ACK · ' + finLeftTxt(FINACK.until - now()) + ' LEFT';
+  if (bud.length) {
+    const cyc = finBudCycle(KLAD.s) || new Date().toISOString().slice(0, 7), keys = finBudKeys(FINBUD, KLAD.s).slice();
+    for (const s of bud) if (!keys.includes(s.k)) keys.push(s.k);
+    FINBUD = { cycle: cyc, keys }; finBudSave();
+    log('FIN', 'BUDGET OVER ACK · NOT REPORTED AGAIN UNTIL ' + finCycleEnd() + ' · ' + bud.map(x => x.k.slice(3).replace(/_/g, ' ')).join(' · '));
+    msg.push('BUDGET OVER ACK TO ' + finCycleEnd());
+  }
+  if (act.length) {
+    FINACK = finAckMake(act, now(), AL.FinanceAckHours); finAckSave();
+    log('FIN', 'FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h · UNTIL ' + DOW3[new Date(FINACK.until * 1000).getDay()] + ' ' + hhmm(FINACK.until) + ' · ' + act.map(x => finSigTxt(x.k)).join(' · '));
+    msg.unshift('FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h');
+  }
   const e = failOpenOf('FINANCE'); if (e && !e.ack) { e.ack = true; e.ackT = now(); failSave(); }
-  log('FIN', 'FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h · UNTIL ' + DOW3[new Date(FINACK.until * 1000).getDay()] + ' ' + hhmm(FINACK.until) + ' · ' + sigs.map(x => finSigTxt(x.k)).join(' · '));
-  return 'FINANCE ACK · SILENT ' + AL.FinanceAckHours + 'h';
+  return msg.join(' · ');
 }
 // l'alarme revient : l'entrée de la FAIL PAGE redevient à acquitter
 function finRearm(msg) {
@@ -2071,9 +2118,10 @@ function finRearm(msg) {
 }
 // à chaque tour des annonciateurs : renvoie le temps restant (s) si le voyant est en pause, sinon 0
 function finAckStep() {
+  if (FINBUD && finKladOk() && finBudCycle(KLAD.s) && FINBUD.cycle !== finBudCycle(KLAD.s)) { FINBUD = null; finBudSave(); }   // nouveau cycle
   if (!FINACK) return 0;
   if (!finKladOk()) return Math.max(0, FINACK.until - now());          // Klad pas (encore) lu : on garde l'état
-  const sigs = finSignals(KLAD.s), r = finAckEval(FINACK, sigs, now(), AL.FinanceWorsenEur);
+  const sigs = finSigsNow(), r = finAckEval(FINACK, sigs, now(), AL.FinanceWorsenEur);
   if (r.st === 'cleared') { FINACK = null; finAckSave(); log('FIN', 'FINANCE ACK CLEARED · KLAD NO LONGER REPORTS IT'); return 0; }
   if (r.st === 'expired') { finRearm('FINANCE ACK EXPIRED (' + AL.FinanceAckHours + 'h) · STILL REPORTED · ' + sigs.map(x => finSigTxt(x.k)).join(' · ')); return 0; }
   if (r.st === 'back') {
@@ -2161,8 +2209,8 @@ const FAIL_DOC = {
     ['Move near a window or outdoors', 'Check SIM / airplane mode / roaming', 'See ' + pageAddr('M52') + ' TOWERS for the nearest sites']],
   BHEALTH: ['Android battery health is not GOOD: overheat, overvoltage, dead cell or failure (CRIT), too cold (CAUT).',
     ['Unplug the charger and let the phone rest', 'Try another charger / cable', 'If it persists: battery service']],
-  FINANCE: ['Klad (finances, on this phone) reports a caution or critical alert (overdraft, negative balance, budget over, sync or bank consent), an account to check, or a negative left-to-live.',
-    ['Open Klad and review the alert', 'Overview in ' + pageAddr('M71') + ' FINANCE, ' + pageAddr('M72') + ' ACCOUNTS, ' + pageAddr('M73') + ' MONTH', 'ACK silences it for ' + AL.FinanceAckHours + ' h (ACK FINANCE, or ' + pageAddr('M71') + ' [*2]); it comes back after that if still reported, at once if it gets worse (+' + AL.FinanceWorsenEur + ' € deeper, CAUT → CRIT, a new kind of alert)', 'Clears by itself once Klad no longer reports it']],
+  FINANCE: ['Klad (finances, on this phone) reports an event that needs action now (CRIT: negative balance, unplanned debit on the Commun, Commun below zero within 31 days, bank access ending), or a budget category over its budget this cycle (CAUT). Other Klad notices stay in ' + pageAddr('M71') + '.',
+    ['Open Klad and deal with the alert', 'Overview in ' + pageAddr('M71') + ' FINANCE, ' + pageAddr('M72') + ' ACCOUNTS, ' + pageAddr('M73') + ' MONTH', 'ACK: urgent alerts silent ' + AL.FinanceAckHours + ' h (back at once if worse); budget over silent until the end of the cycle', 'Clears by itself once Klad no longer reports it']],
   STORAGE: ['Internal storage almost full: apps, camera and updates fail; Android slows down below a few %.',
     ['Delete large videos / downloads', 'Back up photos then free space (Files › Clean)', 'Clear caches of big apps']],
   THERMAL: ['Android reports the phone is hot (thermal status). It throttles the CPU, then the radio and the screen, and may shut apps down.',
@@ -2170,6 +2218,30 @@ const FAIL_DOC = {
   WX: ['Weather feed unreachable: forecast, rain warning and QNH from the weather service stop updating.',
     ['Check the network (' + pageAddr('M51') + ' NETWORK)', 'Retry: command WX REFRESH', 'Older data stays shown until it ages out']],
 };
+// 2.2 FAIL PAGE, entrée FINANCE : une consigne par alerte remontée (1.21), puis la règle d'acquittement.
+function finDoc() {
+  const base = FAIL_DOC.FINANCE;
+  if (!finKladOk()) return base;
+  const S = KLAD.s, C = S.commun || {}, U = C.unplanned || {}, sigs = finSigsNow(), end = finCycleEnd(), steps = [];
+  const after = k => k.replace(/^[^·]*·\s*/, '');
+  const bud = sigs.filter(s => s.cat === 'bud');
+  for (const s of sigs) {
+    if (s.k.startsWith('AL:NEGATIVE_BALANCE'))
+      steps.push((after(s.txt) || 'ACCOUNT') + (s.mag ? ' −' + eur(s.mag) : ' overdrawn') + ': transfer money to it today');
+    else if (s.k === 'AL:COMMUN_UNPLANNED')
+      steps.push('Commun: unplanned debit' + (U.unseen ? ' (' + U.unseen + ' not seen' + (U.last ? ', last ' + kDay(U.last) : '') + ')' : '') +
+        '. Check it in Klad › Operations › Commun › Imprevus: expected → mark it planned; unknown → dispute it with the bank');
+    else if (s.k === 'AL:OVERDRAFT_RISK')
+      steps.push('Commun below zero' + (C.low && C.low.date ? ' on ' + kDay(C.low.date) : ' within 31 days') + ': transfer to it before that date');
+    else if (s.k === 'AL:BANK_CONSENT_EXPIRING')
+      steps.push('Bank access ' + (after(s.txt) || '') + ': renew it in Klad, or syncing stops');
+    else if (s.cat !== 'bud') steps.push('Open Klad and deal with: ' + s.txt.toLowerCase());
+  }
+  if (bud.length) steps.push('Over budget: ' + bud.map(s => after(s.txt)).join(', ') + '. Hold spending until ' + end);
+  if (!steps.length) return base;
+  steps.push('ACK: urgent ' + AL.FinanceAckHours + ' h (back at once if worse) · budget: not reported again until ' + end);
+  return [base[0], steps];
+}
 function failSave() { try { localStorage.setItem('grafit.fail', JSON.stringify({ seq: FAIL.seq, list: FAIL.list.slice(0, 60) })); } catch (e) { /* */ } }
 function failRestore() {
   try {
@@ -2705,7 +2777,7 @@ PAGES.M22 = { code: 'M22', name: 'FAIL PAGE', ru: 'ОТКАЗ', words: ['FAIL', 
       const top = win(I, nI, F.length); for (let i = top; i < top + nI; i++) row(I[i], F.length + i, true);
     }
     // détail : le défaut (données), puis un cadre INSTRUCTIONS (rouge pour une panne non acquittée)
-    const e = L[si], doc = FAIL_DOC[e.key], info = e.sev < 2;
+    const e = L[si], doc = e.key === 'FINANCE' ? finDoc() : FAIL_DOC[e.key], info = e.sev < 2;
     y++;
     if (y >= by - 1) return;
     if (info) sub(scr, ir.x, y++, ir.w, 'INFO #' + (si + 1) + ' · ' + e.tag, (e.tend ? 'ENDED' : 'ACTIVE') + ' · NOTICE', t.D);
@@ -3198,7 +3270,7 @@ PAGES.M62 = { code: 'M62', name: 'GNSS', ru: 'ГНСС', words: ['GNSS', 'GPS', 
     }
   } };
 
-// ------------------------------------------------------------------ M31 WEATHER
+// ------------------------------------------------------------------ M32 WEATHER
 // ------------------------------------------------------------------ graphique de pluie (4.2 WEATHER : 6 h au quart d'heure)
 // Barres de pluie (axe gauche, mm), probabilité en pointillés (axe droit, 0–100 %) ; barres ajustées à la largeur.
 function rainChart(scr, r, mm, o = {}) {
@@ -3367,11 +3439,11 @@ function wxTimeline(scr, r, w, t0, hours) {
   return r.h;
 }
 
-// ------------------------------------------------------------------ 4.1 M33 FORECAST : la journée d'un coup d'œil
+// ------------------------------------------------------------------ 3.1 M31 FORECAST : la journée d'un coup d'œil
 // Bandeau du jour, deux afficheurs (maxi · pluie), quatre tranches de 6 h à partir de maintenant, frise horaire
 // depuis le réveil (température, ressenti, pluie, ciel) et les repères : vent, soleil, UV.
 const PERIOD_N = ['NIGHT', 'MORNING', 'AFTNOON', 'EVENING'], PERIOD_T = ['NIGHT', 'TMW AM', 'TMW PM', 'TMW EVE'];
-PAGES.M33 = { code: 'M33', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
+PAGES.M31 = { code: 'M31', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']]],
   draw(scr, r) {
     const w = SRC.wx.v;
@@ -3438,12 +3510,11 @@ PAGES.M33 = { code: 'M33', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORE
     if (uv != null) kv('UV MAX', Math.round(uv) + ' · ' + UV_TXT(uv) + (today && today.uAt && uv >= 1 ? ' · ' + hm(today.uAt) : ''), uv >= 6 ? t.B : t.N);
   } };
 
-// ------------------------------------------------------------------ 4.2 M31 WEATHER : conditions actuelles + pluie à 6 h
-const WXP = { chart: 'AUTO' };                     // graphique du bas : pluie à 6 h (quart d'heure) ou pression 48 h
-PAGES.M31 = { code: 'M31', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
+// ------------------------------------------------------------------ 3.2 M32 WEATHER : conditions actuelles + pluie à 6 h
+PAGES.M32 = { code: 'M32', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER', 'WX', 'METEO', 'NOW', 'NOWCAST'], fps: 1,
   cmds: [[['MBKEY'], app => cmdMbKey(app), 'MBKEY <METEOBLUE KEY|OFF>']],
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']],
-    ['2', 'RAIN/PRESS', (app, arg, wd) => { WXP.chart = wd === '6H' ? 'RAIN' : wd === 'PRESS' ? 'PRESS' : (WXP.cur === 'RAIN' ? 'PRESS' : 'RAIN'); }, ['RAINPRESS', 'PRESS', '6H'], 'RAIN · PRESS']],
+  ],
   draw(scr, r) {
     const w = SRC.wx.v;
     const ir = W.panel(scr, r, this.code, this.name, wxHead(w), wxStyle());
@@ -3453,7 +3524,8 @@ PAGES.M31 = { code: 'M31', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
     W.readout(scr, ir.x, y, hw, 'TEMP', w.temp.toFixed(1), '°C', t.N, w.temp > CFG.WXL.HeatOut, true, 3);
     W.readout(scr, x2, y, hw, 'FEELS', w.feel.toFixed(1), '°C', t.N, false, true, 3);
     y += 6;
-    const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
+    const kvB = ir.b - (w.hp || w.mp ? 15 : 0);                      // 1.21 : place gardée pour le double graphe du bas
+    const kv = (k, v, st = t.N) => { if (y < kvB) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
     const cl = at(w.hcloud);
     wxGlyph(scr, ir.x, y, w.code, w.day);
     scr.put(ir.x + 3, y, clip((WMO[w.code] || 'CODE ' + w.code) + (cl != null ? ' · CLOUD ' + Math.round(cl) + ' %' : ''), ir.w - 3), t.B); y++;
@@ -3463,37 +3535,42 @@ PAGES.M31 = { code: 'M31', name: 'WEATHER', ru: 'ПОГОДА', words: ['WEATHER
     let pt = '';
     if (w.hp && w.ni >= 3) { const dp = w.hp[w.ni] - w.hp[w.ni - 3]; pt = ' · ' + (dp > 0.3 ? '↗ ' : dp < -0.3 ? '↘ ' : '→ ') + sgn(dp, 1) + '/3h'; }
     kv('PRESSURE MSL', w.p.toFixed(1) + ' hPa' + pt, w.p < CFG.WXL.StdP ? t.R : t.N);
+    const dr = dayRec(w, T);
+    if (dr && dr.rise && dr.set) kv('SUN', T < dr.rise ? 'RISES ' + hm(dr.rise) + ' · IN ' + durHM((dr.rise - T) / 1000) : (T < dr.set ? 'SETS ' + hm(dr.set) + ' · IN ' + durHM((dr.set - T) / 1000) : 'SET ' + hm(dr.set)));
     const uv = at(w.huv), vis = at(w.hvis);
     if (uv != null) kv('UV NOW', (+uv).toFixed(1) + ' · ' + UV_TXT(uv), uv >= 6 ? t.B : t.N);
     if (vis != null) kv('VISIBILITY', vis >= 10000 ? Math.round(vis / 1000) + ' km' : (vis / 1000).toFixed(1) + ' km', vis < 1000 ? t.B : t.N);
-    const dr = dayRec(w, T);
-    if (dr && dr.rise && dr.set) kv('SUN', T < dr.rise ? 'RISES ' + hm(dr.rise) + ' · IN ' + durHM((dr.rise - T) / 1000) : (T < dr.set ? 'SETS ' + hm(dr.set) + ' · IN ' + durHM((dr.set - T) / 1000) : 'SET ' + hm(dr.set)));
     kv('PLACE', here().name === 'GNSS' ? fmtLL(here().lat, here().lon) : here().name);
     y++;
-    // pluie au quart d'heure sur 6 h si elle arrive (ou sur demande), sinon pression
-    const ro = rainOutlook(w, T) || { state: 'dry' }, has6 = !!(w.mt && w.mp && ro.i15 >= 0);
-    WXP.cur = WXP.chart === 'PRESS' || !has6 ? 'PRESS' : (WXP.chart === 'RAIN' || ro.state === 'now' || ro.state === 'soon' ? 'RAIN' : 'PRESS');
-    if (WXP.cur === 'RAIN' && ir.b - y >= 7) {
+    // 1.21 : bas de l'encart en double graphe, sans changer de mode : pluie au quart d'heure sur 6 h, puis pression
+    const ro = rainOutlook(w, T) || { state: 'dry' }, has6 = !!(w.mt && w.mp && ro.i15 >= 0), hasP = !!w.hp, room = ir.b - y;
+    const both = has6 && hasP && room >= 11, gap = both && room >= 13 ? 1 : 0;           // titre + pluie (+ ligne vide) + titre + pression ≥ 5
+    const rainH = both ? Math.max(4, Math.min(8, Math.floor((room - 2 - gap) / 2))) : Math.min(8, room - 1);
+    const wet = ro.state === 'now' || ro.state === 'soon';
+    if (has6 && (both || !hasP || wet) && room >= 6) {
       const i = ro.i15, mm = w.mp.slice(i, i + 24).map(v => (v || 0) * 4), xl = [];
       mm.forEach((_, k) => { const st = new Date(w.mt[i + k] - 9e5); if (st.getMinutes() === 0) xl[k] = pad2(st.getHours()); });
       const pk = Math.max(...mm);
-      sub(scr, ir.x, y++, ir.w, 'NEXT 6 H · mm/h', (pk > 0 ? 'PEAK ' + pk.toFixed(1) : 'NO RAIN') + ' · [*2] hPa', pk > 0 ? t.N : t.D);
-      rainChart(scr, new Rect(ir.x, y, ir.w, Math.min(8, ir.b - y)), mm, { xlab: xl, vmax: pk > 0 ? null : 1 });
-    } else if (ir.b - y >= 7 && w.hp) {
+      sub(scr, ir.x, y++, ir.w, 'RAIN · NEXT 6 H · mm/h', pk > 0 ? 'PEAK ' + pk.toFixed(1) : 'NO RAIN', pk > 0 ? t.N : t.D);
+      rainChart(scr, new Rect(ir.x, y, ir.w, rainH), mm, { xlab: xl, vmax: pk > 0 ? null : 1 });
+      y += rainH + gap;
+      if (!both) return;
+    }
+    if (hasP && ir.b - y >= 5) {
       const span = Math.min(w.hp.length, ir.w - 10), i0 = Math.max(0, Math.min(w.hp.length - span, w.ni - Math.floor(span * 0.6)));
       const vals = w.hp.slice(i0, i0 + span), lo = Math.floor(Math.min(...vals, CFG.WXL.StdP) - 2), hiV = Math.ceil(Math.max(...vals, CFG.WXL.StdP) + 1);
       const xlab = {}; vals.forEach((_, i) => { const hr = new Date(w.htime[i0 + i]).getHours(); if (hr % 6 === 0) xlab[i] = pad2(hr); });
-      sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', has6 ? '◂ PAST · NEXT ▸ · [*2] RAIN' : '◂ PAST · FORECAST ▸');
+      sub(scr, ir.x, y++, ir.w, 'PRESSURE · hPa', '◂ PAST · FORECAST ▸');
       W.bars(scr, new Rect(ir.x, y, ir.w, ir.b - y), vals, { vmin: lo, vmax: hiV, bw: 1, gap: 0, xlab, now: w.ni - i0, fmt: v => String(Math.round(v)),
         styles: vals.map((_, i) => i <= w.ni - i0 ? t.N : t.D), limits: [[CFG.WXL.StdP, 0, '1013', 'lo']] });
     }
   } };
 
-// ------------------------------------------------------------------ 3.4 M34 WEEK : les 5 jours suivants
+// ------------------------------------------------------------------ 3.3 M33 WEEK : les 5 jours suivants
 // Une colonne par jour, lue de gauche à droite : ciel, températures (barres flottantes sur l'échelle de la semaine),
 // pluie (risque et cumul), rafales. Le jour choisi (*2 ◂ / *3 ▸, ou SEL n) est détaillé en bas : matin, après-midi, soirée.
 const WK = { sel: 0 };
-PAGES.M34 = { code: 'M34', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SEMAINE', '5DAYS', 'DAYS'], fps: 1,
+PAGES.M33 = { code: 'M33', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SEMAINE', '5DAYS', 'DAYS'], fps: 1,
   keys: [['1', 'REFRESH', refreshWx, ['REFRESH', 'RELOAD']],
     ['2', '◂ DAY', () => { WK.sel = Math.max(0, WK.sel - 1); }, ['SEL-', 'UP']],
     ['3', 'DAY ▸', (app, arg) => { WK.sel = /^[1-5]$/.test(arg) ? +arg - 1 : Math.min(4, WK.sel + 1); }, ['SEL', 'SEL+', 'DOWN'], 'SEL [1-5]']],
@@ -3590,7 +3667,7 @@ PAGES.M34 = { code: 'M34', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'SUN · UV', (d.rise && d.set ? hm(d.rise) + ' → ' + hm(d.set) : '—') + (d.uv != null ? ' · UV ' + Math.round(d.uv) : ''), t.D, t.N);
   } };
 
-// ------------------------------------------------------------------ 4.4 M32 RADAR : pluie observée (−2 h) et prévue (+2 h)
+// ------------------------------------------------------------------ 3.4 M34 RADAR : pluie observée (−2 h) et prévue (+2 h)
 // Passé : radar RainViewer (mosaïque observée, 10 min, gratuit en usage personnel, zoom 7 ≈ 0,4 km/px). Les tuiles
 // « Universal Blue » sont décodées en dBZ puis recolorées dans la palette de Grafit. Futur : prévision Open-Meteo au
 // quart d'heure sur une grille 7 × 7 autour du téléphone (un modèle, pas une extrapolation du radar). Fond : carte
@@ -3901,13 +3978,13 @@ function radBase(c, b, h, R, lab = false) {
   }
   c.restore(); if (!lab) RDR.mapErr = miss;
 }
-PAGES.M32 = { code: 'M32', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
+PAGES.M34 = { code: 'M34', name: 'RADAR', ru: 'РАДАР', words: ['RADAR', 'RAINRADAR', 'PRECIP', 'NOWCAST'], fps: 4,
   keys: [['1', 'PLAY', () => { RDR.play = !RDR.play; RDR.playT0 = Date.now(); if (RDR.play) RDR.pick = null; }, ['PLAY', 'PAUSE', 'LOOP'], 'PLAY · PAUSE'],
     ['2', 'KM', (app, arg) => { const v = parseInt(arg, 10); RDR.R = RAD_R.includes(v) ? v : RAD_R[(RAD_R.indexOf(RDR.R) + 1) % RAD_R.length]; RDR.frames.clear(); RDR.fcT = 0; app && app.say('RADAR · ±' + RDR.R + ' km · FIRST RING ' + RAD_RINGS[RDR.R][0] + ' km'); }, ['KM', 'RADIUS', 'RADARZOOM'], 'KM [15|30|60]'],
     ['3', 'NOW', () => { RDR.play = false; RDR.pick = null; }, ['NOW']],
     ['4', 'MAP', app => { RDR.map = !RDR.map; app && app.say('RADAR · ' + (RDR.map ? 'DARK MAP' : 'GRID ONLY')); }, ['MAP', 'GRID', 'BASEMAP']],
     ['5', 'REFRESH', () => { RDR.metaT = 0; RDR.metaTry = 0; RDR.fcT = 0; RDR.fcTry = 0; RDR.frames.clear(); }, ['REFRESH', 'RELOAD']],
-    ['6', '◂', () => PAGES.M32.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M32.stepF(1), ['NEXT', 'FWD']]],
+    ['6', '◂', () => PAGES.M34.stepF(-1), ['PREV', 'BACK']], ['7', '▸', () => PAGES.M34.stepF(1), ['NEXT', 'FWD']]],
   cmds: [[['MAPKEY'], app => {
     const raw = String(app.rawLine || '').trim().split(/\s+/).slice(1).join('');
     SET.mapKey = raw && raw.toUpperCase() !== 'OFF' ? raw : ''; saveSettings(); RDR.imgs.clear();
@@ -4083,7 +4160,9 @@ function kladAsk(force = false) {
   KLAD.askT = now(); nativeCmd({ cmd: 'klad' });
 }
 // 1.20 : total perso = total de Klad (courants, commun, épargne, moins la dette des cartes) moins le solde du commun
-const kladPerso = S => S && S.total && S.total.all != null && S.commun && S.commun.balance != null ? Math.round((S.total.all - S.commun.balance) * 100) / 100 : null;
+// 1.21 : depuis Klad 1.2.0, total.all est déjà le « Total perso » (sans le commun) ; avec le commun = total.all + solde du commun
+const kladPerso = S => S && S.total && S.total.all != null ? S.total.all : null;
+const kladWithCommun = S => S && S.total && S.total.all != null && S.commun && S.commun.balance != null ? Math.round((S.total.all + S.commun.balance) * 100) / 100 : null;
 function kladIngest(k) {
   const prev = KLAD.state; KLAD.state = k.state || 'error'; KLAD.msg = k.msg || ''; KLAD.t = now();
   if (KLAD.state === 'ok') {
@@ -4131,43 +4210,58 @@ function kladPanel(pg, scr, r) {
   return null;
 }
 const kladKeys = () => [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']],
-  ['2', 'ACK', finCmdAck, ['ACK', 'FINACK', 'SILENCE'], 'ACK (FINANCE LAMP, ' + CFG.AL.FinanceAckHours + ' H)']];
+  ['2', 'ACK', finCmdAck, ['ACK', 'FINACK', 'SILENCE'], 'ACK (URGENT ' + CFG.AL.FinanceAckHours + ' H · BUDGET OVER TO END OF CYCLE)']];
 const kDay = d => { const s = String(d || ''); return s.length >= 10 ? s.slice(8, 10) + '/' + s.slice(5, 7) : '--/--'; };
 const kArr = v => Array.isArray(v) ? v : [];
 // compte courant principal : le premier compte courant de Klad (ordre du Carnet)
 const kladMain = S => kArr(S.accounts).find(a => a.kind === 'current' && a.balance != null) || null;
-// alertes à traiter (caut / crit, crit d'abord) ; les « info » de Klad restent dans Klad
-const kladAlerts = S => kArr(S.alerts).filter(a => a.level === 'crit' || a.level === 'caut').sort((a, b) => (b.level === 'crit') - (a.level === 'crit'));
 const kladAlTxt = a => ((a.code ? a.code.replace(/_/g, ' ') + (a.text ? ' · ' : '') : '') + String(a.text || '')).toUpperCase();
-const kladAtN = At => At && typeof At === 'object' ? (+At.unseen || 0) + (+At.unclassified || 0) + (+At.accounts_to_check || 0) + (At.backup_days ? 1 : 0) : 0;
 // reste à vivre : depuis le début du cycle (dernier salaire)
 const kladLtl = M => M && M.left_to_live != null ? M.left_to_live : null;
 
 // ------------------------------------------------------------------ M71 FINANCE : situation et alertes
+// 1.21 : ALERTS = ce qui allume le voyant (à traiter tout de suite en CRIT, dépassements de budget en CAUT, acquittés
+// estompés jusqu'à la fin du cycle) ; IN KLAD = opérations à valider (non vues), à classer, comptes à vérifier, et les
+// autres avis CAUT de Klad (synchro, accès banque, découvert lointain…), sans alarme.
 PAGES.M71 = { code: 'M71', name: 'FINANCE', ru: 'ФИНАНСЫ', words: ['FINANCE', 'FIN', 'MONEY', 'KLAD', 'ARGENT'], fps: 1, keys: kladKeys(),
   draw(scr, r) {
     const ir = kladPanel(this, scr, r); if (!ir) return;
-    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), mac = S.main_after_card, al = kladAlerts(S), atN = kladAtN(S.attention);
+    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), mac = S.main_after_card, At = S.attention || {};
     const card = kArr(S.accounts).find(a => a.kind === 'card' && a.due);
+    const sigs = finSigsNow(), bAck = kArr(S.alerts).filter(a => a.code === 'BUDGET_OVER' && finBudAcked(finBudKey(a.text)));
+    const notes = kArr(S.alerts).filter(a => a.level === 'caut' && !['BUDGET_OVER', 'NEGATIVE_BALANCE', 'COMMUN_UNPLANNED', 'ACCOUNT_CHECK'].includes(a.code));
     let y = ir.y;
     // situation : reste à vivre, compte courant, après la carte, total
     sub(scr, ir.x, y++, ir.w, 'SITUATION', M.from ? 'CYCLE FROM ' + kDay(M.from) : '', t.D);
     if (ltl != null) W.kv(scr, ir.x, y++, ir.w, 'LEFT TO LIVE', eur(ltl), t.D, ltl < 0 ? t.RB : t.B);
     if (main && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT · ' + clip(String(main.label || main.id || '').toUpperCase(), 14), eur(main.balance), t.D, main.balance < 0 ? t.RB : (main.stale ? t.D : t.N));
     if (mac != null && card && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'CURRENT − ' + clip(String(card.label || 'CARD').toUpperCase(), 12), eur(mac), t.D, mac < 0 ? t.RB : t.N);
-    { const tp = kladPerso(S), tv = tp != null ? tp : (S.total ? S.total.all : null);
-      if (tv != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, tp != null ? 'TOTAL PERSO' : 'TOTAL', eur(tv), t.D, tv < 0 ? t.RB : t.N); }
+    { const tp = kladPerso(S); if (tp != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'TOTAL PERSO', eur(tp), t.D, tp < 0 ? t.RB : t.N); }
+    // à faire dans Klad : réservé en bas (titre + à valider + à classer / comptes + avis)
+    const todo = [['TO VALIDATE', At.unseen ? At.unseen + ' OP' + (At.unseen > 1 ? 'S' : '') + ' NOT SEEN' : 'NONE', At.unseen ? t.B : t.D]];
+    if (At.unclassified) todo.push(['TO CLASSIFY', String(At.unclassified), t.N]);
+    if (At.accounts_to_check) todo.push(['ACCOUNTS TO CHECK', String(At.accounts_to_check), t.R]);
+    if (At.wallet_to_match) todo.push(['WALLET TO MATCH', String(At.wallet_to_match), t.N]);
+    for (const a of notes) todo.push([a.code ? a.code.replace(/_/g, ' ') : 'NOTE', String(a.text || '').toUpperCase(), t.R]);
+    if (At.backup_days) todo.push(['BACKUP', At.backup_days + ' D AGO', t.D]);
     y++;
-    // alertes
-    const ack = finPaused() ? 'ACK · ' + finLeftTxt(FINACK.until - now()) : '';
-    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', al.length ? (ack ? ack + ' · ' : '') + al.length + (ack ? '' : ' · [*2] ACK') : 'NONE', ack ? t.D : (al.length ? t.RB : t.D));
-    const nA = Math.max(0, Math.min(al.length, ir.b - y - (atN ? 2 : 0)));
-    for (const a of al.slice(0, al.length > nA ? Math.max(0, nA - 1) : nA)) {
-      scr.put(ir.x, y, a.level === 'crit' ? 'CRIT' : 'CAUT', a.level === 'crit' ? t.ALERT : t.RB); scr.put(ir.x + 6, y++, clip(kladAlTxt(a), ir.w - 6), a.level === 'crit' ? t.RB : t.R);
+    // alertes : ce qui allume le voyant
+    const ack = finPaused() ? 'ACK · ' + finLeftTxt(FINACK.until - now()) : '', nLive = sigs.length;
+    const room = Math.max(0, ir.b - y - 1 - Math.min(todo.length + 2, 4));
+    if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'ALERTS', nLive ? (ack ? ack + ' · ' : '') + nLive + (ack ? '' : ' · [*2] ACK') : (bAck.length ? 'NONE ACTIVE' : 'NONE'), ack || !nLive ? t.D : t.RB);
+    const rows = sigs.map(s => [s.lvl === 2 ? 'CRIT' : 'CAUT', s.txt, s.lvl === 2 ? t.ALERT : t.RB, s.lvl === 2 ? t.RB : t.R])
+      .concat(bAck.map(a => ['ACK', 'BUDGET · ' + String(a.text || '').toUpperCase(), t.D, t.D]));
+    const nA = Math.min(rows.length, room), shown = rows.length > nA ? Math.max(0, nA - 1) : nA;
+    for (const [k, v, ks, vs] of rows.slice(0, shown)) { scr.put(ir.x, y, k, ks); scr.put(ir.x + 6, y++, clip(v, ir.w - 6), vs); }
+    if (rows.length > shown && y < ir.b) noData(scr, ir.x + 6, y++, ir.w - 6, '+' + (rows.length - shown) + ' MORE · ' + pageAddr('M22') + ' FAIL');
+    // dans Klad, sans alarme
+    if (y + 1 < ir.b) {
+      y++;
+      sub(scr, ir.x, y++, ir.w, 'IN KLAD', 'NO ALARM', t.D);
+      const n = Math.min(todo.length, ir.b - y), sh = todo.length > n ? Math.max(0, n - 1) : n;
+      for (const [k, v, vs] of todo.slice(0, sh)) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, vs);
+      if (todo.length > sh && y < ir.b) noData(scr, ir.x, y++, ir.w, '+' + (todo.length - sh) + ' MORE IN KLAD');
     }
-    if (al.length > nA && y < ir.b) noData(scr, ir.x + 6, y++, ir.w - 6, '+' + (al.length - Math.max(0, nA - 1)) + ' MORE · IN KLAD');
-    // à vérifier dans Klad : un seul compteur, le détail est dans Klad
-    if (atN && y + 1 < ir.b) { y++; W.kv(scr, ir.x, y++, ir.w, 'TO CHECK IN KLAD', String(atN), t.D, S.attention.accounts_to_check ? t.RB : t.B); }
   } };
 
 // ------------------------------------------------------------------ M72 ACCOUNTS : soldes, total, fin de mois du Commun
@@ -4175,9 +4269,23 @@ PAGES.M72 = { code: 'M72', name: 'ACCOUNTS', ru: 'СЧЕТА', words: ['ACCOUNTS
   draw(scr, r) {
     const ir = kladPanel(this, scr, r); if (!ir) return;
     const S = KLAD.s, acc = kArr(S.accounts), C = S.commun, tot = S.total || {};
-    const tp = kladPerso(S), nC = C ? 3 : 0, nT = (tot.all != null ? 1 : 0) + (tp != null ? 1 : 0) + (tot.savings != null ? 1 : 0);
+    const tp = kladPerso(S), wc = kladWithCommun(S);
+    // Commun (Klad 0.7 → 1.3) : fin de mois, reste à payer, virements en route, point bas, échéances non mensuelles, imprévus
+    const cl = [];
+    if (C) {
+      cl.push(['END OF MONTH', eur(C.end_of_month), C.end_of_month < 0 || C.overdraft_risk ? t.RB : t.B]);
+      cl.push(['STILL TO PAY', C.debits_due != null ? eur(-C.debits_due) + (C.reserve ? ' · RES ' + eur(C.reserve).replace(' €', '') : '') : '—', t.N]);
+      if (C.transfers_in_transit) cl.push(['IN TRANSIT', '+' + eur(C.transfers_in_transit), t.N]);
+      if (C.low && C.low.amount < 0) cl.push(['LOW POINT', eur(C.low.amount) + ' · ' + kDay(C.low.date), t.RB]);
+      const U = C.unplanned;
+      if (U && U.n) cl.push(['UNPLANNED', U.n + ' · ' + eur(-Math.abs(U.amount || 0)) + (U.unseen ? ' · ' + U.unseen + ' NOT SEEN' : ''), U.unseen ? t.RB : t.N]);
+      const d = kArr(C.due).filter(x => x && x.amount);
+      if (d.length) cl.push(['NON-MONTHLY', d.slice(0, 2).map(x => String(x.month || '').slice(5, 7) + '/' + String(x.month || '').slice(2, 4) + ' ' + eur(x.amount).replace(' €', '') + (x.late ? ' LATE' : '')).join(' · '), d.some(x => x.late) ? t.R : t.N]);
+    }
+    const nT = (tp != null ? 1 : 0) + (wc != null ? 1 : 0) + (tot.savings != null ? 1 : 0);
     let y = ir.y;
-    const nAcc = Math.max(0, Math.min(acc.length, ir.b - y - 1 - nT - nC - (nC ? 1 : 0)));
+    const nC = C ? Math.min(cl.length, Math.max(2, ir.b - y - 1 - nT - 2 - Math.min(acc.length, 3))) : 0;
+    const nAcc = Math.max(0, Math.min(acc.length, ir.b - y - 1 - nT - (nC ? nC + 2 : 0)));
     sub(scr, ir.x, y++, ir.w, 'BALANCES', acc.length > nAcc ? '+' + (acc.length - nAcc) + ' IN KLAD' : '', t.D);
     for (const a of acc.slice(0, nAcc)) {
       const isCard = a.kind === 'card', v = isCard ? (a.due != null ? -a.due : null) : a.balance;
@@ -4186,14 +4294,13 @@ PAGES.M72 = { code: 'M72', name: 'ACCOUNTS', ru: 'СЧЕТА', words: ['ACCOUNTS
       W.rjust(scr, ir.r, y++, note, a.stale ? t.B : t.F);
     }
     if (tp != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'TOTAL PERSO', eur(tp), t.D, tp < 0 ? t.RB : t.B);
-    if (tot.all != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, tp != null ? 'WITH COMMUN' : 'TOTAL', eur(tot.all), t.D, tot.all < 0 ? t.RB : (tp != null ? t.N : t.B));
+    if (wc != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'WITH COMMUN', eur(wc), t.D, wc < 0 ? t.RB : t.N);
     if (tot.savings != null && y < ir.b) W.kv(scr, ir.x, y++, ir.w - 10, 'OF WHICH SAVINGS', eur(tot.savings), t.D, t.N);
     // Commun : où il finira le mois
     if (C && y + 2 < ir.b) {
       y++;
       sub(scr, ir.x, y++, ir.w, 'COMMUN', C.overdraft_risk ? 'OVERDRAFT RISK' : '', C.overdraft_risk ? t.RB : t.D);
-      W.kv(scr, ir.x, y++, ir.w, 'END OF MONTH', eur(C.end_of_month), t.D, C.end_of_month < 0 || C.overdraft_risk ? t.RB : t.B);
-      if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, 'STILL TO PAY', C.debits_due != null ? eur(-C.debits_due) + (C.reserve ? ' · RES ' + eur(C.reserve).replace(' €', '') : '') : '—', t.D, t.N);
+      for (const [k, v, vs] of cl.slice(0, Math.max(nC, 0))) { if (y >= ir.b) break; W.kv(scr, ir.x, y++, ir.w, k, v, t.D, vs); }
     }
   } };
 
@@ -4227,7 +4334,8 @@ PAGES.M73 = { code: 'M73', name: 'MONTH', ru: 'МЕСЯЦ', words: ['MONTH', 'BU
         y++;
         sub(scr, ir.x, y++, ir.w, 'OVER BUDGET', String(ov.length), t.RB);
         for (const p of ov.slice(0, 3)) { if (y >= ir.b) break;
-          W.kv(scr, ir.x + 2, y++, ir.w - 2, clip(String(p.label || '').toUpperCase(), 18), '+' + eur(p.spent - p.budget), t.D, t.RB); }
+          const ak = finBudAcked(finBudKey(p.label));                     // acquitté : estompé jusqu'à la fin du cycle
+          W.kv(scr, ir.x + 2, y++, ir.w - 2, clip(String(p.label || '').toUpperCase(), 18), (ak ? 'ACK · ' : '') + '+' + eur(p.spent - p.budget), t.D, ak ? t.D : t.RB); }
       }
     }
     // prélèvements à venir : total puis les prochains
@@ -5297,11 +5405,11 @@ function briefLines() {
   // état : défauts, batterie (vitesse), S-16, pas
   // finances (Klad), l'essentiel seulement : reste à vivre sur le dernier salaire, compte courant, alertes éventuelles
   if (typeof KLAD !== 'undefined' && KLAD.state === 'ok' && KLAD.s) {
-    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), al = kladAlerts(S);
+    const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), al = finSigsNow().filter(x => x.cat === 'act');   // 1.21 : urgences seulement, pas les dépassements de budget
     L.push(['', ''], ['FINANCE', 'KLAD' + (KLAD.upd ? ' · ' + ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '')]);
     if (ltl != null) L.push(['LIVE LEFT', eur(ltl) + (M.from ? ' · SINCE ' + kDay(M.from) : ''), ltl < 0 ? t.RB : undefined]);
     if (main) L.push(['CURRENT', eur(main.balance) + ' · ' + String(main.label || main.id || '').toUpperCase(), main.balance < 0 ? t.RB : undefined]);
-    al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', kladAlTxt(a), t.RB]));
+    al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', a.txt, t.RB]));
     if (al.length > 2) L.push(['', '+ ' + (al.length - 1) + ' MORE · ' + pageAddr('M71'), t.D]);
   }
   L.push(['', ''], ['STATUS', '']);
@@ -5548,7 +5656,7 @@ class App {
   }
   say(text, warn = false) { this.msg = text; this.msgT = now(); this.msgWarn = warn; this.msgN = (this.msgN || 0) + 1; }
   // ---------------------------------------------------------- commandes : une seule grammaire pour tous les formats
-  //   <FORMAT>                  2.3 · M31 · M33 · WEATHER                    navigation
+  //   <FORMAT>                  2.3 · M32 · M31 · WEATHER                    navigation
   //   *n                        action n du format affiché (comme * puis n au pavé)
   //   <ACTION> [ARG]            ACK 2 · SIM ON · HDG OFF                     format affiché, sinon groupe, sinon Grafit
   //   <FORMAT> <ACTION|n> [ARG] FAIL ACK ALL · WX REFRESH · M81 3            action d'un autre format, qui s'affiche
@@ -5620,7 +5728,7 @@ class App {
   help(arg) {
     if (arg === 'ALL' || arg === 'COMMANDS') {
       this.helpOv = { t: now(), title: 'COMMANDS', rt: 'ALL FORMATS', lines: [
-        ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['M31 · M33', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
+        ['NAVIGATION', ''], ['2.3', 'FORMAT BY ADDRESS'], ['M32 · M31', 'FORMAT BY CODE'], ['WEATHER', 'BY NAME OR KEYWORD'], ['', ''],
         ['ACTIONS', 'SAME GRAMMAR ON EVERY FORMAT'], ['*n', 'ACTION n OF THIS FORMAT'], ['ACK 2', 'ACTION + ARGUMENT'],
         ['FAIL ACK ALL', 'FORMAT + ACTION + ARG'], ['M81 3', 'FORMAT + ACTION NUMBER'], ['', 'ELSEWHERE: IF UNIQUE'], ['', ''],
         ['COMMON', ''], ['ACK [n|ALL]', 'ACKNOWLEDGE FAULTS'], ['CLEAR [n|ALL]', "ERASE ACK'D ENDED FAULTS"], ['SEL [n|+|-]', 'SELECT ITEM'],
@@ -6812,7 +6920,7 @@ function drawApi(scr, ir) {                                   // 3.4 [*8] : vue 
     if (!MB.key) det('NO KEY · MBKEY <KEY> · FORECAST FROM MÉTÉO-FRANCE', t.F);
     else { if (MB.err) det(MB.err + (MB.errT ? ' · ' + hhmm(MB.errT) : '') + (wxBackup() ? ' · BACKUP ' + (SRC.wx.v.tsrc === 'AROME' ? 'AROME' : 'OPEN-METEO') : ''), t.RB); qd(MB.key.slice(0, 4), mq.day, MB_DAY, null, mq.month, MB_MONTH); } }
   row('BISON FUTE', s.bf, ok.bf); det(s.bf[0] === 'ERR' ? s.bf[1] : (s.bf[0] === 'OK' ? 'OPEN DATA · NO KEY · NATIONAL ROADS' : s.bf[1]), s.bf[0] === 'ERR' ? t.RB : t.F);
-  row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M32') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);
+  row('CARTO MAP', [SET.mapKey ? 'SET' : '—'], 0); det(SET.mapKey ? 'KEY ' + SET.mapKey.slice(0, 4) + '… · ' + pageAddr('M34') + ' RADAR BASEMAP' : 'NO KEY · ESRI DARK GRAY', t.F);
   y++;
   if (y < ir.b) sub(scr, ir.x, y++, ir.w, 'SAFEGUARDS', '', t.F);
   const kv = (k, v, st = t.N) => { if (y < ir.b) W.kv(scr, ir.x, y++, ir.w, k, v, t.D, st); };
