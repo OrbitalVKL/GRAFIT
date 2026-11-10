@@ -140,6 +140,16 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.21.1
+
+- **1.1 BRIEF** : `LIVE LEFT` donne le reste à vivre et les jours restants du cycle Klad, aujourd'hui compris
+  (`412 € · 15 DAYS`), au lieu de la date de début ; écran court : `412 · 15 D · CUR …`.
+- **3.1 FORECAST** : l'afficheur de gauche montre la température actuelle (`NOW`, au dixième) au lieu du maxi, déjà au
+  bandeau et sur la frise horaire.
+- **3.3 WEEK** : titres de section en trait double (═), plus clair, pour ne plus se confondre avec les pointillés et la
+  ligne de base des graphes ; une ligne vide entre sections dès que l'écran a 4 lignes libres, barres de température
+  plus hautes dès 6.
+
 ## 1.21.0
 
 - **Voyant FINANCE recentré** : ne remontent que les événements à traiter tout de suite, en CRIT — compte courant ou

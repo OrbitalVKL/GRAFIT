@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.21.0', BUILD: '20261107', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.21.1', BUILD: '20261110', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -3440,7 +3440,7 @@ function wxTimeline(scr, r, w, t0, hours) {
 }
 
 // ------------------------------------------------------------------ 3.1 M31 FORECAST : la journée d'un coup d'œil
-// Bandeau du jour, deux afficheurs (maxi · pluie), quatre tranches de 6 h à partir de maintenant, frise horaire
+// Bandeau du jour, deux afficheurs (maintenant · pluie), quatre tranches de 6 h à partir de maintenant, frise horaire
 // depuis le réveil (température, ressenti, pluie, ciel) et les repères : vent, soleil, UV.
 const PERIOD_N = ['NIGHT', 'MORNING', 'AFTNOON', 'EVENING'], PERIOD_T = ['NIGHT', 'TMW AM', 'TMW PM', 'TMW EVE'];
 PAGES.M31 = { code: 'M31', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORECAST', 'TODAY', 'RAIN', 'PLUIE', 'PREVI'], fps: 1,
@@ -3459,11 +3459,10 @@ PAGES.M31 = { code: 'M31', name: 'FORECAST', ru: 'ПРОГНОЗ', words: ['FORE
     W.rjust(scr, ir.r, y, tRange(dr.tmin ?? (today && today.tmin), dr.tmax ?? (today && today.tmax)), t.N);
     const tight = ir.b - ir.y < 30;                              // écran court : sans lignes d'espacement
     y += tight ? 1 : 2;
-    // afficheurs : maxi restant du jour · prochaine pluie
+    // afficheurs : température actuelle · prochaine pluie
     const rest = wxSpan(w, T - 3600000, m0 + 864e5) || today, [hw, x2] = twoUp(ir);
     const ro = rainOutlook(w, T) || { state: 'dry' };
-    const hiV = rest && rest.tmax != null ? rest.tmax : (dr.tmax ?? null);
-    W.readout(scr, ir.x, y, hw, rest && rest.tAt && rest.tAt > T - 3600000 ? 'HIGH · ' + hm(rest.tAt) : 'HIGH', hiV != null ? Math.round(hiV) + '' : '', '°C', t.N, hiV != null && hiV > CFG.WXL.HeatOut, true, 2);
+    W.readout(scr, ir.x, y, hw, 'NOW', w.temp.toFixed(1), '°C', t.N, w.temp > CFG.WXL.HeatOut, true, 3);   // 1.21.1 : actuelle (le maxi est au bandeau et sur la frise)
     let lab = 'RAIN', val = 'dry', unit = '', al = false;
     if (ro.state === 'now') { lab = 'RAINING · mm/h'; val = ro.rate.toFixed(1); al = ro.rate >= 7.6; }
     else if (ro.state === 'soon') { if (ro.mins < 100) { lab = 'RAIN IN'; val = String(ro.mins); unit = 'MIN'; } else { lab = 'RAIN AT'; val = hm(ro.at); } }
@@ -3582,14 +3581,18 @@ PAGES.M33 = { code: 'M33', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     const T = Date.now(), m0 = dayOfMs(T);
     const days = (w.days || []).filter(d => Date.parse(d.date + 'T12:00') > m0 + 864e5 - 1).slice(0, 5), d0 = dayRec(w, T);
     if (!days.length) { noData(scr, ir.x, y, ir.w, 'WEEK NOT IN FEED · [*1] REFRESH'); return; }
-    const n = days.length, sel = Math.min(WK.sel, n - 1), gap = ir.h >= 31;
+    // 1.21.1 : 24 lignes au plus serré ; une ligne vide entre sections dès 4 lignes libres, barres de température plus hautes dès 6
+    const n = days.length, sel = Math.min(WK.sel, n - 1), spare = ir.b - ir.y - 24, gap = spare >= 4;
+    // titres de section en trait double (═), plus clair que les filets et pointillés des graphes
+    const sec = (yy, title, rt = '', rts = t.D) => { scr.put(ir.x, yy, title, t.B); const k = slen(title) + 1; rt = String(rt);
+      scr.put(ir.x + k, yy, '═'.repeat(Math.max(0, ir.w - k - (rt ? slen(rt) + 1 : 0))), t.D); if (rt) W.rjust(scr, ir.x + ir.w, yy, rt, rts); };
     const cw = Math.floor(ir.w / n), gx = ir.x + Math.floor((ir.w - cw * n) / 2), colX = k => gx + k * cw;
     const row = (k, txt, st) => scr.put(colX(k), y, center(clip(txt, cw - 1), cw), st);
     const wet = d => d.pop >= 50 || d.psum >= 1, dts = days.map(d => new Date(d.date + 'T12:00'));
     // résumé de la semaine
     const wetDays = days.filter(wet).map((d, k) => DOW[new Date(d.date + 'T12:00').getDay()]);
     const dT = d0 ? days.slice(0, 3).reduce((a, d) => a + d.tmax, 0) / Math.min(3, n) - d0.tmax : 0;
-    sub(scr, ir.x, y++, ir.w, 'NEXT ' + n + ' DAYS', (Math.abs(dT) >= 1.5 ? (dT > 0 ? 'WARMER' : 'COOLER') : 'STEADY') + ' · ' + (wetDays.length ? 'RAIN ' + wetDays.join(' ') : 'DRY'), t.D);
+    sec(y++, 'NEXT ' + n + ' DAYS', (Math.abs(dT) >= 1.5 ? (dT > 0 ? 'WARMER' : 'COOLER') : 'STEADY') + ' · ' + (wetDays.length ? 'RAIN ' + wetDays.join(' ') : 'DRY'), t.D);
     // en-têtes de colonnes : jour, date, ciel
     days.forEach((d, k) => { const on = k === sel; scr.put(colX(k), y, center(DOW[dts[k].getDay()], cw), on ? t.INV : t.B); }); y++;
     days.forEach((d, k) => row(k, pad2(dts[k].getDate()), k === sel ? t.N : t.D)); y++;
@@ -3598,10 +3601,10 @@ PAGES.M33 = { code: 'M33', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     days.forEach((d, k) => { const s7 = WMO_S(d.code); row(k, SKY7[s7] || s7, wet(d) ? t.N : t.D); }); y++;
     if (gap) y++;
     // températures : maxi en haut, barres flottantes sur l'échelle commune, mini en bas ; pointillés = maxi d'aujourd'hui
-    sub(scr, ir.x, y++, ir.w, 'TEMP °C', d0 ? '┄ TODAY MAX ' + Math.round(d0.tmax) + '°' : '', t.F);
+    sec(y++, 'TEMP °C', d0 ? '┄ TODAY MAX ' + Math.round(d0.tmax) + '°' : '', t.F);
     // zone de ZH lignes : barres sur les lignes 1..ZH-2, maxi collé au-dessus du haut de chaque barre, mini collé dessous
     const lo = Math.min(...days.map(d => d.tmin), d0 ? d0.tmax : 99), hiT = Math.max(...days.map(d => d.tmax), d0 ? d0.tmax : -99);
-    const ZH = gap ? 8 : 6, rowOf = v => 1 + (hiT - v) / Math.max(1, hiT - lo) * (ZH - 2);
+    const ZH = spare >= 6 ? 8 : 6, rowOf = v => 1 + (hiT - v) / Math.max(1, hiT - lo) * (ZH - 2);
     const labs = [];                                   // cases des libellés : les pointillés passent derrière sans les rayer
     days.forEach((d, k) => {
       const rMax = Math.max(0, Math.floor(rowOf(d.tmax) + 0.001) - 1), rMin = Math.max(rMax + 1, Math.min(ZH - 1, Math.ceil(rowOf(d.tmin) - 0.001)));
@@ -3629,7 +3632,7 @@ PAGES.M33 = { code: 'M33', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     if (ir.b - y < 5) return;                          // écran court : une section entière ou rien, jamais sur le cadre
     // pluie : risque en %, cumul en barres (échelle commune), mm et heures de pluie
     const top = Math.max(...days.map(d => d.psum || 0)), vmax = [2, 5, 10, 20, 50].find(v => v >= top) || Math.ceil(top);
-    sub(scr, ir.x, y++, ir.w, 'RAIN', 'CHANCE · mm (0–' + vmax + ')', t.F);
+    sec(y++, 'RAIN', 'CHANCE · mm (0–' + vmax + ')', t.F);
     days.forEach((d, k) => row(k, (d.pop != null ? d.pop : '—') + '%', wet(d) ? t.B : t.D)); y++;
     scr.vector(gx, y, cw * n, 2, (c, b) => {
       const yb = b.y + b.h - b.ch * 0.15, hh = b.h - b.ch * 0.3, ww = Math.max(4, b.cw * 3.2);
@@ -3645,13 +3648,13 @@ PAGES.M33 = { code: 'M33', name: 'WEEK', ru: 'НЕДЕЛЯ', words: ['WEEK', 'SE
     if (gap) y++;
     // vent : rafale maxi et direction dominante
     if (ir.b - y < 2) return;
-    sub(scr, ir.x, y++, ir.w, 'GUSTS km/h', 'RED ≥ 60', t.F);
+    sec(y++, 'GUSTS km/h', 'RED ≥ 60', t.F);
     days.forEach((d, k) => { const g = d.gmax != null ? d.gmax : d.wmax; row(k, (d.wdir != null ? card(d.wdir) + ' ' : '') + Math.round(g), g >= 60 ? t.RB : (g >= 40 ? t.N : t.D)); }); y++;
     if (gap) y++;
     // détail du jour choisi
     if (ir.b - y < 3) return;
     const d = days[sel], dm = dayOfMs(dts[sel].getTime());
-    sub(scr, ir.x, y++, ir.w, DOW[dts[sel].getDay()] + ' ' + pad2(dts[sel].getDate()) + ' · ' + (WMO[d.code] || WMO_S(d.code)), '*2 ◂ ▸ *3', t.D);
+    sec(y++, DOW[dts[sel].getDay()] + ' ' + pad2(dts[sel].getDate()) + ' · ' + (WMO[d.code] || WMO_S(d.code)), '*2 ◂ ▸ *3', t.D);
     for (const [lab, a, z] of [['MORNING', 6, 12], ['AFTERNOON', 12, 18], ['EVENING', 18, 24]]) {
       if (y >= ir.b) break;
       const sp = wxSpan(w, dm + a * 3600000, dm + z * 3600000); if (!sp) continue;
@@ -4212,6 +4215,8 @@ function kladPanel(pg, scr, r) {
 const kladKeys = () => [['1', 'REFRESH', app => { if (!APK) return app && app.say('FINANCE: GRAFIT APK ONLY', true); kladAsk(true); app && app.say('FINANCE · READING KLAD'); }, ['REFRESH', 'RELOAD']],
   ['2', 'ACK', finCmdAck, ['ACK', 'FINACK', 'SILENCE'], 'ACK (URGENT ' + CFG.AL.FinanceAckHours + ' H · BUDGET OVER TO END OF CYCLE)']];
 const kDay = d => { const s = String(d || ''); return s.length >= 10 ? s.slice(8, 10) + '/' + s.slice(5, 7) : '--/--'; };
+// jours restants du cycle Klad, aujourd'hui compris (fin du cycle = M.to inclus) ; null sans date de fin
+const kDaysLeft = M => { if (!M || !M.to || String(M.to).length < 10) return null; const e = new Date(String(M.to).slice(0, 10) + 'T23:59:59'); return isNaN(e) ? null : Math.max(0, Math.ceil((e - Date.now()) / 864e5)); };
 const kArr = v => Array.isArray(v) ? v : [];
 // compte courant principal : le premier compte courant de Klad (ordre du Carnet)
 const kladMain = S => kArr(S.accounts).find(a => a.kind === 'current' && a.balance != null) || null;
@@ -5407,7 +5412,8 @@ function briefLines() {
   if (typeof KLAD !== 'undefined' && KLAD.state === 'ok' && KLAD.s) {
     const S = KLAD.s, M = S.month || {}, ltl = kladLtl(M), main = kladMain(S), al = finSigsNow().filter(x => x.cat === 'act');   // 1.21 : urgences seulement, pas les dépassements de budget
     L.push(['', ''], ['FINANCE', 'KLAD' + (KLAD.upd ? ' · ' + ageTxt(Math.max(0, now() - KLAD.upd / 1000)) : '')]);
-    if (ltl != null) L.push(['LIVE LEFT', eur(ltl) + (M.from ? ' · SINCE ' + kDay(M.from) : ''), ltl < 0 ? t.RB : undefined]);
+    const dl = kDaysLeft(M);                                     // 1.21.1 : jours restants du cycle, aujourd'hui compris
+    if (ltl != null) L.push(['LIVE LEFT', eur(ltl) + (dl != null ? ' · ' + dl + (dl === 1 ? ' DAY' : ' DAYS') : ''), ltl < 0 ? t.RB : undefined]);
     if (main) L.push(['CURRENT', eur(main.balance) + ' · ' + String(main.label || main.id || '').toUpperCase(), main.balance < 0 ? t.RB : undefined]);
     al.slice(0, al.length > 2 ? 1 : 2).forEach(a => L.push(['ALERT', a.txt, t.RB]));
     if (al.length > 2) L.push(['', '+ ' + (al.length - 1) + ' MORE · ' + pageAddr('M71'), t.D]);
@@ -5440,7 +5446,7 @@ function briefFit(L, room) {
   join('BATTERY', 'STEPS', (a, b) => a + ' · ' + b + ' STEPS'); if (fits()) return L;
   fold('WEATHER', 'SUN', (a, b) => (a ? a + ' · ' : '') + 'SUN ' + b.replace('RISE ', '').replace(' · SET ', '–')); if (fits()) return L;
   join('WIND', 'PRESSURE', (a, b) => a.replace(' km/h', '').replace(' · GUSTS ', ' G') + ' · ' + b.replace('TREND ', '')); if (fits()) return L;
-  join('LIVE LEFT', 'CURRENT', (a, b) => a.replace(' €', '').replace(/ · SINCE .*/, '') + ' · CUR ' + b.replace(' €', '')); if (fits()) return L;
+  join('LIVE LEFT', 'CURRENT', (a, b) => a.replace(' €', '').replace(/ DAYS?$/, ' D') + ' · CUR ' + b.replace(' €', '')); if (fits()) return L;
   fold('NIGHT', '7 NIGHTS', (a, b) => a + ' · 7N ' + b.replace('SURPLUS', '+').replace('DEBT', '−').replace(' · REG ', ' ±').replace('±±', '±')); if (fits()) return L;
   const t0 = at('TODAY'); if (t0 < 0) return L;
   let end = t0 + 1; while (end < L.length && !['STATUS', 'FINANCE'].includes(L[end][0]) && (L[end][0] || L[end][1])) end++;
