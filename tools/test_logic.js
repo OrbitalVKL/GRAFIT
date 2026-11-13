@@ -6,7 +6,7 @@ const fs = require('fs'), path = require('path'), assert = require('assert');
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 const m = html.match(/\/\/ <logic>\n([\s\S]*?)\/\/ <\/logic>/);
 if (!m) { console.error('bloc // <logic> introuvable dans index.html'); process.exit(1); }
-const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finBudKey, finBudKeys, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, serNear, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan };')();
+const L = new Function('"use strict";\n' + m[1] + '\nreturn { rteFresh, rteUsual, rteSuspect, parseEur, finSignals, finBudKey, finBudKeys, finAckMake, finAckEval, nightFind, nightShifted, mbParse, serAt, serNear, wxOverlay, quotaRoll, quotaLvl, drainRate, battPlan, alarmStep, alarmPending };')();
 
 let ok = 0, ko = 0;
 const test = (name, fn) => { try { fn(); ok++; console.log('  ok   ' + name); } catch (e) { ko++; console.log('  FAIL ' + name + '\n       ' + e.message); } };
@@ -278,6 +278,41 @@ test('battPlan : 40 % à −6 %/h à 13:00, coucher 23:30 → vide ~19:40, branc
   assert.ok(Math.abs(p.empty - (T + 6.667 * H)) < 60); assert.ok(Math.abs(p.by - (T + 3.333 * H)) < 60);
 });
 test('battPlan : tient jusqu\'au coucher → null', () => { assert.strictEqual(L.battPlan(80, -5, 13 * H, 23.5 * H, 20), null); });
+
+// ------------------------------------------------------------------ réveil : relevés rejoués (1.21.2)
+console.log('DAY · ALARM REPLAY');
+{
+  const at = (d, h, mi = 0) => new Date(2026, 10, d, h, mi).getTime() / 1000;          // nov. 2026, heure locale
+  const ymd = ts => { const x = new Date(ts * 1000); return '' + x.getFullYear() + String(x.getMonth() + 1).padStart(2, '0') + String(x.getDate()).padStart(2, '0'); };
+  const morning = ts => { const h = new Date(ts * 1000).getHours(); return h >= 3 && h < 14; };
+  const replay = (A, L, seen, T) => { for (const [t, ts] of L.alarmPending(A.__L, seen, T)) L.alarmStep(A.A, ts, t, ymd, morning); return A.A; };
+  test('réveil passé de 7:00 à 8:00 la veille au soir, page rouverte après 7:00 → 8:00 retenu', () => {
+    const A = { A: {} };
+    L.alarmStep(A.A, at(13, 7), at(12, 21), ymd, morning);                  // page ouverte jeudi soir : 7:00
+    A.__L = [[at(12, 21) * 1000, at(13, 7) * 1000], [at(12, 23, 10) * 1000, at(13, 8) * 1000], [at(13, 8, 1) * 1000, at(16, 7) * 1000]];
+    replay(A, L, at(12, 21), at(13, 8, 25));
+    assert.strictEqual(A.A['20261113'], at(13, 8)); assert.strictEqual(A.A['20261116'], at(16, 7));
+  });
+  test('ancien comportement : sans relevé intermédiaire, 7:00 passé reste (non corrigé)', () => {
+    const A = {}; L.alarmStep(A, at(13, 7), at(12, 21), ymd, morning); L.alarmStep(A, at(16, 7), at(13, 8, 25), ymd, morning);
+    assert.strictEqual(A['20261113'], at(13, 7));
+  });
+  test('alarme du matin désactivée la veille → retirée', () => {
+    const A = {}; L.alarmStep(A, at(13, 7), at(12, 21), ymd, morning);
+    L.alarmStep(A, at(16, 7), at(12, 23), ymd, morning);
+    assert.strictEqual(A['20261113'], undefined);
+  });
+  test('répétition (snooze) après la sonnerie : l\'heure du réveil ne bouge pas', () => {
+    const A = {}; L.alarmStep(A, at(13, 8), at(12, 23), ymd, morning);
+    assert.deepStrictEqual(L.alarmStep(A, at(13, 8, 10), at(13, 8, 1), ymd, morning), []);
+    assert.strictEqual(A['20261113'], at(13, 8));
+  });
+  test('alarmPending : ordre, déjà vus et futurs écartés', () => {
+    const P = L.alarmPending([[3000e3, 1], [1000e3, 2], [2000e3, 3], [9999e3, 4]], 1000, 3000);
+    assert.deepStrictEqual(P.map(r => r[0]), [2000, 3000]);
+    assert.deepStrictEqual(L.alarmPending(null, 0, 1), []);
+  });
+}
 
 console.log('\n' + ok + ' ok · ' + ko + ' failed');
 process.exit(ko ? 1 : 0);

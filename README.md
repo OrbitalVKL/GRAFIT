@@ -140,6 +140,14 @@ d'écran, déverrouillages, moyennes. Coucher et réveil viennent des événemen
   zéro), repère 85 dB (risque auditif). Le micro du téléphone n'est pas étalonné : +100 dB par défaut (±10 dB) ;
   `CAL 45` (`*3`) cale la lecture sur un sonomètre de référence, `CAL RESET` revient à l'estimation.
 
+## 1.21.2
+
+- **Réveil (4.1 DAY)** : un réveil Android modifié alors que Grafit est fermée (passé de 7:00 à 8:00 la veille au
+  soir, désactivé…) est désormais pris en compte. L'APK note chaque changement du réveil (signal système, et à chaque
+  relevé du journal continu) ; à l'ouverture, la page rejoue ces relevés dans l'ordre et retient l'heure réellement
+  prévue ce matin, même déjà passée. Un réveil déjà daté sur l'ancienne alarme est corrigé ; le journal (3.3 FEED)
+  l'indique (`ALARM SET · FRI 08:00 · SEEN THU 23:10`, `WAKE 07:00 DROPPED · ALARM MOVED TO 08:00 WHILE CLOSED`).
+
 ## 1.21.1
 
 - **1.1 BRIEF** : `LIVE LEFT` donne le reste à vivre et les jours restants du cycle Klad, aujourd'hui compris

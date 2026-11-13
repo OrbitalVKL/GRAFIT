@@ -924,7 +924,7 @@ if (typeof module !== 'undefined') module.exports = { t, STYLES, Screen, Rect, W
 
 // ---------------------------------------------------------------------------------------- configuration
 const CFG = {
-  VERSION: '1.21.1', BUILD: '20261110', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
+  VERSION: '1.21.2', BUILD: '20261113', OS_RU: 'ГРАФИТ', OS: 'GRAFIT OS', STATION: 'MOBILE',
   HOME: { lat: 48.853, lon: 2.349, name: 'PARIS' },      // repli neutre avant tout premier fix (ensuite : dernière position connue, gardée sur le téléphone)
   // repères météo (information, pas d'alarme) et rythme du test des voyants
   WXL: { StdP: 1013.25, HeatOut: 35 }, UI: { LampStepMs: 300 },
@@ -1201,6 +1201,23 @@ function battPlan(lvl, rate, T, bed, low) {
 }
 // niveau d'un compteur face à son plafond : 0 loin, 1 à partir de 80 % (CAUT), 2 atteint
 const quotaLvl = (n, cap) => !cap ? 0 : (n >= cap ? 2 : (n >= cap * 0.8 ? 1 : 0));
+// réveils retenus A = {AAAAMMJJ: epoch s} face à un relevé de la prochaine alarme Android ts (0 : aucune) pris à
+// l'instant t. Une alarme encore à venir et plus tôt que ts a été annulée ou repoussée ; celle du matin de ts est
+// retenue, ou remplacée tant qu'elle n'a pas sonné. Rend les changements [['DEL'|'SET', jour, epoch s]]. Les relevés
+// pris page fermée (1.21.2) sont rejoués dans l'ordre avec leur propre t : un réveil passé de 7:00 à 8:00 la veille
+// au soir donne 8:00 même si Grafit n'est rouverte qu'après 7:00.
+function alarmStep(A, ts, t, ymd, morning) {
+  const ch = [];
+  for (const k of Object.keys(A)) if (A[k] > t && (!ts || A[k] < ts - 60)) { ch.push(['DEL', k, A[k]]); delete A[k]; }
+  if (ts && morning(ts)) {
+    const d = ymd(ts);
+    if (!A[d] || (A[d] > t && Math.abs(A[d] - ts) > 60)) { A[d] = ts; ch.push(['SET', d, ts]); }
+  }
+  return ch;
+}
+// relevés natifs [[ms du relevé, ms de l'alarme]] à rejouer : postérieurs à seen (s), pas dans le futur, dans l'ordre
+const alarmPending = (L, seen, T) => (Array.isArray(L) ? L : []).map(r => [+r[0] / 1000, +r[1] / 1000])
+  .filter(r => r[0] > seen && r[0] <= T + 60 && r[1] >= 0).sort((a, b) => a[0] - b[0]);
 // </logic>
 
 // ---------------------------------------------------------------------------------------- réglages (par appareil)
@@ -1426,6 +1443,7 @@ window.addEventListener('grafit-native', e => {
   if (d.logError) { log('SYS', 'LOG EXPORT FAILED · ' + String(d.logError).toUpperCase(), true); APP && APP.say('LOG EXPORT FAILED', true); }
   if (d.resumed) visChange(true);
   if (d.usage != null && typeof dayUsage === 'function') dayUsage(!!d.usage);
+  if (d.alarmLog && typeof dayAlarmLog === 'function') dayAlarmLog(d.alarmLog);
   if (d.nextAlarm != null && typeof dayAlarm === 'function') dayAlarm(+d.nextAlarm / 1000);
   if (d.steps != null && !bgWaiting()) stepsFeed(+d.steps);
   if (d.bglog) bgIngest(d.bglog);
@@ -4896,7 +4914,7 @@ PAGES.M52 = { code: 'M52', name: 'TOWERS', ru: 'ВЫШКИ', words: ['TOWERS', '
 //     d'œil nocturnes fondus ; nuit décalée comprise, 1.20), réveil entre 03:00 et 18:00 (APK, journal continu) ;
 //  4. AUTO   : première activité de Grafit après une coupure de 4 h, entre 03:00 et 14:00 (repli, web surtout).
 // La dernière activité avant la coupure (ou le dernier verrouillage de la veille, APK) sert d'heure de coucher.
-const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '', alarms: {}, ul: null, usage: null };
+const DAYREC = { wake: null, src: '', lastSeen: 0, hist: [], briefD: '', alarms: {}, alSeen: 0, ul: null, usage: null };
 const BRIEF = { pending: false };     // wake : epoch s ; hist : [{d, wake, bed}] ; alarms : {AAAAMMJJ: epoch s}
 function dayLoad() {
   try { const j = JSON.parse(localStorage.getItem('grafit.day') || 'null'); if (j) Object.assign(DAYREC, j); } catch (e) { /* */ }
@@ -4957,14 +4975,27 @@ function dayUnlock(fu, bed, glances = 0) {                            // APK : p
   if (bed) DAYREC.lastSeen = Math.min(DAYREC.lastSeen || bed, bed);
   daySave(); dayResolve();
 }
-function dayAlarm(ts) {                                               // APK : prochaine alarme du réveil (0 : aucune)
-  const t = now(), A = DAYREC.alarms;
-  for (const k of Object.keys(A)) if (A[k] > t && (!ts || A[k] < ts - 60)) { log('DAY', 'ALARM ' + k.slice(6) + '/' + k.slice(4, 6) + ' ' + hhmm(A[k]) + ' CANCELLED'); delete A[k]; }
-  if (ts && isMorning(ts)) {
-    const d = ymdOf(ts);
-    if (!A[d] || (A[d] > t && Math.abs(A[d] - ts) > 60)) { A[d] = ts; log('DAY', 'ALARM SET · ' + DOW3[new Date(ts * 1000).getDay()] + ' ' + hhmm(ts)); }
+function dayAlarm(ts, at) {                                           // APK : prochaine alarme du réveil (0 : aucune)
+  const live = !at, t = live ? now() : at, A = DAYREC.alarms, seen = live ? '' : ' · SEEN ' + DOW3[new Date(t * 1000).getDay()] + ' ' + hhmm(t);
+  for (const [k, d, v] of alarmStep(A, ts, t, ymdOf, isMorning)) {
+    if (k === 'DEL') log('DAY', 'ALARM ' + d.slice(6) + '/' + d.slice(4, 6) + ' ' + hhmm(v) + ' CANCELLED' + seen);
+    else log('DAY', 'ALARM SET · ' + DOW3[new Date(v * 1000).getDay()] + ' ' + hhmm(v) + seen);
   }
   const keys = Object.keys(A).sort(); while (keys.length > 14) delete A[keys.shift()];
+  daySave(); if (live) dayResolve();
+}
+// APK (1.21.2) : relevés du réveil pris page fermée (modification du réveil, journal continu), rejoués avant la
+// lecture en direct ; si l'alarme du jour change, un réveil ALARM déjà retenu à l'ancienne heure est corrigé
+function dayAlarmLog(L) {
+  const P = alarmPending(L, DAYREC.alSeen || 0, now()); if (!P.length) return;
+  const today = ymdOf(now()), before = DAYREC.alarms[today];
+  for (const [t, ts] of P) dayAlarm(ts, t);
+  DAYREC.alSeen = P[P.length - 1][0];
+  const after = DAYREC.alarms[today];
+  if (dayToday() && DAYREC.src === 'ALARM' && after !== before && Math.abs(DAYREC.wake - (before || 0)) <= 60) {
+    log('DAY', 'WAKE ' + hhmm(DAYREC.wake) + ' DROPPED · ALARM ' + (after ? 'MOVED TO ' + hhmm(after) : 'CANCELLED') + ' WHILE CLOSED');
+    DAYREC.wake = null; DAYREC.src = '';                                // dayResolve repart de l'alarme corrigée
+  }
   daySave(); dayResolve();
 }
 function dayUsage(ok) {

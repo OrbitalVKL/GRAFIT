@@ -64,6 +64,11 @@
                 android:value="Personal on-device sensor logger (barometer, battery) for the app graphs" />
         </service>
         <receiver android:name=".SampleReceiver" android:exported="false" />
+        <receiver android:name=".AlarmLog" android:exported="true">
+            <intent-filter>
+                <action android:name="android.app.action.NEXT_ALARM_CLOCK_CHANGED" />
+            </intent-filter>
+        </receiver>
         <receiver android:name=".GrafitWidget" android:exported="true" android:label="Grafit">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />

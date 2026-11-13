@@ -64,7 +64,7 @@ import java.util.TimeZone;
  *   toutes les 10 s : cell {rat, operator, pci, band, rsrp, ci, tac, mcc, mnc} ou {none}, storage {free, total}
  *   (toutes les 2 s aussi : battHealth, code BatteryManager.BATTERY_HEALTH_*)
  *   au démarrage, au retour et à chaque changement : agenda [{start, stop (ms), title, loc, allDay, uid}]
- *   au démarrage et au retour : nextAlarm (ms), usage ; firstUnlock, lastLock (ms), glances si l'accès aux statistiques d'usage est accordé
+ *   au démarrage et au retour : nextAlarm (ms), alarmLog, usage ; firstUnlock, lastLock (ms), glances si l'accès aux statistiques d'usage est accordé
  */
 class Probes implements SensorEventListener {
     final MainActivity act;
@@ -475,7 +475,7 @@ class Probes implements SensorEventListener {
 
     // ------------------------------------------------------------------ réveil : alarme et premier déverrouillage durable
     // nextAlarm : prochaine alarme du réveil Android (ms, 0 = aucune), sans permission ; la page la retient la
-    // veille pour dater le réveil du lendemain. usage : accès aux statistiques d'usage accordé ou non.
+    // veille pour dater le réveil du lendemain ; alarmLog : relevés [ms, alarme ms] pris page fermée (1.21.2). usage : accès aux statistiques d'usage accordé ou non.
     // firstUnlock : premier déverrouillage « durable » après 03:00 — un coup d'œil nocturne (session < 3 min suivie
     // de 45 min sans déverrouillage) est ignoré ; glances = nombre de coups d'œil écartés.
     static final long GLANCE_MS = 3 * 60000L, GLANCE_GAP_MS = 45 * 60000L;
@@ -483,9 +483,9 @@ class Probes implements SensorEventListener {
     void pushUnlock() {
         JSONObject d = new JSONObject();
         try {
-            AlarmManager am = (AlarmManager) act.getSystemService(Context.ALARM_SERVICE);
-            AlarmManager.AlarmClockInfo ai = am != null ? am.getNextAlarmClock() : null;
-            d.put("nextAlarm", ai != null ? ai.getTriggerTime() : 0);
+            long next = AlarmLog.record(act);
+            d.put("alarmLog", AlarmLog.read(act));                         // relevés pris page fermée, rejoués d'abord
+            if (next >= 0) d.put("nextAlarm", next);
         } catch (Exception e) { /* */ }
         try {
             AppOpsManager ops = (AppOpsManager) act.getSystemService(Context.APP_OPS_SERVICE);

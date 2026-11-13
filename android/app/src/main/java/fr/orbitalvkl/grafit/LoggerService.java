@@ -244,6 +244,7 @@ public class LoggerService extends Service implements SensorEventListener {
         sampleT0 = SystemClock.elapsedRealtime(); lastSampleT = System.currentTimeMillis();
         if (wl == null) { wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "grafit:log"); wl.setReferenceCounted(false); }
         wl.acquire(10_000L);
+        AlarmLog.record(this);                        // réveil Android modifié pendant que la page est fermée
         pSum = 0; pN = 0; aSum2 = 0; aMax = 0; aN = 0; winDone = false; netDone = false; rtt = -2; tr = "N";
         Sensor ps = sm.getDefaultSensor(Sensor.TYPE_PRESSURE);
         if (ps != null) sm.registerListener(this, ps, SensorManager.SENSOR_DELAY_NORMAL, h);
